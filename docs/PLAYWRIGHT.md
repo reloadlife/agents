@@ -79,13 +79,33 @@ const browser = await chromium.connect(process.env.PLAYWRIGHT_SERVER);
 // const browser = await chromium.launch({ headless: false });
 ```
 
+## Manage with agentsctl
+
+```bash
+agentsctl playwright status      # display, xvfb, container, server port
+agentsctl playwright start       # systemctl start xvfb + docker compose up -d
+agentsctl playwright stop        # stop container (leaves Xvfb)
+agentsctl playwright restart
+agentsctl playwright install     # npx playwright install chromium on server
+```
+
+API (same token as other routes):
+
+| Method | Path |
+|--------|------|
+| GET | `/v1/playwright` |
+| POST | `/v1/playwright/start` |
+| POST | `/v1/playwright/stop` |
+| POST | `/v1/playwright/restart` |
+| POST | `/v1/playwright/install` |
+
 ## Verify
 
 ```bash
-# display
-xdpyinfo -display :99 | head
+agentsctl playwright status
+agentsctl playwright start
 
-# headed launch (should not error)
+# headed launch on server (should not error)
 DISPLAY=:99 npx playwright@1.61.1 open about:blank
 
 # from agentsctl session — agent should see DISPLAY

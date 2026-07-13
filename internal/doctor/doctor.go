@@ -147,6 +147,37 @@ func Run(baseURL, token string) Report {
 		}
 	}
 
+	// playwright stack
+	{
+		req, _ := http.NewRequest(http.MethodGet, baseURL+"/v1/playwright", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		client := &http.Client{Timeout: 8 * time.Second}
+		res, err := client.Do(req)
+		if err != nil {
+			add("playwright", false, err.Error())
+		} else {
+			b, _ := io.ReadAll(res.Body)
+			_ = res.Body.Close()
+			if res.StatusCode != 200 {
+				add("playwright", false, fmt.Sprintf("HTTP %d", res.StatusCode))
+			} else {
+				var st map[string]any
+				_ = json.Unmarshal(b, &st)
+				dispOK, _ := st["display_ok"].(string)
+				ctr, _ := st["container"].(string)
+				srv, _ := st["server_ok"].(string)
+				ok := dispOK == "active"
+				detail := fmt.Sprintf("display=%v container=%v server=%v", dispOK, ctr, srv)
+				add("playwright", ok, detail)
+				if !ok {
+					r.Hints = append(r.Hints, "agentsctl playwright start  # xvfb + docker playwright")
+				}
+			}
+		}
+	}
+
 	// local tmux (only matters if using --ssh fallback on this machine)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		add("local-tmux", true, "not required for WebSocket PTY")

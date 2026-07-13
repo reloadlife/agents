@@ -116,6 +116,8 @@ cmd:
 		os.Exit(cmdWorkspaces(c, cmdArgs))
 	case "doctor":
 		os.Exit(cmdDoctor(c))
+	case "playwright", "pw":
+		os.Exit(cmdPlaywright(c, cmdArgs))
 	case "session", "sessions":
 		os.Exit(cmdSession(c, cmdArgs))
 	case "jobs":
@@ -150,6 +152,7 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl doctor                           # health check
   agentsctl agents                           # list CLIs on server
   agentsctl workspaces                       # list allowlisted cwds
+  agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]
   agentsctl session list | kill ID | prune
@@ -159,6 +162,95 @@ Other:  agentsctl status | version
 
 Docs: https://github.com/reloadlife/agents
 `)
+}
+
+func cmdPlaywright(c *client, args []string) int {
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+	// long timeouts for start/install
+	old := c.hc
+	c.hc = &http.Client{Timeout: 0}
+	defer func() { c.hc = old }()
+
+	switch args[0] {
+	case "status", "st":
+		var st map[string]any
+		if err := c.json(http.MethodGet, "/v1/playwright", nil, &st); err != nil {
+			fatal("%v", err)
+		}
+		printPlaywrightStatus(st)
+		return 0
+	case "start":
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/playwright/start", map[string]any{}, &out); err != nil {
+			fatal("%v", err)
+		}
+		printPlaywrightAction(out)
+		return boolExit(out)
+	case "stop":
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/playwright/stop", map[string]any{}, &out); err != nil {
+			fatal("%v", err)
+		}
+		printPlaywrightAction(out)
+		return boolExit(out)
+	case "restart":
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/playwright/restart", map[string]any{}, &out); err != nil {
+			fatal("%v", err)
+		}
+		printPlaywrightAction(out)
+		return boolExit(out)
+	case "install":
+		fmt.Fprintln(os.Stderr, "installing Chromium browsers on server (may take a few minutes)…")
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/playwright/install", map[string]any{}, &out); err != nil {
+			fatal("%v", err)
+		}
+		if o, _ := out["output"].(string); o != "" {
+			fmt.Println(strings.TrimSpace(o))
+		}
+		printPlaywrightAction(out)
+		return boolExit(out)
+	default:
+		fmt.Fprintln(os.Stderr, "usage: agentsctl playwright status|start|stop|restart|install")
+		return 2
+	}
+}
+
+func printPlaywrightStatus(st map[string]any) {
+	fmt.Printf("display     %v  (%v)\n", st["display"], st["display_ok"])
+	fmt.Printf("xvfb        %v\n", st["xvfb"])
+	fmt.Printf("container   %v  (%v)\n", st["container"], st["container_name"])
+	fmt.Printf("server      %v  (%v)\n", st["server"], st["server_ok"])
+	fmt.Printf("browsers    path=%v ok=%v\n", st["browsers_path"], st["browsers_ok"])
+	if m, _ := st["message"].(string); m != "" {
+		fmt.Printf("summary     %s\n", m)
+	}
+	if cf, _ := st["compose_file"].(string); cf != "" {
+		fmt.Printf("compose     %s\n", cf)
+	}
+}
+
+func printPlaywrightAction(out map[string]any) {
+	ok, _ := out["ok"].(bool)
+	if err, _ := out["error"].(string); err != "" {
+		fmt.Fprintf(os.Stderr, "error: %s\n", err)
+	}
+	if st, okm := out["status"].(map[string]any); okm {
+		printPlaywrightStatus(st)
+	}
+	if ok {
+		fmt.Println("ok")
+	}
+}
+
+func boolExit(out map[string]any) int {
+	if ok, _ := out["ok"].(bool); ok {
+		return 0
+	}
+	return 1
 }
 
 func cmdDoctor(c *client) int {

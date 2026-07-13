@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/reloadlife/agents/internal/auth"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/job"
+	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/session"
 	"github.com/reloadlife/agents/internal/status"
 	"github.com/reloadlife/agents/internal/workspaces"
@@ -21,6 +23,7 @@ type Server struct {
 	cfg  *config.Config
 	mgr  *job.Manager
 	sess *session.Manager
+	pw   *playwrightctl.Manager
 	log  *slog.Logger
 }
 
@@ -28,7 +31,7 @@ func New(cfg *config.Config, mgr *job.Manager, sess *session.Manager, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, mgr: mgr, sess: sess, log: log}
+	return &Server{cfg: cfg, mgr: mgr, sess: sess, pw: playwrightctl.New(cfg), log: log}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -38,6 +41,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents", s.handleListAgents)
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
+
+	// Playwright / headed browser stack
+	mux.HandleFunc("GET /v1/playwright", s.handlePlaywrightStatus)
+	mux.HandleFunc("POST /v1/playwright/start", s.handlePlaywrightStart)
+	mux.HandleFunc("POST /v1/playwright/stop", s.handlePlaywrightStop)
+	mux.HandleFunc("POST /v1/playwright/restart", s.handlePlaywrightRestart)
+	mux.HandleFunc("POST /v1/playwright/install", s.handlePlaywrightInstall)
 
 	// Interactive TTY sessions (primary — not print/-p)
 	mux.HandleFunc("POST /v1/sessions", s.handleCreateSession)
@@ -100,6 +110,74 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"service": "agentsd",
 		"api":     "v1",
 	})
+}
+
+func (s *Server) handlePlaywrightStatus(w http.ResponseWriter, r *http.Request) {
+	if s.pw == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("playwright manager unavailable"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.pw.Status())
+}
+
+func (s *Server) handlePlaywrightStart(w http.ResponseWriter, r *http.Request) {
+	if s.pw == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("playwright manager unavailable"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	st, err := s.pw.Start(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "status": st})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handlePlaywrightStop(w http.ResponseWriter, r *http.Request) {
+	if s.pw == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("playwright manager unavailable"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	st, err := s.pw.Stop(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "status": st})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handlePlaywrightRestart(w http.ResponseWriter, r *http.Request) {
+	if s.pw == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("playwright manager unavailable"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
+	defer cancel()
+	st, err := s.pw.Restart(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "status": st})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handlePlaywrightInstall(w http.ResponseWriter, r *http.Request) {
+	if s.pw == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("playwright manager unavailable"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	out, err := s.pw.InstallBrowsers(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "output": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": out, "status": s.pw.Status()})
 }
 
 func (s *Server) handlePruneSessions(w http.ResponseWriter, r *http.Request) {
