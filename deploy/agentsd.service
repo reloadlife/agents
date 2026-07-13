@@ -1,7 +1,9 @@
 [Unit]
 Description=local-agents control plane (agentsd)
-After=network-online.target
+After=network-online.target xvfb.service
 Wants=network-online.target
+# Start virtual display when available (headed Playwright)
+Wants=xvfb.service
 
 [Service]
 Type=simple
@@ -10,11 +12,10 @@ Type=simple
 # Group=agents
 EnvironmentFile=-/etc/agentsd/env
 Environment=HOME=/root
+Environment=DISPLAY=:99
 Environment=USE_GKE_GCLOUD_AUTH_PLUGIN=True
 Environment=CLOUDSDK_CORE_DISABLE_PROMPTS=1
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-# Extend PATH for tool installs under $HOME:
-# Environment=PATH=%h/.local/bin:%h/.grok/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/root/.local/bin:/root/.grok/bin:/root/.opencode/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/var/lib/local-agents
 ExecStart=/usr/local/bin/agentsd serve --config /etc/agentsd/config.toml
 Restart=on-failure

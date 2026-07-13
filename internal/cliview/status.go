@@ -67,6 +67,7 @@ func RenderStatus(w io.Writer, raw []byte, apiURL string) error {
 		row("disk", diskLine),
 		row("docker", docker),
 		row("opendray", opendray),
+		row("display", formatDisplay(m["display"], m["display_ok"])),
 		row("gke", gke),
 		row("jobs", jobs),
 		row("tty", fmt.Sprintf("%d interactive session(s)", tty)),
@@ -76,6 +77,25 @@ func RenderStatus(w io.Writer, raw []byte, apiURL string) error {
 	fmt.Fprintln(w, stBox.Render(title+"\n\n"+body))
 	fmt.Fprintln(w, stMuted.Render("  tui: agentsctl tui   ·   start: agentsctl session start -a grok --open   ·   --json"))
 	return nil
+}
+
+func formatDisplay(disp, ok any) string {
+	d := str(disp)
+	state := str(ok)
+	if d == "" && (state == "" || state == "unset") {
+		return stMuted.Render("unset (headless only)")
+	}
+	if d == "" {
+		d = "?"
+	}
+	switch state {
+	case "active":
+		return stOK.Render(d+" headed") + stMuted.Render("  (Playwright/Chromium)")
+	case "down":
+		return stBad.Render(d+" down") + stMuted.Render("  start xvfb: systemctl start xvfb")
+	default:
+		return stWarn.Render(d+" "+state)
+	}
 }
 
 func formatAgents(v any) string {

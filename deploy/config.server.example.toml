@@ -15,6 +15,9 @@ bearer_env = "AGENTSD_TOKEN"
 [sessions]
 # Optional: only used for agentsctl session open --ssh
 ssh_host = "my-agent-box"
+# Headed browsers (Playwright) — pair with deploy/xvfb.service
+display = ":99"
+# playwright_server = "ws://127.0.0.1:9333"
 
 [agents.claude]
 bin = "claude"

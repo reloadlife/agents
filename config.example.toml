@@ -12,9 +12,14 @@ max_timeout = "2h"
 bearer_env = "AGENTSD_TOKEN"
 
 [sessions]
-# SSH Host alias for remote TTY (agentsctl session open).
-# Local dev: leave empty. Agents host: "agents" (see deploy/config.agents.toml)
+# SSH Host alias for remote TTY (agentsctl session open --ssh).
 ssh_host = ""
+# Virtual display for headed Playwright/Chromium (see deploy/xvfb.service)
+display = ":99"
+# playwright_browsers_path = "/home/you/.cache/ms-playwright"
+# playwright_server = "ws://127.0.0.1:9333"  # optional docker compose service
+# [sessions.env]
+# CUSTOM = "value"
 
 # --- Agents ---
 # Interactive TTY (default for `agentsctl session start`): uses Args only.

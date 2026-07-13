@@ -1,0 +1,13 @@
+[Unit]
+Description=Xvfb virtual display for headed browsers (Playwright)
+After=network.target
+
+[Service]
+Type=simple
+# :99 — set sessions.display = ":99" in agentsd config
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

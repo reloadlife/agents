@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-07-13
+
+### Added
+
+- Headed browser support for agent sessions via Xvfb (`sessions.display`)
+- Session env: `DISPLAY`, `PLAYWRIGHT_HEADLESS=0`, `PLAYWRIGHT_BROWSERS_PATH`, optional `PLAYWRIGHT_SERVER`
+- `deploy/xvfb.service` and `scripts/setup-playwright.sh`
+- Optional Playwright Docker server (`deploy/docker-compose.playwright.yml`)
+- Status panel shows display active/down
+- Docs: `docs/PLAYWRIGHT.md`
+
 ## [0.1.0] — 2026-07-13
 
 ### Added

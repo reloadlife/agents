@@ -159,7 +159,7 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	tmuxArgs = append(tmuxArgs, args...)
 
 	cmd := exec.Command("tmux", tmuxArgs...)
-	cmd.Env = sessionEnv() // full-ish env so OAuth/subscription auth works
+	cmd.Env = m.sessionEnv() // full-ish env: OAuth + DISPLAY for headed browsers
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux new-session: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -265,7 +265,7 @@ func resolveBin(bin string) string {
 	return ""
 }
 
-func sessionEnv() []string {
+func (m *Manager) sessionEnv() []string {
 	env := os.Environ()
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -279,7 +279,6 @@ func sessionEnv() []string {
 		filepath.Join(home, ".opencode", "bin"),
 		"/usr/local/bin",
 	}
-	// drop empty
 	var cleaned []string
 	for _, p := range pathExtra {
 		if p != "" && p != "/.local/bin" {
@@ -287,14 +286,65 @@ func sessionEnv() []string {
 		}
 	}
 	pathExtra = cleaned
+	pathSet := false
 	for i, e := range env {
 		if strings.HasPrefix(e, "PATH=") {
 			path := e[5:]
 			env[i] = "PATH=" + strings.Join(pathExtra, ":") + ":" + path
+			pathSet = true
+			break
+		}
+	}
+	if !pathSet {
+		env = append(env, "PATH="+strings.Join(pathExtra, ":")+":/usr/bin:/bin")
+	}
+
+	// Non-headless browser support (Playwright / Chromium need a real or virtual display)
+	display := m.cfg.Sessions.Display
+	if display == "" {
+		display = os.Getenv("DISPLAY")
+	}
+	if display != "" {
+		env = setOrReplaceEnv(env, "DISPLAY", display)
+		// Prefer headed browsers when a display is available
+		env = setOrReplaceEnv(env, "PLAYWRIGHT_HEADLESS", "0")
+		env = setOrReplaceEnv(env, "HEADED", "1")
+	}
+	if p := m.cfg.Sessions.PlaywrightBrowsersPath; p != "" {
+		env = setOrReplaceEnv(env, "PLAYWRIGHT_BROWSERS_PATH", p)
+	} else if home != "" {
+		// default cache used by npx playwright install
+		def := filepath.Join(home, ".cache", "ms-playwright")
+		if st, err := os.Stat(def); err == nil && st.IsDir() {
+			env = setOrReplaceEnv(env, "PLAYWRIGHT_BROWSERS_PATH", def)
+		}
+	}
+	if s := m.cfg.Sessions.PlaywrightServer; s != "" {
+		env = setOrReplaceEnv(env, "PLAYWRIGHT_SERVER", s)
+		// common convention for tools that connect to a remote browser
+		env = setOrReplaceEnv(env, "PW_TEST_SERVER", s)
+	}
+	// Chromium/Playwright sandbox often fails as root in containers/VMs
+	env = setOrReplaceEnv(env, "PLAYWRIGHT_CHROMIUM_SANDBOX", "0")
+
+	for k, v := range m.cfg.Sessions.Env {
+		if k == "" {
+			continue
+		}
+		env = setOrReplaceEnv(env, k, v)
+	}
+	return env
+}
+
+func setOrReplaceEnv(env []string, key, val string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = prefix + val
 			return env
 		}
 	}
-	return append(env, "PATH="+strings.Join(pathExtra, ":")+":/usr/bin:/bin")
+	return append(env, prefix+val)
 }
 
 func (m *Manager) fillAttach(s *Session) {

@@ -132,6 +132,19 @@ paths = [".", "my-repo", "my-repo/**"]
 bin = "claude"
 ```
 
+## Headed browsers (Playwright)
+
+Agent sessions can run **non-headless** Chromium via **Xvfb** (`DISPLAY=:99`).
+
+```bash
+sudo bash scripts/setup-playwright.sh
+sudo cp deploy/xvfb.service /etc/systemd/system/ && sudo systemctl enable --now xvfb
+# config: [sessions] display = ":99"
+# optional: docker compose -f deploy/docker-compose.playwright.yml up -d
+```
+
+See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
+
 ## Security (read this)
 
 - The token is effectively **remote interactive access** to agent tools on that host.

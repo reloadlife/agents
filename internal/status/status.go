@@ -31,6 +31,8 @@ type Snapshot struct {
 	GKE       *GKEStat       `json:"gke,omitempty"`
 	Jobs      JobStat        `json:"jobs"`
 	UptimeSec float64        `json:"uptime_sec,omitempty"`
+	Display   string         `json:"display,omitempty"`
+	DisplayOK string         `json:"display_ok,omitempty"` // active|down|unset
 }
 
 type MemStat struct {
@@ -86,6 +88,11 @@ func Collect(ctx context.Context, cfg *config.Config, running, queued int) Snaps
 		s.Mem.HostTotalMB = total
 		s.Mem.HostAvailableMB = avail
 	}
+	s.Display = cfg.Sessions.Display
+	if s.Display == "" {
+		s.Display = os.Getenv("DISPLAY")
+	}
+	s.DisplayOK = probeDisplay(s.Display)
 	if cfg.Status.OpenDrayURL != "" {
 		s.OpenDray = probeHTTP(ctx, cfg.Status.OpenDrayURL)
 	}
@@ -93,6 +100,29 @@ func Collect(ctx context.Context, cfg *config.Config, running, queued int) Snaps
 		s.GKE = probeGKE(ctx, cfg.Status.GKEContext)
 	}
 	return s
+}
+
+func probeDisplay(display string) string {
+	if display == "" {
+		return "unset"
+	}
+	// xdpyinfo is the reliable check when available
+	if p, err := exec.LookPath("xdpyinfo"); err == nil {
+		cmd := exec.Command(p, "-display", display)
+		if err := cmd.Run(); err == nil {
+			return "active"
+		}
+		return "down"
+	}
+	// fallback: Xvfb lock file for :N → /tmp/.X99-lock
+	if strings.HasPrefix(display, ":") {
+		num := strings.TrimPrefix(display, ":")
+		if _, err := os.Stat("/tmp/.X" + num + "-lock"); err == nil {
+			return "active"
+		}
+		return "down"
+	}
+	return "unknown"
 }
 
 func readHostMem() (totalMB, availMB uint64, ok bool) {

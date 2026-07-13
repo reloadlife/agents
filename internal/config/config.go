@@ -45,8 +45,17 @@ type AgentConfig struct {
 }
 
 type SessionsConfig struct {
-	// SSHHost shown in attach hints, e.g. "root@192.168.20.6" or "agents"
+	// SSHHost shown in attach hints, e.g. "agents" or "user@host"
 	SSHHost string `toml:"ssh_host"`
+	// Display for non-headless browsers (Playwright/Chromium). e.g. ":99" with Xvfb.
+	// Empty = leave unset (headless-only environments).
+	Display string `toml:"display"`
+	// Extra env injected into every agent tmux session (KEY=VALUE).
+	Env map[string]string `toml:"env"`
+	// PlaywrightBrowsersPath overrides PLAYWRIGHT_BROWSERS_PATH when set.
+	PlaywrightBrowsersPath string `toml:"playwright_browsers_path"`
+	// PlaywrightServer optional remote Playwright server WS base, e.g. "ws://127.0.0.1:9333"
+	PlaywrightServer string `toml:"playwright_server"`
 }
 
 type AllowConfig struct {
@@ -95,6 +104,14 @@ func (c *Config) normalize() error {
 	}
 	if c.Auth.BearerEnv == "" {
 		c.Auth.BearerEnv = "AGENTSD_TOKEN"
+	}
+	// Default virtual display for headed Playwright/Chromium when not specified.
+	// Operators can set sessions.display = "" to disable.
+	if c.Sessions.Display == "" {
+		if d := os.Getenv("DISPLAY"); d != "" {
+			c.Sessions.Display = d
+		}
+		// keep empty if no env — setup docs recommend Xvfb :99
 	}
 	if c.Agents == nil {
 		c.Agents = map[string]AgentConfig{}

@@ -120,6 +120,9 @@ func cleanEnv() []string {
 		"BUN_INSTALL", "NVM_DIR", "CARGO_HOME", "RUSTUP_HOME",
 		"USE_GKE_GCLOUD_AUTH_PLUGIN", "CLOUDSDK_CORE_PROJECT",
 		"SOPS_AGE_KEY_FILE", "SECRET_STORE",
+		// headed Playwright / browsers
+		"DISPLAY", "PLAYWRIGHT_BROWSERS_PATH", "PLAYWRIGHT_HEADLESS",
+		"PLAYWRIGHT_SERVER", "PW_TEST_SERVER", "PLAYWRIGHT_CHROMIUM_SANDBOX", "HEADED",
 	}
 	var out []string
 	for _, k := range keep {
