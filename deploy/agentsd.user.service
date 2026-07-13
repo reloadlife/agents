@@ -1,0 +1,39 @@
+# systemd user unit — non-root install
+#
+# Install (as your user, no sudo for the daemon itself):
+#   mkdir -p ~/.config/systemd/user ~/.config/agentsd ~/.local/share/agents
+#   make install   # → ~/.local/bin
+#   cp config.example.toml ~/.config/agentsd/config.toml
+#   # edit workspace_root, allow.paths, agents
+#   umask 077
+#   echo "AGENTSD_TOKEN=$(openssl rand -hex 32)" > ~/.config/agentsd/env
+#   chmod 600 ~/.config/agentsd/env
+#   cp deploy/agentsd.user.service ~/.config/systemd/user/agentsd.service
+#   # edit paths below if your home layout differs, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agentsd
+#   loginctl enable-linger $USER   # optional: keep running after logout
+#
+# Client:
+#   agentsctl config init
+#   # url = "http://127.0.0.1:8787"  token = <same AGENTSD_TOKEN>
+
+[Unit]
+Description=agents control plane (agentsd) — user session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/agentsd/env
+Environment=HOME=%h
+Environment=DISPLAY=:99
+Environment=PATH=%h/.local/bin:%h/.grok/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.local/share/agents
+ExecStart=%h/.local/bin/agentsd serve --config %h/.config/agentsd/config.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

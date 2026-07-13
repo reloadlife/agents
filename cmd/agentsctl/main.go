@@ -28,12 +28,10 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+	args := []string{}
+	if len(os.Args) > 1 {
+		args = os.Args[1:]
 	}
-
-	args := os.Args[1:]
 	cfgPath := ""
 	urlOverride := ""
 	tokenOverride := ""
@@ -77,9 +75,9 @@ func main() {
 		}
 	}
 cmd:
+	// no command → launch TUI (primary UX)
 	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+		args = []string{"tui"}
 	}
 
 	// config subcommand before loading token requirement
@@ -147,11 +145,13 @@ cmd:
 func usage() {
 	fmt.Fprintf(os.Stderr, `agentsctl — CLI for agents (agentsd)
 
+  agentsctl                              # default: open TUI session picker
+
 Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
-  agentsctl tui                              # picker · a cycle agent · 1-9 start
-  agentsctl doctor                           # health check
-  agentsctl agents                           # list CLIs on server
-  agentsctl workspaces                       # list allowlisted cwds
+  agentsctl tui                          # picker · a agent · w workspace · 1-9 start
+  agentsctl doctor                       # health check
+  agentsctl agents                       # list CLIs on server
+  agentsctl workspaces                   # list allowlisted cwds
   agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]

@@ -12,17 +12,17 @@ import (
 
 // Report is a client-side health check against a running agentsd.
 type Report struct {
-	OK       bool     `json:"ok"`
-	URL      string   `json:"url"`
-	Checks   []Check  `json:"checks"`
-	Summary  string   `json:"summary"`
-	Hints    []string `json:"hints,omitempty"`
+	OK      bool     `json:"ok"`
+	URL     string   `json:"url"`
+	Checks  []Check  `json:"checks"`
+	Summary string   `json:"summary"`
+	Hints   []string `json:"hints,omitempty"`
 }
 
 type Check struct {
-	Name    string `json:"name"`
-	OK      bool   `json:"ok"`
-	Detail  string `json:"detail,omitempty"`
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // Run probes the API with the given base URL and token.

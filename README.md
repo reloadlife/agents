@@ -39,26 +39,24 @@ Interactive agent tools want a real TTY (subscription login, full UI). Headless 
 ```bash
 # build
 git clone https://github.com/reloadlife/agents.git
-cd local-agents
-make build
-sudo install -m 755 bin/agentsd bin/agentsctl /usr/local/bin/
+cd agents
+make build && make install   # → ~/.local/bin (non-root)
 
-# config
-sudo mkdir -p /etc/agentsd
-sudo cp config.example.toml /etc/agentsd/config.toml
+# config (user)
+mkdir -p ~/.config/agentsd ~/.local/share/agents
+cp config.example.toml ~/.config/agentsd/config.toml
 # edit workspace_root, allow paths, agents
 
-# token
-echo "AGENTSD_TOKEN=$(openssl rand -hex 32)" | sudo tee /etc/agentsd/env
-sudo chmod 600 /etc/agentsd/env
+echo "AGENTSD_TOKEN=$(openssl rand -hex 32)" > ~/.config/agentsd/env
+chmod 600 ~/.config/agentsd/env
 
 # run (foreground)
-export $(sudo grep -v '^#' /etc/agentsd/env | xargs)
-agentsd serve --config /etc/agentsd/config.toml
+set -a; source ~/.config/agentsd/env; set +a
+agentsd serve --config ~/.config/agentsd/config.toml
 
-# or systemd
-sudo cp deploy/agentsd.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now agentsd
+# or systemd --user (see docs/INSTALL.md)
+cp deploy/agentsd.user.service ~/.config/systemd/user/agentsd.service
+systemctl --user daemon-reload && systemctl --user enable --now agentsd
 ```
 
 Requirements on the server: **Go** (to build), **tmux**, and whichever CLIs you want (`claude`, `grok`, `codex`, `opencode`, `cursor-agent`).
@@ -75,7 +73,7 @@ agentsctl config init
 
 agentsctl status
 agentsctl agents
-agentsctl tui
+agentsctl                        # default: TUI session picker
 # or
 agentsctl session start -a claude --open
 agentsctl session start -a grok --open
@@ -84,14 +82,16 @@ agentsctl session start -a grok --open
 ## CLI cheat sheet
 
 ```bash
+agentsctl                        # TUI (default) · a agent · w workspace · 1-9 start · enter open
 agentsctl status                 # host panel (use --json for raw)
 agentsctl agents                 # which CLIs are available on the server
-agentsctl tui                    # session picker · a cycle agent · 1-9 start · enter open
+agentsctl workspaces             # allowlisted cwds
+agentsctl tui                    # same as bare agentsctl
 
 agentsctl session start -a claude --open
 agentsctl session start -a cursor -r my-repo --open
 agentsctl session list
-agentsctl session open [id]      # full PTY (WebSocket)
+agentsctl session open [id]      # full PTY (WebSocket; auto-reconnect)
 agentsctl session open id --ssh  # fallback: ssh -t … tmux attach
 agentsctl session kill id
 ```

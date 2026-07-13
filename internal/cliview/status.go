@@ -53,7 +53,7 @@ func RenderStatus(w io.Writer, raw []byte, apiURL string) error {
 
 	title := stTitle.Render(" agents ") + stMuted.Render(host)
 	if apiURL != "" {
-		title += stMuted.Render("  ·  "+apiURL)
+		title += stMuted.Render("  ·  " + apiURL)
 	}
 
 	agentsLine := formatAgents(m["agents"])
@@ -94,7 +94,7 @@ func formatDisplay(disp, ok any) string {
 	case "down":
 		return stBad.Render(d+" down") + stMuted.Render("  start xvfb: systemctl start xvfb")
 	default:
-		return stWarn.Render(d+" "+state)
+		return stWarn.Render(d + " " + state)
 	}
 }
 

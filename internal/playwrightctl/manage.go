@@ -22,7 +22,7 @@ type Status struct {
 	Container     string `json:"container"`  // running|exited|missing|unknown
 	ContainerName string `json:"container_name"`
 	Server        string `json:"server,omitempty"` // configured PLAYWRIGHT_SERVER
-	ServerOK      string `json:"server_ok"`       // open|closed|unset
+	ServerOK      string `json:"server_ok"`        // open|closed|unset
 	BrowsersPath  string `json:"browsers_path,omitempty"`
 	BrowsersOK    bool   `json:"browsers_ok"`
 	ComposeFile   string `json:"compose_file,omitempty"`

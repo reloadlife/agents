@@ -17,34 +17,34 @@ import (
 )
 
 type Snapshot struct {
-	Host      string         `json:"host"`
-	Time      time.Time      `json:"time"`
-	GoOS      string         `json:"goos"`
-	GoArch    string         `json:"goarch"`
-	NumCPU    int            `json:"num_cpu"`
-	Goroutines int           `json:"goroutines"`
-	Mem       MemStat        `json:"mem"`
-	Disk      *DiskStat      `json:"disk,omitempty"`
-	Load      []float64      `json:"load,omitempty"`
-	Docker    string         `json:"docker,omitempty"`
-	OpenDray  string         `json:"opendray,omitempty"`
-	GKE       *GKEStat       `json:"gke,omitempty"`
-	Jobs      JobStat        `json:"jobs"`
-	UptimeSec float64        `json:"uptime_sec,omitempty"`
-	Display   string         `json:"display,omitempty"`
-	DisplayOK string         `json:"display_ok,omitempty"` // active|down|unset
+	Host       string    `json:"host"`
+	Time       time.Time `json:"time"`
+	GoOS       string    `json:"goos"`
+	GoArch     string    `json:"goarch"`
+	NumCPU     int       `json:"num_cpu"`
+	Goroutines int       `json:"goroutines"`
+	Mem        MemStat   `json:"mem"`
+	Disk       *DiskStat `json:"disk,omitempty"`
+	Load       []float64 `json:"load,omitempty"`
+	Docker     string    `json:"docker,omitempty"`
+	OpenDray   string    `json:"opendray,omitempty"`
+	GKE        *GKEStat  `json:"gke,omitempty"`
+	Jobs       JobStat   `json:"jobs"`
+	UptimeSec  float64   `json:"uptime_sec,omitempty"`
+	Display    string    `json:"display,omitempty"`
+	DisplayOK  string    `json:"display_ok,omitempty"` // active|down|unset
 }
 
 type MemStat struct {
-	AllocMB     uint64 `json:"alloc_mb"`
-	SysMB       uint64 `json:"sys_mb"`
+	AllocMB uint64 `json:"alloc_mb"`
+	SysMB   uint64 `json:"sys_mb"`
 	// host-level if available
 	HostTotalMB     uint64 `json:"host_total_mb,omitempty"`
 	HostAvailableMB uint64 `json:"host_available_mb,omitempty"`
 }
 
 type DiskStat struct {
-	Path string  `json:"path"`
+	Path    string  `json:"path"`
 	UsedPct float64 `json:"used_pct,omitempty"`
 	// free-form from df
 	Raw string `json:"raw,omitempty"`

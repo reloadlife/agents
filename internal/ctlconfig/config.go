@@ -11,8 +11,8 @@ import (
 
 // Config for agentsctl (client).
 type Config struct {
-	URL     string `toml:"url"`
-	Token   string `toml:"token"`
+	URL   string `toml:"url"`
+	Token string `toml:"token"`
 	// SSHHost used when attaching remotely, e.g. "agents" or "root@192.168.20.6"
 	SSHHost string `toml:"ssh_host"`
 	// PreferSSH: if true, always ssh attach even when URL is localhost

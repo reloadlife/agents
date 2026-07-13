@@ -57,16 +57,16 @@ type CreateRequest struct {
 	Cwd    string `json:"cwd"`
 	Name   string `json:"name,omitempty"`
 	Prompt string `json:"prompt,omitempty"` // typed into TTY after start (not -p)
-	Mode   Mode   `json:"mode,omitempty"`  // default tty
+	Mode   Mode   `json:"mode,omitempty"`   // default tty
 }
 
 // Manager creates interactive agent sessions in tmux.
 type Manager struct {
-	cfg    *config.Config
-	dir    string
-	log    *slog.Logger
-	mu     sync.Mutex
-	byID   map[string]*Session
+	cfg     *config.Config
+	dir     string
+	log     *slog.Logger
+	mu      sync.Mutex
+	byID    map[string]*Session
 	sshHost string
 }
 

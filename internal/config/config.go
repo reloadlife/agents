@@ -11,18 +11,18 @@ import (
 )
 
 type Config struct {
-	Listen             string                  `toml:"listen"`
-	JobsDir            string                  `toml:"jobs_dir"`
-	WorkspaceRoot      string                  `toml:"workspace_root"`
-	MaxConcurrentJobs  int                     `toml:"max_concurrent_jobs"`
-	DefaultTimeout     string                  `toml:"default_timeout"`
-	MaxTimeout         string                  `toml:"max_timeout"`
-	Auth               AuthConfig              `toml:"auth"`
-	Agents             map[string]AgentConfig  `toml:"agents"`
-	Allow              AllowConfig             `toml:"allow"`
-	Caps               CapsConfig              `toml:"caps"`
-	Status             StatusConfig            `toml:"status"`
-	Sessions           SessionsConfig          `toml:"sessions"`
+	Listen            string                 `toml:"listen"`
+	JobsDir           string                 `toml:"jobs_dir"`
+	WorkspaceRoot     string                 `toml:"workspace_root"`
+	MaxConcurrentJobs int                    `toml:"max_concurrent_jobs"`
+	DefaultTimeout    string                 `toml:"default_timeout"`
+	MaxTimeout        string                 `toml:"max_timeout"`
+	Auth              AuthConfig             `toml:"auth"`
+	Agents            map[string]AgentConfig `toml:"agents"`
+	Allow             AllowConfig            `toml:"allow"`
+	Caps              CapsConfig             `toml:"caps"`
+	Status            StatusConfig           `toml:"status"`
+	Sessions          SessionsConfig         `toml:"sessions"`
 	// DefaultCwd used when client sends empty / "." and "." is not allowlisted.
 	DefaultCwd string `toml:"default_cwd"`
 

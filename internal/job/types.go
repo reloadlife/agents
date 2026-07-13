@@ -5,13 +5,13 @@ import "time"
 type State string
 
 const (
-	StateQueued           State = "queued"
-	StateAwaitingConfirm  State = "awaiting_confirm"
-	StateRunning          State = "running"
-	StateSucceeded        State = "succeeded"
-	StateFailed           State = "failed"
-	StateCancelled        State = "cancelled"
-	StateInterrupted      State = "interrupted"
+	StateQueued          State = "queued"
+	StateAwaitingConfirm State = "awaiting_confirm"
+	StateRunning         State = "running"
+	StateSucceeded       State = "succeeded"
+	StateFailed          State = "failed"
+	StateCancelled       State = "cancelled"
+	StateInterrupted     State = "interrupted"
 )
 
 func (s State) Terminal() bool {
@@ -24,22 +24,22 @@ func (s State) Terminal() bool {
 }
 
 type Job struct {
-	ID        string            `json:"id"`
-	Title     string            `json:"title,omitempty"`
-	Prompt    string            `json:"prompt"`
-	Agent     string            `json:"agent"`
-	Cwd       string            `json:"cwd"`         // request path (relative)
-	CwdAbs    string            `json:"cwd_abs"`     // resolved absolute
-	Caps      []string          `json:"caps,omitempty"`
-	State     State             `json:"state"`
-	Timeout   string            `json:"timeout,omitempty"`
-	ExitCode  *int              `json:"exit_code,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	Summary   string            `json:"summary,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	StartedAt *time.Time        `json:"started_at,omitempty"`
-	EndedAt   *time.Time        `json:"ended_at,omitempty"`
-	Confirm   string            `json:"-"` // one-time confirm token (not listed publicly by default)
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Prompt    string     `json:"prompt"`
+	Agent     string     `json:"agent"`
+	Cwd       string     `json:"cwd"`     // request path (relative)
+	CwdAbs    string     `json:"cwd_abs"` // resolved absolute
+	Caps      []string   `json:"caps,omitempty"`
+	State     State      `json:"state"`
+	Timeout   string     `json:"timeout,omitempty"`
+	ExitCode  *int       `json:"exit_code,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	Summary   string     `json:"summary,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Confirm   string     `json:"-"` // one-time confirm token (not listed publicly by default)
 }
 
 type CreateRequest struct {

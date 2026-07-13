@@ -22,6 +22,10 @@ install: build
 test:
 	go test ./...
 
+# Requires tmux; used by CI
+test-integration:
+	go test -tags=integration -count=1 -timeout 2m ./internal/session/
+
 fmt:
 	gofmt -w $$(find . -name '*.go' -not -path './.git/*')
 

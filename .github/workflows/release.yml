@@ -26,12 +26,15 @@ jobs:
           mkdir -p dist
           for os in linux darwin; do
             for arch in amd64 arm64; do
-              out="local-agents_${ver}_${os}_${arch}"
+              # agents_${ver}_${os}_${arch} (also write legacy local-agents_* alias)
+              out="agents_${ver}_${os}_${arch}"
               mkdir -p "dist/${out}"
               GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${ver}" -o "dist/${out}/agentsd" ./cmd/agentsd
               GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${ver}" -o "dist/${out}/agentsctl" ./cmd/agentsctl
               cp README.md LICENSE config.example.toml "dist/${out}/" 2>/dev/null || true
               tar -C dist -czf "dist/${out}.tar.gz" "${out}"
+              # backwards-compatible name for existing install scripts
+              cp "dist/${out}.tar.gz" "dist/local-agents_${ver}_${os}_${arch}.tar.gz"
             done
           done
           (cd dist && sha256sum *.tar.gz > checksums.txt)

@@ -35,22 +35,27 @@ type sessionItem struct {
 	id, agent, cwd, state, tmux string
 }
 
-func (s sessionItem) Title() string       { return fmt.Sprintf("%s  [%s]", s.id, s.state) }
-func (s sessionItem) Description() string { return fmt.Sprintf("%s · %s · %s", s.agent, s.cwd, s.tmux) }
+func (s sessionItem) Title() string { return fmt.Sprintf("%s  [%s]", s.id, s.state) }
+func (s sessionItem) Description() string {
+	return fmt.Sprintf("%s · %s · %s", s.agent, s.cwd, s.tmux)
+}
 func (s sessionItem) FilterValue() string { return s.id + " " + s.cwd + " " + s.agent }
 
 type model struct {
-	cfg         Config
-	list        list.Model
-	spin        spinner.Model
-	status      string
-	err         string
-	loading     bool
-	attachID    string
-	quitting    bool
-	agents      []string // available TTY agents
-	agentIdx    int
+	cfg          Config
+	list         list.Model
+	spin         spinner.Model
+	status       string
+	err          string
+	loading      bool
+	attachID     string
+	quitting     bool
+	agents       []string // available TTY agents
+	agentIdx     int
 	currentAgent string
+	workspaces   []string // allowlisted cwd paths
+	wsIdx        int
+	currentCwd   string
 }
 
 type sessionsMsg struct {
@@ -60,6 +65,11 @@ type sessionsMsg struct {
 type agentsMsg struct {
 	names []string
 	err   error
+}
+type workspacesMsg struct {
+	paths   []string
+	defPath string
+	err     error
 }
 type createdMsg struct {
 	id  string
@@ -85,7 +95,7 @@ func New(cfg Config) model {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	l := list.New([]list.Item{}, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "local-agents · remote TTY"
+	l.Title = "agents · remote TTY"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = titleStyle
@@ -97,17 +107,18 @@ func New(cfg Config) model {
 		loading:      true,
 		status:       "loading…",
 		currentAgent: cfg.DefaultAgent,
+		currentCwd:   cfg.DefaultCwd,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spin.Tick, fetchSessions(m.cfg), fetchAgents(m.cfg))
+	return tea.Batch(m.spin.Tick, fetchSessions(m.cfg), fetchAgents(m.cfg), fetchWorkspaces(m.cfg))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		h := msg.Height - 5
+		h := msg.Height - 6
 		if h < 5 {
 			h = 5
 		}
@@ -132,7 +143,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items[i] = msg.items[i]
 		}
 		m.list.SetItems(items)
-		m.status = fmt.Sprintf("%d sessions · agent=%s · cwd=%s", len(msg.items), m.currentAgent, m.cfg.DefaultCwd)
+		m.status = fmt.Sprintf("%d sessions · agent=%s · cwd=%s", len(msg.items), m.currentAgent, m.currentCwd)
 		return m, nil
 
 	case agentsMsg:
@@ -162,6 +173,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.agentIdx = 0
 			}
 		}
+		return m, nil
+
+	case workspacesMsg:
+		if msg.err != nil {
+			return m, nil
+		}
+		m.workspaces = msg.paths
+		if len(m.workspaces) == 0 {
+			return m, nil
+		}
+		// prefer cfg default / server default if present
+		want := m.currentCwd
+		if want == "" || want == "." {
+			if msg.defPath != "" {
+				want = msg.defPath
+			}
+		}
+		found := false
+		for i, p := range m.workspaces {
+			if p == want {
+				m.wsIdx = i
+				m.currentCwd = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			// keep current if it was explicit; else first workspace
+			if m.currentCwd == "" || m.currentCwd == "." {
+				m.wsIdx = 0
+				m.currentCwd = m.workspaces[0]
+			}
+		}
+		m.status = fmt.Sprintf("cwd → %s", m.currentCwd)
 		return m, nil
 
 	case createdMsg:
@@ -211,8 +256,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "n":
 			m.loading = true
-			m.status = "creating " + m.currentAgent + "…"
-			return m, createSession(m.cfg, m.cfg.DefaultCwd, m.currentAgent)
+			m.status = fmt.Sprintf("creating %s in %s…", m.currentAgent, m.currentCwd)
+			return m, createSession(m.cfg, m.currentCwd, m.currentAgent)
 		case "a", "tab":
 			// cycle agent
 			if len(m.agents) == 0 {
@@ -222,6 +267,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentIdx = (m.agentIdx + 1) % len(m.agents)
 			m.currentAgent = m.agents[m.agentIdx]
 			m.status = fmt.Sprintf("agent → %s  (press n to start)", m.currentAgent)
+			m.err = ""
+			return m, nil
+		case "w", "W":
+			// cycle workspace / cwd
+			if len(m.workspaces) == 0 {
+				m.err = "no workspaces loaded yet"
+				return m, fetchWorkspaces(m.cfg)
+			}
+			m.wsIdx = (m.wsIdx + 1) % len(m.workspaces)
+			m.currentCwd = m.workspaces[m.wsIdx]
+			m.status = fmt.Sprintf("cwd → %s  (press n to start)", m.currentCwd)
 			m.err = ""
 			return m, nil
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
@@ -234,12 +290,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.agentIdx = idx
 				m.currentAgent = m.agents[idx]
 				m.loading = true
-				m.status = "creating " + m.currentAgent + "…"
-				return m, createSession(m.cfg, m.cfg.DefaultCwd, m.currentAgent)
+				m.status = fmt.Sprintf("creating %s in %s…", m.currentAgent, m.currentCwd)
+				return m, createSession(m.cfg, m.currentCwd, m.currentAgent)
 			}
 		case "r":
 			m.loading = true
-			return m, tea.Batch(fetchSessions(m.cfg), fetchAgents(m.cfg))
+			return m, tea.Batch(fetchSessions(m.cfg), fetchAgents(m.cfg), fetchWorkspaces(m.cfg))
 		case "x", "d":
 			if it, ok := m.list.SelectedItem().(sessionItem); ok {
 				m.loading = true
@@ -260,7 +316,7 @@ func (m model) View() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(" local-agents ") + helpStyle.Render(" full PTY · no SSH ") + "\n")
+	b.WriteString(titleStyle.Render(" agents ") + helpStyle.Render(" full PTY · no SSH ") + "\n")
 	agentLine := "agent: " + okStyle.Render(m.currentAgent)
 	if len(m.agents) > 0 {
 		var parts []string
@@ -274,6 +330,16 @@ func (m model) View() string {
 		agentLine += "  " + helpStyle.Render("["+strings.Join(parts, " ")+"]")
 	}
 	b.WriteString(agentLine + "\n")
+	cwdLine := "cwd:   " + okStyle.Render(m.currentCwd)
+	if len(m.workspaces) > 1 {
+		// show a short neighbour preview
+		prev := m.workspaces[(m.wsIdx-1+len(m.workspaces))%len(m.workspaces)]
+		next := m.workspaces[(m.wsIdx+1)%len(m.workspaces)]
+		cwdLine += "  " + helpStyle.Render(fmt.Sprintf("(w cycle · %d · …%s | %s…)", len(m.workspaces), shortPath(prev), shortPath(next)))
+	} else if len(m.workspaces) == 1 {
+		cwdLine += "  " + helpStyle.Render("(1 workspace)")
+	}
+	b.WriteString(cwdLine + "\n")
 	if m.loading {
 		b.WriteString(m.spin.View() + " " + m.status + "\n")
 	} else {
@@ -283,8 +349,15 @@ func (m model) View() string {
 		b.WriteString(errStyle.Render("✗ "+m.err) + "\n")
 	}
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + helpStyle.Render("enter open · n new · a/tab cycle agent · 1-9 quick start · x kill · r refresh · q quit"))
+	b.WriteString("\n" + helpStyle.Render("enter open · n new · a/tab agent · w cwd · 1-9 quick start · x kill · r refresh · q quit"))
 	return b.String()
+}
+
+func shortPath(p string) string {
+	if len(p) <= 18 {
+		return p
+	}
+	return "…" + p[len(p)-16:]
 }
 
 // Run launches the session picker TUI; on selection, attaches full remote PTY.
@@ -338,6 +411,37 @@ func fetchAgents(cfg Config) tea.Cmd {
 			return agentsMsg{names: []string{"claude", "grok", "codex", "opencode", "cursor"}}
 		}
 		return agentsMsg{names: out.Available}
+	}
+}
+
+func fetchWorkspaces(cfg Config) tea.Cmd {
+	return func() tea.Msg {
+		var out struct {
+			Default    string `json:"default_cwd"`
+			Workspaces []struct {
+				Path    string `json:"path"`
+				Default bool   `json:"default"`
+			} `json:"workspaces"`
+		}
+		if err := apiGet(cfg, "/v1/workspaces", &out); err != nil {
+			// fallback: only configured default
+			return workspacesMsg{paths: []string{cfg.DefaultCwd}, defPath: cfg.DefaultCwd}
+		}
+		paths := make([]string, 0, len(out.Workspaces))
+		def := out.Default
+		if def == "" {
+			def = cfg.DefaultCwd
+		}
+		for _, w := range out.Workspaces {
+			paths = append(paths, w.Path)
+			if w.Default {
+				def = w.Path
+			}
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		return workspacesMsg{paths: paths, defPath: def}
 	}
 }
 

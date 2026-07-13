@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-07-13
+
+### Added
+
+- **Default CLI UX:** bare `agentsctl` (no subcommand) opens the TUI session picker
+- **TUI workspace picker:** press `w` to cycle allowlisted cwds from `/v1/workspaces`
+- **PTY reconnect:** client auto-reconnects with status banner after transient drops; mutual keepalive pings
+- **Non-root install:** `deploy/agentsd.user.service` + docs for systemd user units under `$HOME`
+- **CI integration test:** `go test -tags=integration` for tmux + mock agent session create/list/kill
+- Release tarballs named `agents_${ver}_${os}_${arch}.tar.gz` (legacy `local-agents_*` still published)
+
+### Changed
+
+- TUI help/status shows agent + cwd; quick-start uses selected workspace
+- INSTALL.md prefers non-root layout
+
 ## [0.1.2] — 2026-07-13
 
 ### Added

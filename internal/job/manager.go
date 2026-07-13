@@ -24,14 +24,14 @@ type Manager struct {
 	store *Store
 	log   *slog.Logger
 
-	mu       sync.Mutex
-	running  int
-	cancels  map[string]context.CancelFunc
-	subs     map[string]map[chan string]struct{} // job id -> log subscribers
-	wake     chan struct{}
-	queue    []string // job ids
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	mu      sync.Mutex
+	running int
+	cancels map[string]context.CancelFunc
+	subs    map[string]map[chan string]struct{} // job id -> log subscribers
+	wake    chan struct{}
+	queue   []string // job ids
+	stop    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewManager(cfg *config.Config, store *Store, log *slog.Logger) *Manager {
@@ -191,8 +191,8 @@ func (m *Manager) Confirm(id, token string) (*Job, error) {
 	return j, nil
 }
 
-func (m *Manager) Get(id string) (*Job, error) { return m.store.Get(id) }
-func (m *Manager) List(limit int) ([]*Job, error) { return m.store.List(limit) }
+func (m *Manager) Get(id string) (*Job, error)       { return m.store.Get(id) }
+func (m *Manager) List(limit int) ([]*Job, error)    { return m.store.List(limit) }
 func (m *Manager) ReadLog(id string) ([]byte, error) { return m.store.ReadLog(id) }
 
 func (m *Manager) Cancel(id string) (*Job, error) {

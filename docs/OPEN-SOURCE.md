@@ -7,7 +7,7 @@
 | Core idea | ★★★★★ | Clear, useful, differentiated (remote PTY for agent CLIs) |
 | Works for single-admin host | ★★★★☆ | Proven on a dedicated box |
 | Docs for strangers | ★★★★☆ | README / INSTALL / SECURITY after overhaul |
-| Tests | ★★★☆☆ | Auth, pathallow, redact; PTY still integration-manual |
+| Tests | ★★★★☆ | Auth, pathallow, redact; CI integration (tmux + mock session) |
 | Packaging | ★★★☆☆ | CI + tag release workflow; no apt/brew yet |
 | Multi-user security | ★★☆☆☆ | Shared token, often root — document, don’t claim SaaS-ready |
 | Polish | ★★★☆☆ | CLI/TUI good enough for v0.1 |
@@ -47,6 +47,6 @@ Ship when:
 ## What to improve after v0.1
 
 - Non-root packaging defaults  
-- Integration test with `tmux` + mock agent in CI  
+- ~~Integration test with `tmux` + mock agent in CI~~ (done in v0.2.0) 
 - Homebrew / `go install` one-liners  
 - Optional stronger auth (mTLS, Tailscale whois)  

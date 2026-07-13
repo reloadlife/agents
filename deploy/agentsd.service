@@ -1,5 +1,10 @@
+# System-wide unit. Prefer non-root: deploy/agentsd.user.service
+#
+# If you must use system systemd, set User=/Group= to a dedicated account
+# and point Environment/PATH/WorkingDirectory at that user's home.
+
 [Unit]
-Description=local-agents control plane (agentsd)
+Description=agents control plane (agentsd)
 After=network-online.target xvfb.service
 Wants=network-online.target
 # Start virtual display when available (headed Playwright)
@@ -7,7 +12,7 @@ Wants=xvfb.service
 
 [Service]
 Type=simple
-# Prefer a dedicated user in production:
+# Uncomment and set for production (do not run as root if avoidable):
 # User=agents
 # Group=agents
 EnvironmentFile=-/etc/agentsd/env
