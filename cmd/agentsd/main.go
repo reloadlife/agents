@@ -43,7 +43,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `agentsd — local-agents control plane daemon
+	fmt.Fprintf(os.Stderr, `agentsd — agents control plane daemon
 
 Usage:
   agentsd serve --config PATH
@@ -51,6 +51,8 @@ Usage:
 
 Env:
   AGENTSD_TOKEN   bearer token (or name from config auth.bearer_env)
+
+Docs: https://github.com/reloadlife/agents
 `)
 }
 

@@ -38,12 +38,10 @@ type Manager struct {
 }
 
 func New(cfg *config.Config) *Manager {
-	// Prefer compose next to binary's workspace or common install paths
+	// Prefer compose next to workspace checkout or cwd
 	candidates := []string{
-		filepath.Join(cfg.WorkspaceRoot, "local-agents", "deploy", "docker-compose.playwright.yml"),
 		filepath.Join(cfg.WorkspaceRoot, "agents", "deploy", "docker-compose.playwright.yml"),
-		"/root/workspace/local-agents/deploy/docker-compose.playwright.yml",
-		"/root/workspace/agents/deploy/docker-compose.playwright.yml",
+		filepath.Join(cfg.WorkspaceRoot, "local-agents", "deploy", "docker-compose.playwright.yml"), // legacy checkout name
 		"deploy/docker-compose.playwright.yml",
 	}
 	// also walk from cwd

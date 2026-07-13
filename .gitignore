@@ -23,6 +23,10 @@ config.local.toml
 agentsctl.local.toml
 config.toml
 !config.example.toml
+# never commit host-specific production configs
+deploy/*.personal
+deploy/*personal*
+**/config.agents.toml.personal
 
 # IDE / OS
 .idea/

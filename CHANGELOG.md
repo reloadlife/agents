@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-07-13
+
+### Changed
+
+- Project naming aligned to **agents** (`reloadlife/agents`); README/SECURITY/NOTICE/help text
+- `scripts/install.sh` installs from GitHub **release tarballs** (source build fallback)
+- Example configs use generic paths only; personal host config removed from tree
+- SSH snippet uses placeholders (no real LAN IP)
+- OPEN-SOURCE.md refreshed for v0.2.x public preview status
+- systemd `WorkingDirectory` → `/var/lib/agents`
+
+### Security
+
+- Scrubbed personal host paths/IPs from committed examples
+
 ## [0.2.0] — 2026-07-13
 
 ### Added

@@ -1,27 +1,26 @@
 # Install & deploy
 
+## Quick install (prebuilt)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
+# → ~/.local/bin/{agentsd,agentsctl}
+# pin a tag:  VERSION=v0.2.0 bash …
+# force build: SOURCE=1 bash …
+```
+
+Release assets: `agents_${ver}_${os}_${arch}.tar.gz` on
+[GitHub Releases](https://github.com/reloadlife/agents/releases)
+(legacy `local-agents_*` names still published for older scripts).
+
 ## From source
 
 ```bash
 git clone https://github.com/reloadlife/agents.git
-cd agents   # or local-agents
+cd agents
 make test && make build
 make install   # → ~/.local/bin (non-root)
 # or: sudo install -m 755 bin/agentsd bin/agentsctl /usr/local/bin/
-```
-
-Or release tarballs (from GitHub Releases):
-
-```bash
-# agents_v0.2.0_linux_amd64.tar.gz  (also local-agents_* alias)
-tar xzf agents_v*.tar.gz
-install -m 755 agents_*/agentsd agents_*/agentsctl ~/.local/bin/
-```
-
-Or:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
 ```
 
 ## Non-root install (recommended)

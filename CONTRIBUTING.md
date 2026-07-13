@@ -4,12 +4,13 @@ Thanks for considering a contribution.
 
 ## Development
 
-**Requirements:** Go 1.22+, `tmux` (for session tests on a real host).
+**Requirements:** Go 1.22+, `tmux` (for integration tests).
 
 ```bash
 git clone https://github.com/reloadlife/agents.git
-cd local-agents
+cd agents
 make test
+make test-integration   # needs tmux
 make build
 ```
 
@@ -28,6 +29,7 @@ export AGENTSD_TOKEN=dev-token
 - `gofmt` / `go vet` clean
 - Prefer small packages under `internal/`
 - No secrets in the repo; use env vars and example configs only
+- No personal host IPs or production tokens in docs/examples
 
 ## License
 
@@ -44,7 +46,7 @@ By contributing, you agree that your contributions are licensed under the
 ## Feature ideas that fit
 
 - Better multi-agent picker UX
-- Non-root install defaults
+- Homebrew packaging
 - Optional mTLS / Tailscale identity auth
 - Structured metrics / Prometheus
 - Session recording (with clear privacy docs)

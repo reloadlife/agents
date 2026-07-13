@@ -1,52 +1,49 @@
-# Open-source readiness
+# Open-source status
 
-## Honest scorecard (now)
+Project: **[reloadlife/agents](https://github.com/reloadlife/agents)**  
+Current line: **v0.2.x** (public preview)
+
+## Scorecard
 
 | Area | Score | Notes |
 |------|-------|--------|
-| Core idea | ★★★★★ | Clear, useful, differentiated (remote PTY for agent CLIs) |
-| Works for single-admin host | ★★★★☆ | Proven on a dedicated box |
-| Docs for strangers | ★★★★☆ | README / INSTALL / SECURITY after overhaul |
-| Tests | ★★★★☆ | Auth, pathallow, redact; CI integration (tmux + mock session) |
-| Packaging | ★★★☆☆ | CI + tag release workflow; no apt/brew yet |
-| Multi-user security | ★★☆☆☆ | Shared token, often root — document, don’t claim SaaS-ready |
-| Polish | ★★★☆☆ | CLI/TUI good enough for v0.1 |
+| Core idea | ★★★★★ | Remote PTY for interactive agent CLIs |
+| Single-admin host | ★★★★☆ | Works on a dedicated agent box |
+| Docs | ★★★★☆ | README, INSTALL (non-root), SECURITY, PLAYWRIGHT |
+| Tests | ★★★★☆ | Unit + CI integration (`tmux` + mock session) |
+| Packaging | ★★★★☆ | Multi-arch release tarballs + `scripts/install.sh` |
+| Multi-user security | ★★☆☆☆ | Shared bearer token — not multi-tenant SaaS |
+| Polish | ★★★★☆ | Default TUI, workspace picker, PTY reconnect |
 
-**Verdict:** Ready for a **public `v0.1.0` preview** (“works for a personal/team agent box”), **not** for “production multi-tenant platform” claims.
+**Verdict:** Fine for a **personal or small-team agent box**. Do **not** claim production multi-tenant isolation.
 
-## Before you press publish
+## Shipped checklist
 
-1. **Repo**
-   - Create `github.com/reloadlife/agents` (private → public when ready)
-   - First commit of this tree
-   - Push `main`
-2. **Secrets hygiene**
-   - Ensure no real tokens in git history (client configs are gitignored)
-   - Rotate `AGENTSD_TOKEN` if it ever appeared in chat logs
-3. **Tag**
-   - `git tag v0.1.0 && git push --tags` → release workflow builds multi-arch tarballs
-4. **README social proof**
-   - Screenshots of `agentsctl status` / `tui` (optional)
-   - Short demo GIF of PTY attach
-5. **Positioning**
-   - Title: *Remote TTY control plane for AI coding agents*
-   - Avoid overclaiming isolation / multi-tenancy
+- [x] AGPL-3.0 + SECURITY.md + CONTRIBUTING  
+- [x] Public repo `github.com/reloadlife/agents`  
+- [x] CI (vet, unit, integration, build)  
+- [x] Tagged releases with `agents_${ver}_${os}_${arch}.tar.gz`  
+- [x] Non-root install path (`deploy/agentsd.user.service`, INSTALL.md)  
+- [x] Generic examples only (no personal LAN/host configs in tree)  
+- [ ] Dogfood v0.2+ for a week without daily breakage  
+- [ ] One external install-from-docs success  
 
-## What “good enough” means
+## Hygiene
 
-Ship when:
+- Never commit real `AGENTSD_TOKEN` values (client/server env gitignored)
+- Prefer `listen = "127.0.0.1:8787"` + Tailscale / tunnel; not raw public `0.0.0.0`
+- Personal host configs stay **out of git** (use local `config.toml` / `config.local.toml`)
 
-- [x] AGPL-3.0 license  
-- [x] Security policy  
-- [x] CI green on PR  
-- [x] Install docs without your LAN IPs as the only story  
-- [x] `make test && make build` works on a clean clone  
-- [ ] You’ve used it yourself for a week without daily breakage  
-- [ ] One external friend can install from docs alone  
+## Next (not blockers)
 
-## What to improve after v0.1
+1. Dogfood on a real agent host with v0.2.x  
+2. Homebrew tap (optional)  
+3. Stronger auth options (mTLS, Tailscale whois)  
+4. Multi-user isolation (design first)  
+5. Session recording (privacy docs required)  
 
-- Non-root packaging defaults  
-- ~~Integration test with `tmux` + mock agent in CI~~ (done in v0.2.0) 
-- Homebrew / `go install` one-liners  
-- Optional stronger auth (mTLS, Tailscale whois)  
+## Positioning
+
+> **Remote TTY control plane for AI coding agents**
+
+Interactive subscription UIs on a server; full PTY on your laptop. Not a SaaS, not multi-tenant.

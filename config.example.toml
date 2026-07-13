@@ -1,4 +1,5 @@
-# agentsd example config — copy to config.toml or /etc/agentsd/config.toml
+# agentsd example config — copy to config.toml or ~/.config/agentsd/config.toml
+# See also: deploy/config.server.example.toml
 
 listen = "127.0.0.1:8787"
 jobs_dir = "./.jobs"
@@ -61,13 +62,11 @@ args = ["mock-agent:"]
 print_args = ["mock-agent:"]
 
 [allow]
+# Paths relative to workspace_root — keep this tight on shared hosts
 paths = [
-  "DollarChande",
-  "reloadlife/*",
-  "mamaru/*",
-  "agents-remote",
-  "local-agents",
   ".",
+  # "my-repo",
+  # "my-repo/**",
 ]
 
 [caps]
@@ -76,4 +75,5 @@ elevated = ["git_push", "gh_pr", "kubectl_write", "shell_raw"]
 
 [status]
 gke_context = ""
-opendray_url = "http://127.0.0.1:8770"
+# optional HTTP probe for status panel
+opendray_url = ""

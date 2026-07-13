@@ -26,7 +26,7 @@ const (
 
 // Attach connects to agentsd PTY websocket and bridges the local terminal (full TTY).
 // On transient disconnects it reconnects with a short status banner (session keeps running).
-// baseURL like http://192.168.20.6:8787 , sessionID like s_01...
+// baseURL like http://127.0.0.1:8787 , sessionID like s_01...
 func Attach(baseURL, token, sessionID string) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf("stdin is not a terminal — run from a real TTY")

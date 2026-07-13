@@ -1,4 +1,4 @@
-# local-agents
+# agents
 
 **Remote control plane for AI coding CLIs** — run Claude Code, Grok, Codex, OpenCode, or Cursor Agent on a server and use them from your laptop with a **full terminal (PTY)** over the network.
 
@@ -19,31 +19,48 @@ No SSH required for day-to-day use (SSH remains an optional fallback).
 | **`agentsd`** | Daemon: HTTP API, session supervisor, PTY WebSocket |
 | **`agentsctl`** | CLI + TUI client |
 
-> **Status:** early public preview (`v0.x`). Useful today for a dedicated “agent box”; not multi-tenant hardened yet. See [SECURITY.md](SECURITY.md).
+> **Status:** early public preview (`v0.2.x`). Useful today for a dedicated “agent box”; not multi-tenant hardened yet. See [SECURITY.md](SECURITY.md).
 
 ## Why
 
 Interactive agent tools want a real TTY (subscription login, full UI). Headless `-p` / print modes often burn **API credits** and feel different.
 
-`local-agents` keeps the agent **interactive on the server** and streams the TTY to your machine:
+**agents** keeps the agent **interactive on the server** and streams the TTY to your machine:
 
 | Mode | Command | Billing / feel |
 |------|---------|----------------|
-| **TTY (default)** | `session start` / `tui` | Subscription UIs; you drive the agent |
+| **TTY (default)** | `session start` / `agentsctl` | Subscription UIs; you drive the agent |
 | **Print (opt-in)** | `agentsctl run …` | May use API credits — avoid for normal use |
+
+## Install
+
+### Prebuilt binaries (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
+# → ~/.local/bin/agentsd  ~/.local/bin/agentsctl
+# pin: VERSION=v0.2.0 bash …
+# force source build: SOURCE=1 bash …
+```
+
+Or grab `agents_${ver}_${os}_${arch}.tar.gz` from [Releases](https://github.com/reloadlife/agents/releases).
+
+### From source
+
+```bash
+git clone https://github.com/reloadlife/agents.git
+cd agents
+make build && make install   # → ~/.local/bin
+```
 
 ## Quick start
 
 ### 1. Server (machine with the agent CLIs + `tmux`)
 
 ```bash
-# build
-git clone https://github.com/reloadlife/agents.git
-cd agents
-make build && make install   # → ~/.local/bin (non-root)
-
-# config (user)
+# config (user / non-root)
 mkdir -p ~/.config/agentsd ~/.local/share/agents
+# copy config.example.toml from the repo or a release tarball
 cp config.example.toml ~/.config/agentsd/config.toml
 # edit workspace_root, allow paths, agents
 
@@ -59,12 +76,12 @@ cp deploy/agentsd.user.service ~/.config/systemd/user/agentsd.service
 systemctl --user daemon-reload && systemctl --user enable --now agentsd
 ```
 
-Requirements on the server: **Go** (to build), **tmux**, and whichever CLIs you want (`claude`, `grok`, `codex`, `opencode`, `cursor-agent`).
+Requirements on the server: **tmux**, and whichever CLIs you want (`claude`, `grok`, `codex`, `opencode`, `cursor-agent`). Go is only needed to build from source.
 
 ### 2. Client (your laptop)
 
 ```bash
-make build && make install   # → ~/.local/bin
+# install agentsctl (same install.sh or make install)
 
 agentsctl config init
 # edit ~/.config/agentsctl/config.toml:
@@ -117,7 +134,7 @@ Auth: `Authorization: Bearer <token>` on all `/v1/*` routes (including WebSocket
 | File | Purpose |
 |------|---------|
 | Server `config.toml` | listen, workspace, allowlist, agent binaries — see [config.example.toml](config.example.toml) |
-| `/etc/agentsd/env` | `AGENTSD_TOKEN=…` |
+| `~/.config/agentsd/env` or `/etc/agentsd/env` | `AGENTSD_TOKEN=…` |
 | `~/.config/agentsctl/config.toml` | client `url`, `token` — `agentsctl config init` |
 
 Important server keys:
@@ -159,6 +176,7 @@ See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions + PTY work |
 | [docs/INSTALL.md](docs/INSTALL.md) | Install & deploy |
 | [docs/REMOTE-TTY.md](docs/REMOTE-TTY.md) | Client remote TTY guide |
+| [docs/OPEN-SOURCE.md](docs/OPEN-SOURCE.md) | Public preview status |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev workflow |
 | [CHANGELOG.md](CHANGELOG.md) | Changes |
 
@@ -175,15 +193,17 @@ internal/
   job/                optional print-job queue
   pathallow/          workspace allowlist
   auth/               bearer middleware
-deploy/               systemd + example server config
-scripts/install.sh    from-source installer
+deploy/               systemd (user + system) + example configs
+scripts/install.sh    release-tarball installer (source fallback)
 ```
 
 ## Roadmap (honest)
 
 - [x] Multi-agent interactive sessions + remote PTY  
-- [x] CLI status / agents catalog / TUI  
-- [ ] First-class non-root install & packaging  
+- [x] CLI status / agents catalog / TUI defaults  
+- [x] Non-root install docs + user systemd unit  
+- [x] CI integration test (tmux + mock)  
+- [ ] Homebrew packaging  
 - [ ] Optional Tailscale / CF Access identity (beyond shared token)  
 - [ ] Multi-user isolation  
 - [ ] Session recording (opt-in, documented privacy)  

@@ -1,14 +1,14 @@
-# Add to ~/.ssh/config on your Mac (client)
+# Add to ~/.ssh/config on your client (only needed for --ssh fallback)
 
 Host agents
-  HostName 192.168.20.6
-  User root
+  HostName YOUR_AGENT_HOST   # LAN IP, Tailscale name, or MagicDNS
+  User YOUR_USER
   # IdentityFile ~/.ssh/id_ed25519
   ForwardAgent no
   ServerAliveInterval 30
   ServerAliveCountMax 4
 
-# Optional: Tailscale MagicDNS name when off-LAN
+# Optional: Tailscale MagicDNS when off-LAN
 # Host agents-ts
-#   HostName agents   # or 100.x.y.z
-#   User root
+#   HostName agents.tailnet-name.ts.net
+#   User YOUR_USER

@@ -1,8 +1,8 @@
 # Example production server config — copy to /etc/agentsd/config.toml
-# Customize paths for your host and user.
+# or ~/.config/agentsd/config.toml (non-root). Customize paths for your host.
 
 listen = "127.0.0.1:8787"
-jobs_dir = "/var/lib/local-agents/jobs"
+jobs_dir = "/var/lib/agents/jobs"
 workspace_root = "/home/YOU/workspace"
 default_cwd = "."
 max_concurrent_jobs = 1

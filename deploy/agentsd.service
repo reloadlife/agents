@@ -21,7 +21,7 @@ Environment=DISPLAY=:99
 Environment=USE_GKE_GCLOUD_AUTH_PLUGIN=True
 Environment=CLOUDSDK_CORE_DISABLE_PROMPTS=1
 Environment=PATH=/root/.local/bin:/root/.grok/bin:/root/.opencode/bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=/var/lib/local-agents
+WorkingDirectory=/var/lib/agents
 ExecStart=/usr/local/bin/agentsd serve --config /etc/agentsd/config.toml
 Restart=on-failure
 RestartSec=3

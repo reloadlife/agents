@@ -13,7 +13,7 @@ import (
 type Config struct {
 	URL   string `toml:"url"`
 	Token string `toml:"token"`
-	// SSHHost used when attaching remotely, e.g. "agents" or "root@192.168.20.6"
+	// SSHHost used when attaching remotely, e.g. "agents" or "user@host"
 	SSHHost string `toml:"ssh_host"`
 	// PreferSSH: if true, always ssh attach even when URL is localhost
 	// (useful when agentsd is tunneled but tmux is only on the remote host)
