@@ -34,7 +34,7 @@ sudo systemctl enable --now xvfb
 [sessions]
 display = ":99"
 # optional: path to browser cache (default ~/.cache/ms-playwright)
-# playwright_browsers_path = "/root/.cache/ms-playwright"
+# playwright_browsers_path = "/home/YOU/.cache/ms-playwright"
 # optional: connect to containerized Playwright server
 # playwright_server = "ws://127.0.0.1:9333"
 

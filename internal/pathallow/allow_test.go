@@ -13,21 +13,21 @@ func TestResolveAllow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must("DollarChande")
-	must("reloadlife/mamad.dev")
-	must("mamaru/madcore")
+	must("my-app")
+	must("team/website")
+	must("org/service")
 
-	patterns := []string{"DollarChande", "reloadlife/*", "mamaru/*"}
+	patterns := []string{"my-app", "team/*", "org/*"}
 
-	abs, err := Resolve(root, "DollarChande", patterns)
+	abs, err := Resolve(root, "my-app", patterns)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(abs) != "DollarChande" {
+	if filepath.Base(abs) != "my-app" {
 		t.Fatalf("got %s", abs)
 	}
 
-	if _, err := Resolve(root, "reloadlife/mamad.dev", patterns); err != nil {
+	if _, err := Resolve(root, "team/website", patterns); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Resolve(root, "../etc", patterns); err == nil {
@@ -36,8 +36,8 @@ func TestResolveAllow(t *testing.T) {
 	if _, err := Resolve(root, "secret-stuff", patterns); err == nil {
 		t.Fatal("expected allowlist reject")
 	}
-	must("DollarChande/src")
-	if _, err := Resolve(root, "DollarChande/src", []string{"DollarChande"}); err != nil {
+	must("my-app/src")
+	if _, err := Resolve(root, "my-app/src", []string{"my-app"}); err != nil {
 		t.Fatal(err)
 	}
 	// "." allows everything under workspace
