@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Build multi-arch
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              out="local-agents_${ver}_${os}_${arch}"
+              mkdir -p "dist/${out}"
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${ver}" -o "dist/${out}/agentsd" ./cmd/agentsd
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${ver}" -o "dist/${out}/agentsctl" ./cmd/agentsctl
+              cp README.md LICENSE config.example.toml "dist/${out}/" 2>/dev/null || true
+              tar -C dist -czf "dist/${out}.tar.gz" "${out}"
+            done
+          done
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true

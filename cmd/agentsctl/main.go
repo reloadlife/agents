@@ -1,0 +1,884 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/reloadlife/agents/internal/clientpty"
+	"github.com/reloadlife/agents/internal/cliview"
+	"github.com/reloadlife/agents/internal/ctlconfig"
+	"github.com/reloadlife/agents/internal/doctor"
+	"github.com/reloadlife/agents/internal/tui"
+)
+
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+
+	args := os.Args[1:]
+	cfgPath := ""
+	urlOverride := ""
+	tokenOverride := ""
+	sshOverride := ""
+
+	// global flags
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "--config", "-C":
+			if len(args) < 2 {
+				fatal("missing value for %s", args[0])
+			}
+			cfgPath = args[1]
+			args = args[2:]
+		case "--url", "-u":
+			if len(args) < 2 {
+				fatal("missing value for %s", args[0])
+			}
+			urlOverride = args[1]
+			args = args[2:]
+		case "--token", "-t":
+			if len(args) < 2 {
+				fatal("missing value for %s", args[0])
+			}
+			tokenOverride = args[1]
+			args = args[2:]
+		case "--ssh", "--ssh-host":
+			if len(args) < 2 {
+				fatal("missing value for %s", args[0])
+			}
+			sshOverride = args[1]
+			args = args[2:]
+		case "--version", "-version":
+			fmt.Printf("agentsctl %s commit=%s date=%s\n", version, commit, date)
+			return
+		case "-h", "--help":
+			usage()
+			return
+		default:
+			goto cmd
+		}
+	}
+cmd:
+	if len(args) == 0 {
+		usage()
+		os.Exit(2)
+	}
+
+	// config subcommand before loading token requirement
+	if args[0] == "config" {
+		os.Exit(cmdConfig(args[1:], cfgPath))
+	}
+
+	cfg, err := ctlconfig.Load(cfgPath)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if urlOverride != "" {
+		cfg.URL = strings.TrimRight(urlOverride, "/")
+	}
+	if tokenOverride != "" {
+		cfg.Token = tokenOverride
+	}
+	if sshOverride != "" {
+		cfg.SSHHost = sshOverride
+	}
+
+	c := &client{base: cfg.URL, token: cfg.Token, hc: &http.Client{Timeout: 0}, cfg: cfg}
+
+	// allow: agentsctl status --json
+	cmdArgs := args[1:]
+	switch args[0] {
+	case "status":
+		os.Exit(cmdStatus(c, cmdArgs))
+	case "tui", "ui":
+		os.Exit(cmdTUI(c, cmdArgs))
+	case "agents":
+		os.Exit(cmdAgents(c, cmdArgs))
+	case "workspaces", "ws":
+		os.Exit(cmdWorkspaces(c, cmdArgs))
+	case "doctor":
+		os.Exit(cmdDoctor(c))
+	case "session", "sessions":
+		os.Exit(cmdSession(c, cmdArgs))
+	case "jobs":
+		os.Exit(cmdJobs(c, cmdArgs))
+	case "run":
+		fmt.Fprintln(os.Stderr, "warning: 'run' is print/API mode (may use credits). Prefer: agentsctl tui / session open")
+		os.Exit(cmdRun(c, cmdArgs))
+	case "logs":
+		os.Exit(cmdLogs(c, cmdArgs))
+	case "cancel":
+		os.Exit(cmdCancel(c, cmdArgs))
+	case "confirm":
+		os.Exit(cmdConfirm(c, cmdArgs))
+	case "get":
+		os.Exit(cmdGet(c, cmdArgs))
+	case "version":
+		fmt.Printf("agentsctl %s commit=%s date=%s\n", version, commit, date)
+	case "help":
+		usage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
+		usage()
+		os.Exit(2)
+	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, `agentsctl — CLI for agents (agentsd)
+
+Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
+  agentsctl tui                              # picker · a cycle agent · 1-9 start
+  agentsctl doctor                           # health check
+  agentsctl agents                           # list CLIs on server
+  agentsctl workspaces                       # list allowlisted cwds
+  agentsctl session start -a claude|grok|codex|opencode|cursor --open
+  agentsctl session open [SESSION_ID]
+  agentsctl session list | kill ID | prune
+
+Config: agentsctl config init|path|show
+Other:  agentsctl status | version
+
+Docs: https://github.com/reloadlife/agents
+`)
+}
+
+func cmdDoctor(c *client) int {
+	rep := doctor.Run(c.base, c.token)
+	for _, ch := range rep.Checks {
+		mark := "✓"
+		if !ch.OK {
+			mark = "✗"
+		}
+		fmt.Printf("%s %-14s  %s\n", mark, ch.Name, ch.Detail)
+	}
+	fmt.Println()
+	if rep.OK {
+		fmt.Println("ok —", rep.Summary)
+	} else {
+		fmt.Println("fail —", rep.Summary)
+		for _, h := range rep.Hints {
+			fmt.Println("  ·", h)
+		}
+		return 1
+	}
+	return 0
+}
+
+func cmdWorkspaces(c *client, args []string) int {
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			asJSON = true
+		}
+	}
+	res, err := c.do(http.MethodGet, "/v1/workspaces", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		fatal("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if asJSON {
+		var buf bytes.Buffer
+		_ = json.Indent(&buf, b, "", "  ")
+		fmt.Println(buf.String())
+		return 0
+	}
+	var out struct {
+		Root       string `json:"workspace_root"`
+		Default    string `json:"default_cwd"`
+		Workspaces []struct {
+			Path    string `json:"path"`
+			Default bool   `json:"default"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("root: %s  default: %s\n\n", out.Root, out.Default)
+	for _, w := range out.Workspaces {
+		mark := " "
+		if w.Default {
+			mark = "*"
+		}
+		fmt.Printf("  %s %s\n", mark, w.Path)
+	}
+	fmt.Println("\nuse: agentsctl session start -r <path> -a claude --open")
+	return 0
+}
+
+func cmdAgents(c *client, args []string) int {
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			asJSON = true
+		}
+	}
+	res, err := c.do(http.MethodGet, "/v1/agents", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		fatal("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if asJSON {
+		var buf bytes.Buffer
+		_ = json.Indent(&buf, b, "", "  ")
+		fmt.Println(buf.String())
+		return 0
+	}
+	var out struct {
+		Agents []struct {
+			Name      string `json:"name"`
+			Bin       string `json:"bin"`
+			Resolved  string `json:"resolved"`
+			Available bool   `json:"available"`
+			Note      string `json:"note"`
+		} `json:"agents"`
+		Available []string `json:"available"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("%-14s  %-10s  %-12s  %s\n", "NAME", "STATUS", "BIN", "NOTE")
+	for _, a := range out.Agents {
+		if a.Name == "mock" || a.Name == "cursor-agent" {
+			continue
+		}
+		st := "missing"
+		if a.Available {
+			st = "ok"
+		}
+		fmt.Printf("%-14s  %-10s  %-12s  %s\n", a.Name, st, a.Bin, a.Note)
+	}
+	fmt.Printf("\nstart: agentsctl session start -a <%s> --open\n", strings.Join(out.Available, "|"))
+	return 0
+}
+
+func cmdTUI(c *client, args []string) int {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	cwd := fs.String("r", ".", "default cwd for new sessions (. = workspace root)")
+	agentName := fs.String("a", "claude", "default agent for new sessions")
+	_ = fs.Parse(args)
+	err := tui.Run(tui.Config{
+		BaseURL:      c.base,
+		Token:        c.token,
+		DefaultCwd:   *cwd,
+		DefaultAgent: *agentName,
+	})
+	if err != nil {
+		fatal("%v", err)
+	}
+	return 0
+}
+
+func cmdConfig(args []string, cfgPath string) int {
+	if cfgPath == "" {
+		cfgPath = ctlconfig.DefaultPath()
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agentsctl config init|path|show")
+		return 2
+	}
+	switch args[0] {
+	case "init":
+		if err := ctlconfig.WriteExample(cfgPath); err != nil {
+			fatal("%v", err)
+		}
+		fmt.Printf("wrote %s\n", cfgPath)
+		fmt.Println("edit token/url/ssh_host, then: chmod 600", cfgPath)
+		return 0
+	case "path":
+		fmt.Println(cfgPath)
+		return 0
+	case "show":
+		cfg, err := ctlconfig.Load(cfgPath)
+		if err != nil {
+			fatal("%v", err)
+		}
+		tok := cfg.Token
+		if len(tok) > 6 {
+			tok = tok[:3] + "…" + tok[len(tok)-2:]
+		}
+		fmt.Printf("path:       %s\n", cfgPath)
+		fmt.Printf("url:        %s\n", cfg.URL)
+		fmt.Printf("token:      %s\n", tok)
+		fmt.Printf("ssh_host:   %s\n", cfg.SSHHost)
+		fmt.Printf("prefer_ssh: %v\n", cfg.PreferSSH)
+		fmt.Printf("local_api:  %v\n", cfg.IsLocalAPI())
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown config command: %s\n", args[0])
+		return 2
+	}
+}
+
+type client struct {
+	base  string
+	token string
+	hc    *http.Client
+	cfg   *ctlconfig.Config
+}
+
+func (c *client) do(method, path string, body any) (*http.Response, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, c.base+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return c.hc.Do(req)
+}
+
+func (c *client) json(method, path string, body any, out any) error {
+	res, err := c.do(method, path, body)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(b, out)
+}
+
+func cmdStatus(c *client, args []string) int {
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			asJSON = true
+		}
+	}
+	res, err := c.do(http.MethodGet, "/v1/status", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		fatal("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if asJSON {
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, b, "", "  "); err != nil {
+			os.Stdout.Write(b)
+			fmt.Println()
+			return 0
+		}
+		fmt.Println(buf.String())
+		return 0
+	}
+	if err := cliview.RenderStatus(os.Stdout, b, c.base); err != nil {
+		fatal("%v", err)
+	}
+	return 0
+}
+
+func cmdSession(c *client, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agentsctl session start|open|list|attach|kill|get ...")
+		return 2
+	}
+	switch args[0] {
+	case "start":
+		return cmdSessionStart(c, args[1:])
+	case "open", "o":
+		return cmdSessionOpen(c, args[1:])
+	case "list", "ls":
+		return cmdSessionList(c, args[1:])
+	case "attach", "a":
+		return cmdSessionAttachLocal(c, args[1:])
+	case "kill", "stop":
+		return cmdSessionKill(c, args[1:])
+	case "prune":
+		return cmdSessionPrune(c, args[1:])
+	case "get":
+		return cmdSessionGet(c, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown session command: %s\n", args[0])
+		return 2
+	}
+}
+
+func cmdSessionPrune(c *client, args []string) int {
+	fs := flag.NewFlagSet("session prune", flag.ExitOnError)
+	maxAge := fs.String("max-age", "", "only remove non-running older than this (e.g. 24h); empty = all stopped")
+	_ = fs.Parse(args)
+	body := map[string]any{}
+	if *maxAge != "" {
+		body["max_age"] = *maxAge
+	}
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/sessions/prune", body, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("removed %v stopped session(s)\n", out["removed"])
+	return 0
+}
+
+func cmdSessionStart(c *client, args []string) int {
+	fs := flag.NewFlagSet("session start", flag.ExitOnError)
+	repo := fs.String("r", ".", "repo/cwd relative to workspace (. = workspace root)")
+	agentName := fs.String("a", "claude", "agent (default claude interactive TTY)")
+	name := fs.String("name", "", "optional label")
+	doOpen := fs.Bool("open", false, "open full PTY immediately after start")
+	doAttach := fs.Bool("attach", false, "same as --open")
+	useSSH := fs.Bool("ssh", false, "use SSH attach instead of WebSocket PTY")
+	_ = fs.Parse(args)
+	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+
+	body := map[string]any{
+		"agent":  *agentName,
+		"cwd":    *repo,
+		"mode":   "tty",
+		"name":   *name,
+		"prompt": prompt,
+	}
+	var sess map[string]any
+	if err := c.json(http.MethodPost, "/v1/sessions", body, &sess); err != nil {
+		fatal("%v", err)
+	}
+	printSessionSummary(sess)
+	if *doOpen || *doAttach {
+		fmt.Fprintln(os.Stderr, "tip: closing the PTY detaches only — session keeps running until session kill")
+		return openSession(c, sess, *useSSH)
+	}
+	id, _ := sess["id"].(string)
+	fmt.Printf("\nnext: agentsctl session open %s\n", id)
+	fmt.Println("(detach leaves session running; kill with: agentsctl session kill " + id + ")")
+	return 0
+}
+
+func printSessionSummary(sess map[string]any) {
+	id, _ := sess["id"].(string)
+	tmux, _ := sess["tmux"].(string)
+	pty, _ := sess["pty_path"].(string)
+	fmt.Printf("session %s  agent=%v  cwd=%v  mode=tty\n", id, sess["agent"], sess["cwd"])
+	fmt.Printf("tmux:   %s\n", tmux)
+	if pty != "" {
+		fmt.Printf("pty:    %s  (WebSocket full TTY)\n", pty)
+	}
+	fmt.Println("(subscription Claude — not API -p)")
+}
+
+func cmdSessionOpen(c *client, args []string) int {
+	fs := flag.NewFlagSet("session open", flag.ExitOnError)
+	useSSH := fs.Bool("ssh", false, "fallback: ssh -t tmux attach")
+	_ = fs.Parse(args)
+
+	id := ""
+	if fs.NArg() >= 1 {
+		id = fs.Arg(0)
+	}
+	var sess map[string]any
+	if id == "" {
+		var out struct {
+			Sessions []map[string]any `json:"sessions"`
+		}
+		if err := c.json(http.MethodGet, "/v1/sessions", nil, &out); err != nil {
+			fatal("%v", err)
+		}
+		for _, s := range out.Sessions {
+			if s["state"] == "running" {
+				sess = s
+				break
+			}
+		}
+		if sess == nil {
+			fatal("no running sessions — try: agentsctl tui   or   session start -r REPO -a claude --open")
+		}
+		id, _ = sess["id"].(string)
+		fmt.Fprintf(os.Stderr, "opening %s\n", id)
+	} else {
+		if err := c.json(http.MethodGet, "/v1/sessions/"+id, nil, &sess); err != nil {
+			fatal("%v", err)
+		}
+	}
+	return openSession(c, sess, *useSSH)
+}
+
+func openSession(c *client, sess map[string]any, forceSSH bool) int {
+	if st, _ := sess["state"].(string); st != "" && st != "running" {
+		fatal("session not running (state=%v)", sess["state"])
+	}
+	id, _ := sess["id"].(string)
+
+	if forceSSH {
+		tmux, _ := sess["tmux"].(string)
+		host := c.cfg.SSHHost
+		if host == "" {
+			host = "agents"
+		}
+		fmt.Fprintf(os.Stderr, "→ ssh -t %s -- tmux attach -t %s\n", host, tmux)
+		return execCmd([]string{"ssh", "-t", host, "--", "tmux", "attach", "-t", tmux})
+	}
+
+	// Default: full remote PTY over WebSocket (no SSH)
+	fmt.Fprintf(os.Stderr, "→ PTY %s/v1/sessions/%s/pty\n", c.base, id)
+	if err := clientpty.Attach(c.base, c.token, id); err != nil {
+		fatal("pty attach: %v\n(fallback: agentsctl session open %s --ssh)", err, id)
+	}
+	return 0
+}
+
+func formatCmd(parts []string) string {
+	var b strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if strings.ContainsAny(p, " \t") {
+			b.WriteString("'")
+			b.WriteString(p)
+			b.WriteString("'")
+		} else {
+			b.WriteString(p)
+		}
+	}
+	return b.String()
+}
+
+func execCmd(parts []string) int {
+	if len(parts) < 1 {
+		fatal("empty command")
+	}
+	bin, err := exec.LookPath(parts[0])
+	if err != nil {
+		fatal("%q not found in PATH: %v", parts[0], err)
+	}
+	// replace process for proper TTY
+	err = syscall.Exec(bin, parts, os.Environ())
+	if err != nil {
+		cmd := exec.Command(parts[0], parts[1:]...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fatal("exec failed: %v", err)
+		}
+	}
+	return 0
+}
+
+func cmdSessionList(c *client, args []string) int {
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			asJSON = true
+		}
+	}
+	res, err := c.do(http.MethodGet, "/v1/sessions", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		fatal("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if asJSON {
+		var buf bytes.Buffer
+		_ = json.Indent(&buf, b, "", "  ")
+		fmt.Println(buf.String())
+		return 0
+	}
+	if err := cliview.RenderSessionList(os.Stdout, b); err != nil {
+		fatal("%v", err)
+	}
+	return 0
+}
+
+func cmdSessionGet(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl session get SESSION_ID")
+	}
+	var s map[string]any
+	if err := c.json(http.MethodGet, "/v1/sessions/"+args[0], nil, &s); err != nil {
+		fatal("%v", err)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(s)
+	return 0
+}
+
+func cmdSessionAttachLocal(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl session attach SESSION_ID  (local tmux only; prefer: session open)")
+	}
+	var s map[string]any
+	if err := c.json(http.MethodGet, "/v1/sessions/"+args[0], nil, &s); err != nil {
+		fatal("%v", err)
+	}
+	attach, _ := s["attach"].(string)
+	if attach == "" {
+		fatal("no attach command")
+	}
+	fmt.Fprintln(os.Stderr, "note: local tmux attach — for remote use: agentsctl session open")
+	return execCmd(strings.Fields(attach))
+}
+
+func cmdSessionKill(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl session kill SESSION_ID")
+	}
+	var s map[string]any
+	if err := c.json(http.MethodPost, "/v1/sessions/"+args[0]+"/kill", map[string]any{}, &s); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("%s state=%v\n", s["id"], s["state"])
+	return 0
+}
+
+func cmdJobs(c *client, args []string) int {
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" || a == "-j" {
+			asJSON = true
+		}
+	}
+	var out struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := c.json(http.MethodGet, "/v1/jobs", nil, &out); err != nil {
+		fatal("%v", err)
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return 0
+	}
+	if len(out.Jobs) == 0 {
+		fmt.Println("no print jobs")
+		return 0
+	}
+	fmt.Printf("%-28s  %-12s  %-8s  %s\n", "ID", "STATE", "AGENT", "CWD")
+	for _, j := range out.Jobs {
+		fmt.Printf("%-28s  %-12v  %-8v  %v\n", j["id"], j["state"], j["agent"], j["cwd"])
+	}
+	return 0
+}
+
+func cmdGet(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl get JOB_ID")
+	}
+	var j map[string]any
+	if err := c.json(http.MethodGet, "/v1/jobs/"+args[0], nil, &j); err != nil {
+		fatal("%v", err)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(j)
+	return 0
+}
+
+func cmdRun(c *client, args []string) int {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	repo := fs.String("r", ".", "repo/cwd relative to workspace")
+	agentName := fs.String("a", "mock", "agent name")
+	follow := fs.Bool("follow", false, "follow SSE until done")
+	timeout := fs.String("timeout", "", "timeout duration e.g. 15m")
+	var caps multiFlag
+	fs.Var(&caps, "cap", "capability (repeatable)")
+	_ = fs.Parse(args)
+	prompt := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if prompt == "" {
+		fatal("prompt required")
+	}
+	body := map[string]any{
+		"prompt": prompt,
+		"agent":  *agentName,
+		"cwd":    *repo,
+		"caps":   []string(caps),
+	}
+	if *timeout != "" {
+		body["timeout"] = *timeout
+	}
+	var resp map[string]any
+	if err := c.json(http.MethodPost, "/v1/jobs", body, &resp); err != nil {
+		fatal("%v", err)
+	}
+	id, _ := resp["id"].(string)
+	fmt.Printf("job %s state=%v\n", id, resp["state"])
+	if tok, ok := resp["confirm_token"].(string); ok && tok != "" {
+		fmt.Printf("confirm_token: %s\n", tok)
+	}
+	if !*follow {
+		return 0
+	}
+	return followSSE(c, id)
+}
+
+func cmdLogs(c *client, args []string) int {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	follow := fs.Bool("f", false, "follow")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fatal("usage: agentsctl logs JOB_ID [-f]")
+	}
+	id := fs.Arg(0)
+	if *follow {
+		return followSSE(c, id)
+	}
+	res, err := c.do(http.MethodGet, "/v1/jobs/"+id+"/log", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		fatal("HTTP %d: %s", res.StatusCode, b)
+	}
+	_, _ = io.Copy(os.Stdout, res.Body)
+	return 0
+}
+
+func cmdCancel(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl cancel JOB_ID")
+	}
+	var j map[string]any
+	if err := c.json(http.MethodPost, "/v1/jobs/"+args[0]+"/cancel", map[string]any{}, &j); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("%s state=%v\n", j["id"], j["state"])
+	return 0
+}
+
+func cmdConfirm(c *client, args []string) int {
+	fs := flag.NewFlagSet("confirm", flag.ExitOnError)
+	tok := fs.String("token", "", "confirm token")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 || *tok == "" {
+		fatal("usage: agentsctl confirm JOB_ID --token TOKEN")
+	}
+	var j map[string]any
+	if err := c.json(http.MethodPost, "/v1/jobs/"+fs.Arg(0)+"/confirm", map[string]string{"token": *tok}, &j); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("%s state=%v\n", j["id"], j["state"])
+	return 0
+}
+
+func followSSE(c *client, id string) int {
+	hc := &http.Client{Timeout: 0}
+	req, err := http.NewRequest(http.MethodGet, c.base+"/v1/jobs/"+id+"/events", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	res, err := hc.Do(req)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		fatal("HTTP %d: %s", res.StatusCode, b)
+	}
+	sc := bufio.NewScanner(res.Body)
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 1024*1024)
+	var event string
+	exitCode := 0
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "event:") {
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			switch event {
+			case "log":
+				var m struct {
+					Line string `json:"line"`
+				}
+				_ = json.Unmarshal([]byte(data), &m)
+				fmt.Println(m.Line)
+			case "state":
+				var m struct {
+					State string `json:"state"`
+				}
+				_ = json.Unmarshal([]byte(data), &m)
+				fmt.Fprintf(os.Stderr, "[state] %s\n", m.State)
+			case "result":
+				var m struct {
+					ExitCode *int   `json:"exit_code"`
+					State    string `json:"state"`
+					Error    string `json:"error"`
+				}
+				_ = json.Unmarshal([]byte(data), &m)
+				fmt.Fprintf(os.Stderr, "[result] state=%s exit=%v err=%s\n", m.State, m.ExitCode, m.Error)
+				if m.ExitCode != nil {
+					exitCode = *m.ExitCode
+				} else if m.State != "succeeded" {
+					exitCode = 1
+				}
+				return exitCode
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		fatal("stream: %v", err)
+	}
+	return exitCode
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+func fatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
+
+var _ = time.Second

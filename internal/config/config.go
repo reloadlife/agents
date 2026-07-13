@@ -1,0 +1,160 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+type Config struct {
+	Listen             string                  `toml:"listen"`
+	JobsDir            string                  `toml:"jobs_dir"`
+	WorkspaceRoot      string                  `toml:"workspace_root"`
+	MaxConcurrentJobs  int                     `toml:"max_concurrent_jobs"`
+	DefaultTimeout     string                  `toml:"default_timeout"`
+	MaxTimeout         string                  `toml:"max_timeout"`
+	Auth               AuthConfig              `toml:"auth"`
+	Agents             map[string]AgentConfig  `toml:"agents"`
+	Allow              AllowConfig             `toml:"allow"`
+	Caps               CapsConfig              `toml:"caps"`
+	Status             StatusConfig            `toml:"status"`
+	Sessions           SessionsConfig          `toml:"sessions"`
+	// DefaultCwd used when client sends empty / "." and "." is not allowlisted.
+	DefaultCwd string `toml:"default_cwd"`
+
+	// resolved
+	DefaultTimeoutDur time.Duration `toml:"-"`
+	MaxTimeoutDur     time.Duration `toml:"-"`
+	Token             string        `toml:"-"`
+}
+
+type AuthConfig struct {
+	BearerEnv string `toml:"bearer_env"`
+}
+
+type AgentConfig struct {
+	Bin string `toml:"bin"`
+	// Args = interactive TTY launch (default for sessions). Empty for claude = plain `claude`.
+	Args []string `toml:"args"`
+	// PrintArgs = non-interactive / API print mode (jobs with mode=print only). e.g. ["-p"]
+	PrintArgs []string `toml:"print_args"`
+}
+
+type SessionsConfig struct {
+	// SSHHost shown in attach hints, e.g. "root@192.168.20.6" or "agents"
+	SSHHost string `toml:"ssh_host"`
+}
+
+type AllowConfig struct {
+	Paths []string `toml:"paths"`
+}
+
+type CapsConfig struct {
+	Default  []string `toml:"default"`
+	Elevated []string `toml:"elevated"`
+}
+
+type StatusConfig struct {
+	GKEContext  string `toml:"gke_context"`
+	OpenDrayURL string `toml:"opendray_url"`
+}
+
+func Load(path string) (*Config, error) {
+	var c Config
+	if _, err := toml.DecodeFile(path, &c); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	if err := c.normalize(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) normalize() error {
+	if c.Listen == "" {
+		c.Listen = "127.0.0.1:8787"
+	}
+	if c.JobsDir == "" {
+		c.JobsDir = "./.jobs"
+	}
+	if c.WorkspaceRoot == "" {
+		c.WorkspaceRoot = "."
+	}
+	if c.MaxConcurrentJobs <= 0 {
+		c.MaxConcurrentJobs = 1
+	}
+	if c.DefaultTimeout == "" {
+		c.DefaultTimeout = "30m"
+	}
+	if c.MaxTimeout == "" {
+		c.MaxTimeout = "2h"
+	}
+	if c.Auth.BearerEnv == "" {
+		c.Auth.BearerEnv = "AGENTSD_TOKEN"
+	}
+	if c.Agents == nil {
+		c.Agents = map[string]AgentConfig{}
+	}
+	if len(c.Caps.Default) == 0 {
+		c.Caps.Default = []string{"fs_read", "fs_write", "net_install"}
+	}
+	if len(c.Caps.Elevated) == 0 {
+		c.Caps.Elevated = []string{"git_push", "gh_pr", "kubectl_write", "shell_raw"}
+	}
+
+	var err error
+	c.DefaultTimeoutDur, err = time.ParseDuration(c.DefaultTimeout)
+	if err != nil {
+		return fmt.Errorf("default_timeout: %w", err)
+	}
+	c.MaxTimeoutDur, err = time.ParseDuration(c.MaxTimeout)
+	if err != nil {
+		return fmt.Errorf("max_timeout: %w", err)
+	}
+
+	root, err := filepath.Abs(c.WorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("workspace_root: %w", err)
+	}
+	c.WorkspaceRoot = root
+
+	jobs, err := filepath.Abs(c.JobsDir)
+	if err != nil {
+		return fmt.Errorf("jobs_dir: %w", err)
+	}
+	c.JobsDir = jobs
+
+	c.Token = strings.TrimSpace(os.Getenv(c.Auth.BearerEnv))
+	if c.Token == "" {
+		return fmt.Errorf("auth token empty: set env %s", c.Auth.BearerEnv)
+	}
+	return nil
+}
+
+// IsElevatedCap reports whether cap requires confirm.
+func (c *Config) IsElevatedCap(cap string) bool {
+	for _, e := range c.Caps.Elevated {
+		if e == cap {
+			return true
+		}
+	}
+	return false
+}
+
+// Agent returns agent config by name (case-insensitive key match on map key).
+func (c *Config) Agent(name string) (AgentConfig, bool) {
+	if a, ok := c.Agents[name]; ok {
+		return a, true
+	}
+	lower := strings.ToLower(name)
+	for k, a := range c.Agents {
+		if strings.ToLower(k) == lower {
+			return a, true
+		}
+	}
+	return AgentConfig{}, false
+}

@@ -1,0 +1,74 @@
+# agentsd example config — copy to config.toml or /etc/agentsd/config.toml
+
+listen = "127.0.0.1:8787"
+jobs_dir = "./.jobs"
+workspace_root = "."
+default_cwd = "." # workspace root
+max_concurrent_jobs = 1
+default_timeout = "30m"
+max_timeout = "2h"
+
+[auth]
+bearer_env = "AGENTSD_TOKEN"
+
+[sessions]
+# SSH Host alias for remote TTY (agentsctl session open).
+# Local dev: leave empty. Agents host: "agents" (see deploy/config.agents.toml)
+ssh_host = ""
+
+# --- Agents ---
+# Interactive TTY (default for `agentsctl session start`): uses Args only.
+# Print/API jobs (`agentsctl run`): uses PrintArgs — may burn API credits.
+
+[agents.claude]
+bin = "claude"
+args = []
+print_args = ["-p"]
+
+[agents.grok]
+bin = "grok"
+args = []
+print_args = []
+
+[agents.codex]
+bin = "codex"
+args = []
+print_args = ["exec"]
+
+[agents.opencode]
+bin = "opencode"
+args = []
+print_args = ["run"]
+
+[agents.cursor]
+bin = "cursor-agent"
+args = []
+print_args = ["-p"]
+
+[agents.cursor-agent]
+bin = "cursor-agent"
+args = []
+print_args = ["-p"]
+
+[agents.mock]
+bin = "echo"
+args = ["mock-agent:"]
+print_args = ["mock-agent:"]
+
+[allow]
+paths = [
+  "DollarChande",
+  "reloadlife/*",
+  "mamaru/*",
+  "agents-remote",
+  "local-agents",
+  ".",
+]
+
+[caps]
+default = ["fs_read", "fs_write", "net_install"]
+elevated = ["git_push", "gh_pr", "kubectl_write", "shell_raw"]
+
+[status]
+gke_context = ""
+opendray_url = "http://127.0.0.1:8770"

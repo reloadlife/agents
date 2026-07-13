@@ -1,0 +1,14 @@
+# Add to ~/.ssh/config on your Mac (client)
+
+Host agents
+  HostName 192.168.20.6
+  User root
+  # IdentityFile ~/.ssh/id_ed25519
+  ForwardAgent no
+  ServerAliveInterval 30
+  ServerAliveCountMax 4
+
+# Optional: Tailscale MagicDNS name when off-LAN
+# Host agents-ts
+#   HostName agents   # or 100.x.y.z
+#   User root

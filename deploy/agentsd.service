@@ -1,0 +1,25 @@
+[Unit]
+Description=local-agents control plane (agentsd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Prefer a dedicated user in production:
+# User=agents
+# Group=agents
+EnvironmentFile=-/etc/agentsd/env
+Environment=HOME=/root
+Environment=USE_GKE_GCLOUD_AUTH_PLUGIN=True
+Environment=CLOUDSDK_CORE_DISABLE_PROMPTS=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Extend PATH for tool installs under $HOME:
+# Environment=PATH=%h/.local/bin:%h/.grok/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/var/lib/local-agents
+ExecStart=/usr/local/bin/agentsd serve --config /etc/agentsd/config.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

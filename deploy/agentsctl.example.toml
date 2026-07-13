@@ -1,0 +1,9 @@
+# Client config — copy to ~/.config/agentsctl/config.toml (mode 600)
+#   agentsctl config init
+
+url = "http://127.0.0.1:8787"
+token = "replace-with-AGENTSD_TOKEN"
+
+# Only needed for: agentsctl session open --ssh
+ssh_host = ""
+prefer_ssh = false

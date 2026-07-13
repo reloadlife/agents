@@ -1,0 +1,36 @@
+# binaries
+/bin/
+/dist/
+/agentsd
+/agentsctl
+*.exe
+*.test
+*.out
+
+# local runtime
+.jobs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# secrets / local config
+/etc-agentsd/
+.env
+.env.*
+!.env.example
+config.local.toml
+agentsctl.local.toml
+config.toml
+!config.example.toml
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# coverage
+coverage.out
+coverage.html
+deploy/config.agents.toml.personal

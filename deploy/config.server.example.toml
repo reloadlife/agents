@@ -1,0 +1,65 @@
+# Example production server config — copy to /etc/agentsd/config.toml
+# Customize paths for your host and user.
+
+listen = "127.0.0.1:8787"
+jobs_dir = "/var/lib/local-agents/jobs"
+workspace_root = "/home/YOU/workspace"
+default_cwd = "."
+max_concurrent_jobs = 1
+default_timeout = "30m"
+max_timeout = "2h"
+
+[auth]
+bearer_env = "AGENTSD_TOKEN"
+
+[sessions]
+# Optional: only used for agentsctl session open --ssh
+ssh_host = "my-agent-box"
+
+[agents.claude]
+bin = "claude"
+args = []
+print_args = ["-p"]
+
+[agents.grok]
+bin = "grok"
+args = []
+print_args = []
+
+[agents.codex]
+bin = "codex"
+args = []
+print_args = ["exec"]
+
+[agents.opencode]
+bin = "opencode"
+args = []
+print_args = ["run"]
+
+[agents.cursor]
+bin = "cursor-agent"
+args = []
+print_args = ["-p"]
+
+[agents.cursor-agent]
+bin = "cursor-agent"
+args = []
+print_args = ["-p"]
+
+[allow]
+# Paths relative to workspace_root
+paths = [
+  ".",
+  # "my-app",
+  # "my-app/**",
+]
+
+[caps]
+default = ["fs_read", "fs_write", "net_install"]
+elevated = ["git_push", "gh_pr", "kubectl_write", "shell_raw"]
+
+[status]
+# Optional Kubernetes context for status probe; leave empty to skip
+gke_context = ""
+# Optional HTTP probe
+opendray_url = ""
