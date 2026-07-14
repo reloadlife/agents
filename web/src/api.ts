@@ -153,6 +153,9 @@ export function createSession(body: {
   prompt?: string;
   account?: string;
   account_mode?: string;
+  /** Isolated git worktree so parallel agents don't share files. */
+  worktree?: boolean;
+  worktree_branch?: string;
 }): Promise<Session> {
   return request("/v1/sessions", {
     method: "POST",
@@ -884,8 +887,12 @@ export type GitFileEntry = {
   /** Two-char porcelain XY when available */
   xy?: string;
   staged?: boolean;
-  insertions?: number;
+  unstaged?: boolean;
+  /** API: additions / deletions (numstat) */
+  additions?: number;
   deletions?: number;
+  /** Legacy aliases */
+  insertions?: number;
 };
 
 export type GitStatusResult = {
@@ -914,8 +921,11 @@ export type GitDiffResult = {
 
 export type GitCommitResult = {
   ok?: boolean;
+  /** Full SHA from API */
+  commit?: string;
   hash?: string;
   short_hash?: string;
+  branch?: string;
   message?: string;
   files?: number;
   error?: string;

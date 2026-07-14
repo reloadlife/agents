@@ -2588,6 +2588,7 @@ function readCreateForm(): {
   gitDepth: boolean;
   account: string;
   accountMode: string;
+  worktree: boolean;
 } {
   const agentEl = document.getElementById("sess-agent") as HTMLSelectElement | null;
   const cwdEl = document.getElementById("sess-cwd") as HTMLSelectElement | null;
@@ -2598,6 +2599,7 @@ function readCreateForm(): {
   const gitBranchEl = document.getElementById("sess-git-branch") as HTMLInputElement | null;
   const gitForkEl = document.getElementById("sess-git-fork") as HTMLInputElement | null;
   const gitDepthEl = document.getElementById("sess-git-depth") as HTMLInputElement | null;
+  const worktreeEl = document.getElementById("sess-worktree") as HTMLInputElement | null;
   const accountEl = document.getElementById("sess-account") as HTMLSelectElement | null;
   const modeEl = document.querySelector(
     'input[name="sess-account-mode"]:checked',
@@ -2611,6 +2613,7 @@ function readCreateForm(): {
   const gitBranch = (gitBranchEl?.value ?? state.formGitBranch).trim();
   const gitFork = gitForkEl ? gitForkEl.checked : state.formGitFork;
   const gitDepth = gitDepthEl ? gitDepthEl.checked : state.formGitDepth;
+  const worktree = worktreeEl ? worktreeEl.checked : false;
   const account = (accountEl?.value ?? state.formAccount).trim();
   const accountMode = (modeEl?.value || state.formAccountMode || "isolated").trim();
   state.formAgent = agent;
@@ -2636,6 +2639,7 @@ function readCreateForm(): {
     gitDepth,
     account,
     accountMode,
+    worktree,
   };
 }
 
@@ -2703,6 +2707,7 @@ async function onCreateSession(ev?: Event): Promise<void> {
       prompt: form.prompt || undefined,
       account: form.account || undefined,
       account_mode: form.account ? form.accountMode || "isolated" : undefined,
+      worktree: form.worktree || undefined,
     });
     state.formName = "";
     state.formPrompt = "";
@@ -2713,7 +2718,8 @@ async function onCreateSession(ev?: Event): Promise<void> {
     const accNote = form.account
       ? ` · account ${form.account} (${form.accountMode || "isolated"})`
       : "";
-    toast(`Started ${sess.agent} in ${cwd}${accNote}`, "ok");
+    const wtNote = form.worktree || sess.worktree ? " · worktree" : "";
+    toast(`Started ${sess.agent} in ${sess.cwd || cwd}${accNote}${wtNote}`, "ok");
   } catch (e) {
     state.creating = false;
     const msg = (e as Error).message || "create failed";
@@ -3602,6 +3608,12 @@ function newSessionHTML(): string {
         <label for="sess-name">Label <span class="opt">optional</span></label>
         <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
       </div>
+      <div class="check-row" style="margin-bottom:0.75rem">
+        <label class="check" title="Isolated git worktree under .agents/worktrees — safe parallel agents">
+          <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
+          Isolated worktree <span class="opt">git only</span>
+        </label>
+      </div>
       ${accountBlock}
       <div class="field">
         <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
@@ -3776,7 +3788,7 @@ function gitStatusLetter(f: GitFileEntry): string {
 }
 
 function gitFilePlusMinus(f: GitFileEntry): string {
-  const ins = f.insertions;
+  const ins = f.additions ?? f.insertions;
   const del = f.deletions;
   if (ins == null && del == null) return "";
   const parts: string[] = [];
@@ -4103,7 +4115,7 @@ async function onGitCommit(): Promise<void> {
       all: !paths,
       paths,
     });
-    const hash = out.short_hash || out.hash || "";
+    const hash = (out.commit || out.short_hash || out.hash || "").slice(0, 8);
     toast(hash ? `Committed ${hash}` : "Committed", "ok");
     state.gitCommitMsg = "";
     state.gitCheckedPaths = [];

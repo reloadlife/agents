@@ -9,17 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Workspace tasks** — lightweight list at `<cwd>/.agents/tasks.json`
-  - API: `GET/POST /v1/tasks`, `PATCH/DELETE /v1/tasks/{id}` (`status`: `todo`|`doing`|`done`)
-  - Web: Tools sheet section + command palette “Workspace tasks” Vaul panel (add / toggle / cycle / delete)
-- **Session git branch** — `GET /v1/sessions` (and get/create) include best-effort `git_branch`
-  - Computed via `git -C <cwd> rev-parse --abbrev-ref HEAD` (short timeout; ignored on error)
-  - Deduped per unique cwd on list; falls back to worktree `branch` metadata when present
-  - Web session list meta: `agent · cwd · branch · age`; filter matches branch; tab title attribute only
-- **Plain shell terminal** — agent `shell` (no config required); UI **Terminal** button / `⇧t`
-- **Open remote** — `POST /v1/workspaces/open` returns Cursor / Zed / VS Code SSH-remote commands
-  - UI drawer with copy-to-clipboard; optional host-side launch when editor is on PATH
-  - Optional file open: `{ "cwd", "path", "line" }` → file-aware remote URIs / `cursor|code -g file:line`
+- **Git Changes panel** — review agent worktree diffs without leaving the control plane
+  - API: `GET /v1/git/status`, `/v1/git/diff`, `/v1/git/file`
+  - Write: `POST /v1/git/commit` (never push), `POST /v1/git/pull-request` via `gh`
+  - Web: `/changes` Vaul sheet (file list, unified diff, commit, create PR)
+  - Entry: sidebar git icon, Tools, palette, `⇧g`
+- **Isolated worktrees** — `POST /v1/sessions` `{ "worktree": true }` creates git worktree under `.agents/worktrees/`
+  - Session cwd points at worktree; delete best-effort removes worktree
+  - New session form: “Isolated worktree” checkbox
+- **Session git branch** — list/get include best-effort `git_branch` on session rows
+- **Workspace tasks** — `<cwd>/.agents/tasks.json` + Tools/palette UI
+- **Open remote file+line** — `POST /v1/workspaces/open` accepts `path` / `line`
+- **Plain shell terminal** — agent `shell`; UI **Terminal** / `⇧t`
+- **Open remote** — Cursor / Zed / VS Code SSH-remote commands
+
+### Changed
+
+- **Web performance** — session list / tabs / status paint only when signatures change; debounced filter; lighter motion; `content-visibility` on rows
 
 ## [0.7.8] — 2026-07-14
 
