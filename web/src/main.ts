@@ -603,22 +603,37 @@ function emptyTermHTML(): string {
 function openPanel(p: Panel): void {
   state.panel = p;
   if (p === "new") state.createError = "";
-  paintPanel();
-  if (p === "new") {
-    // Focus after paint; prefer agent select so keyboard users can change quickly
-    window.requestAnimationFrame(() => {
-      const name = document.getElementById("sess-name") as HTMLInputElement | null;
-      const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
-      (name ?? agent)?.focus();
-    });
-  }
-  if (p === "tools") void refreshToolsStatus();
+  // Defer paint past the triggering click so a full-screen overlay is not
+  // immediately hit by the same pointer event (closes as it opens).
+  window.queueMicrotask(() => {
+    if (state.panel !== p) return;
+    try {
+      paintPanel();
+    } catch (e) {
+      console.error("paintPanel failed", e);
+      toast((e as Error).message || "failed to open panel", "err", 5000);
+      return;
+    }
+    if (p === "new") {
+      window.requestAnimationFrame(() => {
+        const name = document.getElementById("sess-name") as HTMLInputElement | null;
+        const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
+        (name ?? agent)?.focus();
+      });
+    }
+    if (p === "tools") void refreshToolsStatus();
+  });
 }
 
 function closePanel(): void {
   state.panel = null;
   state.createError = "";
-  paintPanel();
+  try {
+    paintPanel();
+  } catch (e) {
+    console.error("closePanel paint failed", e);
+    document.getElementById("panel-overlay")?.remove();
+  }
   term?.focus();
 }
 
@@ -946,7 +961,7 @@ function paintTools(): void {
 }
 
 function paintDrawer(): void {
-  let el = document.getElementById("drawer");
+  let el = document.getElementById("drawer") as HTMLDivElement | null;
   if (!state.drawer) {
     el?.remove();
     return;
@@ -955,30 +970,29 @@ function paintDrawer(): void {
     el = document.createElement("div");
     el.id = "drawer";
     el.className = "overlay";
+    el.style.zIndex = "1000";
     document.body.appendChild(el);
+    el.addEventListener("mousedown", (ev) => {
+      if (ev.target === el) {
+        state.drawer = null;
+        paintDrawer();
+      }
+    });
   }
+  el.hidden = false;
+  el.style.display = "grid";
   el.innerHTML = `
-    <div class="modal modal-wide" role="dialog" aria-modal="true">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" data-modal>
       <div class="modal-head">
         <strong>${esc(state.drawer.title)}</strong>
-        <button type="button" class="ghost btn-sm" id="drawer-close">Close</button>
+        <button type="button" class="ghost btn-sm" data-action="close-drawer">Close</button>
       </div>
       <pre class="drawer-body">${esc(state.drawer.body)}</pre>
     </div>`;
-  el.onclick = (ev) => {
-    if (ev.target === el) {
-      state.drawer = null;
-      paintDrawer();
-    }
-  };
-  document.getElementById("drawer-close")?.addEventListener("click", () => {
-    state.drawer = null;
-    paintDrawer();
-  });
 }
 
 function paintPanel(): void {
-  let el = document.getElementById("panel-overlay");
+  let el = document.getElementById("panel-overlay") as HTMLDivElement | null;
   if (!state.panel) {
     el?.remove();
     return;
@@ -988,19 +1002,28 @@ function paintPanel(): void {
     el.id = "panel-overlay";
     el.className = "overlay";
     el.setAttribute("role", "presentation");
-    document.body.appendChild(el);
-    // Backdrop close — ignore clicks that originate inside .modal
-    el.addEventListener("click", (ev) => {
-      if (ev.target === el) closePanel();
+    // Backdrop close only (not when clicking inside .modal)
+    el.addEventListener("mousedown", (ev) => {
+      if (ev.target === el) {
+        ev.preventDefault();
+        closePanel();
+      }
     });
+    document.body.appendChild(el);
   }
-  if (state.panel === "new") {
-    el.innerHTML = newSessionHTML();
-  } else if (state.panel === "tools") {
-    el.innerHTML = toolsHTML();
-  } else if (state.panel === "help") {
-    el.innerHTML = helpHTML();
-  }
+  // Force visible each open (defensive against stale CSS/DOM)
+  el.hidden = false;
+  el.style.display = "grid";
+  el.style.visibility = "visible";
+  el.style.opacity = "1";
+  el.style.zIndex = "1000";
+
+  let html = "";
+  if (state.panel === "new") html = newSessionHTML();
+  else if (state.panel === "tools") html = toolsHTML();
+  else if (state.panel === "help") html = helpHTML();
+  else html = `<div class="modal"><div class="modal-body">Unknown panel</div></div>`;
+  el.innerHTML = html;
 }
 
 function agentOptionsHTML(): string {
@@ -1020,7 +1043,11 @@ function agentSwatchHTML(name: string): string {
 }
 
 function workspaceOptionsHTML(): string {
-  const list = state.workspaces.length > 0 ? state.workspaces : [state.defaultCwd || "."];
+  // Always coerce — API may send {path} objects if an older client path is hit.
+  let list = (state.workspaces ?? [])
+    .map((w) => (typeof w === "string" ? w : String((w as { path?: string })?.path ?? "")))
+    .filter(Boolean);
+  if (list.length === 0) list = [state.defaultCwd || "."];
   const selected = list.includes(state.formCwd) ? state.formCwd : list[0];
   return list
     .map(
@@ -1434,8 +1461,9 @@ function statusHTML(): string {
   `;
 }
 
-function esc(s: string): string {
-  return s
+function esc(s: unknown): string {
+  const str = s == null ? "" : String(s);
+  return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -1556,22 +1584,32 @@ function ensureUIDelegation(): void {
     switch (action) {
       case "new-session":
         ev.preventDefault();
+        ev.stopPropagation();
         if (!state.token) return;
         openPanel("new");
         break;
       case "tools":
         ev.preventDefault();
+        ev.stopPropagation();
         if (!state.token) return;
         openPanel("tools");
         break;
       case "help":
         ev.preventDefault();
+        ev.stopPropagation();
         if (!state.token) return;
         openPanel("help");
         break;
       case "close-panel":
         ev.preventDefault();
+        ev.stopPropagation();
         closePanel();
+        break;
+      case "close-drawer":
+        ev.preventDefault();
+        ev.stopPropagation();
+        state.drawer = null;
+        paintDrawer();
         break;
       case "prune":
         ev.preventDefault();

@@ -1065,11 +1065,14 @@ label.check input {
   position: fixed;
   inset: 0;
   background: rgba(3, 5, 10, 0.72);
-  z-index: 100;
+  z-index: 1000;
   display: grid;
   place-items: center;
   padding: 1rem;
-  animation: fade-in 0.14s ease-out;
+  /* no fade animation — was easy to miss / fight reduced-motion */
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 @keyframes fade-in {
@@ -1091,7 +1094,11 @@ label.check input {
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow);
-  animation: modal-in 0.18s ease-out;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1001;
 }
 
 .modal-wide {
@@ -1100,21 +1107,11 @@ label.check input {
 
 .modal-tools {
   width: min(520px, 100%);
+  max-height: min(92vh, 800px);
 }
 
 .modal-sm {
   width: min(400px, 100%);
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 .modal-head {
