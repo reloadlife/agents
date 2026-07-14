@@ -100,6 +100,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces/clone", s.handleCloneWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/open", s.handleOpenWorkspace)
+	// Read-only git inspection (status / diff / blob at ref)
+	mux.HandleFunc("GET /v1/git/status", s.handleGitStatus)
+	mux.HandleFunc("GET /v1/git/diff", s.handleGitDiff)
+	mux.HandleFunc("GET /v1/git/file", s.handleGitFile)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
 	// SSH identity keys (public only; private never served)
