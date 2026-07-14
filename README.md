@@ -263,6 +263,18 @@ scripts/install.sh    release-tarball installer (source fallback)
 - [ ] Multi-user isolation  
 - [ ] Session recording (opt-in, documented privacy)  
 
+## Support / donations
+
+If this project helps you, donations are welcome:
+
+| Network | Address |
+|---------|---------|
+| **Bitcoin (BTC)** | `bc1qy08pk2teys968hphh98rv8y9azeraf2c8vsdm8` |
+| **Ethereum (ETH / EVM)** | `0x8B6CE1EA8F17f6941F13A621b92Af345a75D8c41` |
+| **Tron (TRX / TRC-20)** | `TGXJToyAsUtw1388jR5aW9ZohjSCDtmKbg` |
+
+Thank you.
+
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE) (**AGPL-3.0**).
