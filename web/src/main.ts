@@ -19,6 +19,7 @@ import {
   listTemplates,
   notifyTest,
   startTemplate,
+  uploadImage,
   workspaceDashboard,
   deleteSSHKey,
   deleteSession,
@@ -830,8 +831,111 @@ function ensureTerminal(container: HTMLElement): void {
   term.onData((data) => {
     activePty?.write(data);
   });
+  bindTerminalImagePaste(container);
   resizeObserver = new ResizeObserver(() => fit());
   resizeObserver.observe(container);
+}
+
+/** Paste/drop images → save under workspace .agents/pastes/ → type path into PTY. */
+function bindTerminalImagePaste(container: HTMLElement): void {
+  const handleFiles = async (files: FileList | File[] | null | undefined) => {
+    if (!files || !state.activeId) return;
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (!list.length) return;
+    for (const file of list) {
+      await pasteImageFile(file);
+    }
+  };
+
+  // Capture paste on the terminal (xterm textarea + container)
+  const onPaste = (ev: ClipboardEvent) => {
+    const items = ev.clipboardData?.items;
+    if (!items?.length) return;
+    const images: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) images.push(f);
+      }
+    }
+    if (!images.length) return;
+    // Prevent xterm from inserting binary garbage as text
+    ev.preventDefault();
+    ev.stopPropagation();
+    void handleFiles(images);
+  };
+
+  container.addEventListener("paste", onPaste, true);
+  // xterm creates a hidden textarea — also bind when available
+  window.setTimeout(() => {
+    const ta = container.querySelector("textarea.xterm-helper-textarea");
+    ta?.addEventListener("paste", onPaste as EventListener, true);
+  }, 0);
+
+  // Drag & drop images onto the terminal
+  const onDragOver = (ev: DragEvent) => {
+    if (!ev.dataTransfer?.types?.includes("Files")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    container.classList.add("term-drop-target");
+  };
+  const onDragLeave = () => container.classList.remove("term-drop-target");
+  const onDrop = (ev: DragEvent) => {
+    container.classList.remove("term-drop-target");
+    if (!ev.dataTransfer?.files?.length) return;
+    const imgs = Array.from(ev.dataTransfer.files).filter((f) =>
+      f.type.startsWith("image/"),
+    );
+    if (!imgs.length) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    void handleFiles(imgs);
+  };
+  container.addEventListener("dragover", onDragOver);
+  container.addEventListener("dragleave", onDragLeave);
+  container.addEventListener("drop", onDrop);
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ""));
+    r.onerror = () => reject(r.error || new Error("read failed"));
+    r.readAsDataURL(file);
+  });
+}
+
+async function pasteImageFile(file: File): Promise<void> {
+  if (!state.activeId) {
+    toast("Open a session first to paste images", "info");
+    return;
+  }
+  const tab = state.openTabs.find((t) => t.id === state.activeId);
+  const cwd = tab?.cwd || state.formCwd || state.defaultCwd || ".";
+  try {
+    toast(`Uploading image (${Math.round(file.size / 1024)} KB)…`, "info", 8000);
+    const dataUrl = await fileToDataURL(file);
+    const out = await uploadImage({
+      cwd,
+      session_id: state.activeId,
+      mime: file.type || "image/png",
+      data: dataUrl,
+    });
+    const path = out.paste || out.abs || out.cwd_rel;
+    if (!path) {
+      toast("Upload succeeded but no path returned", "err");
+      return;
+    }
+    // Quote path if it contains spaces; agents can Read() the file
+    const token = /[\s'"\\]/.test(path) ? `'${path.replace(/'/g, `'\\''`)}'` : path;
+    // Insert into PTY as if typed (don't send Enter — user may want to edit)
+    activePty?.write(token);
+    // Also ensure term shows it immediately if PTY is laggy
+    term?.focus();
+    toast(`Image saved → ${out.cwd_rel || path}`, "ok", 4000);
+  } catch (e) {
+    toast((e as Error).message || "image paste failed", "err");
+  }
 }
 
 function fit(): void {

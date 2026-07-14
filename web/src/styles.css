@@ -1208,6 +1208,26 @@ kbd {
   padding: 0.4rem 0.55rem;
 }
 
+.term-host.term-drop-target {
+  outline: 2px dashed hsl(var(--ring) / 0.55);
+  outline-offset: -6px;
+  background: hsl(240 6% 12% / 0.85);
+}
+
+.term-host.term-drop-target::after {
+  content: "Drop image to paste path for the agent";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 5;
+  pointer-events: none;
+  color: hsl(var(--foreground));
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: hsl(0 0% 0% / 0.35);
+}
+
 .term-host .xterm {
   height: 100%;
 }

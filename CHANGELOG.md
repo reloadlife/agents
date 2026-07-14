@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-07-14
+
+### Fixed
+
+- **Image paste into the web terminal**
+  - Paste or drag-drop images onto the PTY
+  - Uploads to `<cwd>/.agents/pastes/` via `POST /v1/uploads/image`
+  - Inserts the absolute file path into the terminal so agents can `Read` it
+  - Avoids dumping binary clipboard data as garbled text
+
 ## [0.7.0] — 2026-07-14
 
 ### Added

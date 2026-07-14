@@ -742,3 +742,24 @@ export function installSkills(cwd: string): Promise<{ ok?: boolean; path?: strin
 export function notifyTest(): Promise<{ ok?: boolean }> {
   return request("/v1/notify/test", { method: "POST", body: "{}" });
 }
+
+/** Save a clipboard/drag image into the session workspace; returns paths to paste. */
+export function uploadImage(body: {
+  cwd?: string;
+  session_id?: string;
+  mime?: string;
+  data: string; // base64 or data URL
+}): Promise<{
+  ok?: boolean;
+  abs?: string;
+  rel?: string;
+  cwd_rel?: string;
+  paste?: string;
+  bytes?: number;
+  mime?: string;
+}> {
+  return request("/v1/uploads/image", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

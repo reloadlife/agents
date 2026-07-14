@@ -17,6 +17,7 @@ import (
 	"github.com/reloadlife/agents/internal/recording"
 	"github.com/reloadlife/agents/internal/session"
 	"github.com/reloadlife/agents/internal/templates"
+	"github.com/reloadlife/agents/internal/uploads"
 	"github.com/reloadlife/agents/internal/workspaces"
 )
 
@@ -414,4 +415,60 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	})
 	s.audit(r, "notify.test", "", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleUploadImage saves a clipboard/drag image into the session workspace.
+// Body: { "cwd": "agents", "mime": "image/png", "data": "<base64 or data URL>" }
+// Optional session_id uses that session's cwd when cwd is empty.
+func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd       string `json:"cwd"`
+		SessionID string `json:"session_id"`
+		MIME      string `json:"mime"`
+		Data      string `json:"data"`
+		// Filename hint ignored for safety; server generates names
+		Name string `json:"name,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	cwd := strings.TrimSpace(body.Cwd)
+	if cwd == "" && body.SessionID != "" && s.sess != nil {
+		if sess, err := s.sess.Get(body.SessionID); err == nil {
+			cwd = sess.Cwd
+		}
+	}
+	if cwd == "" {
+		cwd = s.cfg.DefaultCwd
+	}
+	if cwd == "" {
+		cwd = "."
+	}
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := uploads.SaveImage(s.cfg.WorkspaceRoot, abs, rel, body.MIME, body.Data)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.audit(r, "upload.image", rel, map[string]any{
+		"bytes": res.Bytes,
+		"mime":  res.MIME,
+		"path":  res.CwdRel,
+	})
+	// Prefer absolute path for agent CLIs (unambiguous); also return cwd-relative.
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":      true,
+		"abs":     res.Abs,
+		"rel":     res.Rel,
+		"cwd_rel": res.CwdRel,
+		"bytes":   res.Bytes,
+		"mime":    res.MIME,
+		// Path to paste into the terminal (absolute, shell-safe if no spaces issues)
+		"paste": res.Abs,
+	})
 }

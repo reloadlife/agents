@@ -163,6 +163,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/record", s.handleManualRecord)
 	mux.HandleFunc("GET /v1/history/search", s.handleHistorySearch)
 
+	// Clipboard / drag image paste into workspace for agents
+	mux.HandleFunc("POST /v1/uploads/image", s.handleUploadImage)
+
 	// Session templates
 	mux.HandleFunc("GET /v1/templates", s.handleListTemplates)
 	mux.HandleFunc("POST /v1/templates", s.handleUpsertTemplate)
