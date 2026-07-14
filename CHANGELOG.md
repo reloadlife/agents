@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] — 2026-07-14
+
+### Changed
+
+- **Topbar search + more menu redesign**
+  - Search: pill-shaped trigger with platform-aware ⌘/Ctrl+K chip
+  - More: richer portaled menu with icon tiles, labels + hints, danger row
+  - Spotlight palette: cleaner input row, result count, esc chip
+
 ## [0.8.4] — 2026-07-14
 
 ### Changed

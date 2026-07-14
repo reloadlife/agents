@@ -992,16 +992,17 @@ function paintCommandPalette(): void {
         .join("")
     : `<div class="palette-empty">No matches</div>`;
   root.innerHTML = `
-    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Spotlight search">
+    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Search">
       <div class="palette-input-row">
-        ${iconSvg("search")}
-        <input id="palette-input" class="palette-input" type="search" placeholder="Search sessions &amp; commands…" value="${esc(state.paletteQuery)}" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="palette-list" />
+        <span class="palette-search-ico" aria-hidden="true">${iconSvg("search")}</span>
+        <input id="palette-input" class="palette-input" type="search" placeholder="Search sessions, commands, templates…" value="${esc(state.paletteQuery)}" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="palette-list" />
+        <kbd class="palette-esc">esc</kbd>
       </div>
       <div id="palette-list" class="palette-list" role="listbox" aria-label="Results">${listHtml}</div>
       <div class="palette-foot">
-        <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+        <span class="palette-foot-left">${items.length} result${items.length === 1 ? "" : "s"}</span>
+        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
         <span><kbd>↵</kbd> open</span>
-        <span><kbd>esc</kbd> close</span>
       </div>
     </div>`;
   const input = document.getElementById("palette-input") as HTMLInputElement | null;
@@ -1030,6 +1031,18 @@ function paintCommandPalette(): void {
   root.querySelector(".palette-item.active")?.scrollIntoView({ block: "nearest" });
 }
 
+/** ⌘ on Apple, Ctrl elsewhere — for kbd chips in UI. */
+function metaKbd(): string {
+  try {
+    const p = navigator.platform || "";
+    const ua = navigator.userAgent || "";
+    if (/Mac|iPhone|iPad|iPod/i.test(p) || /Mac OS X/i.test(ua)) return "⌘";
+  } catch {
+    /* ignore */
+  }
+  return "Ctrl";
+}
+
 /** Body-level topbar ⋮ menu (portaled so it stacks above the terminal). */
 function hideTopbarMore(): void {
   const menu = document.getElementById("topbar-more-menu");
@@ -1039,6 +1052,7 @@ function hideTopbarMore(): void {
   }
   document.querySelectorAll<HTMLElement>("[data-action='topbar-more']").forEach((b) => {
     b.setAttribute("aria-expanded", "false");
+    b.classList.remove("is-open");
   });
 }
 
@@ -1048,50 +1062,74 @@ function showTopbarMore(anchor: HTMLElement): void {
   if (!menu) {
     menu = document.createElement("div");
     menu.id = "topbar-more-menu";
-    menu.className = "topbar-more-menu";
+    menu.className = "tb-menu";
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", "More actions");
     document.body.appendChild(menu);
+  } else {
+    menu.className = "tb-menu";
   }
-  const item = (action: string, icon: string, label: string, kbd?: string, extra = "") =>
-    `<button type="button" role="menuitem" data-action="${esc(action)}"${extra}>
-      ${iconSvg(icon)}
-      <span class="menu-item-label">${esc(label)}</span>
-      ${kbd ? `<kbd>${esc(kbd)}</kbd>` : ""}
+
+  const item = (
+    action: string,
+    icon: string,
+    label: string,
+    hint?: string,
+    kbd?: string,
+    opts?: { danger?: boolean; extra?: string },
+  ) =>
+    `<button type="button" role="menuitem" class="tb-menu-item${opts?.danger ? " is-danger" : ""}" data-action="${esc(action)}"${opts?.extra || ""}>
+      <span class="tb-menu-ico" aria-hidden="true">${iconSvg(icon)}</span>
+      <span class="tb-menu-text">
+        <span class="tb-menu-label">${esc(label)}</span>
+        ${hint ? `<span class="tb-menu-hint">${esc(hint)}</span>` : ""}
+      </span>
+      ${kbd ? `<kbd class="tb-menu-kbd">${esc(kbd)}</kbd>` : ""}
     </button>`;
 
   menu.innerHTML = `
-    <div class="menu-section-label" role="presentation">Create</div>
-    ${item("new-session", "plus", "New session", "n")}
-    ${item("new-project", "folder-git", "New project", "⇧n")}
-    ${item("open-shell", "terminal", "Terminal", "⇧t")}
-    <div class="ctx-sep" role="separator"></div>
-    <div class="menu-section-label" role="presentation">Workspace</div>
-    ${item("open-remote", "external", "Open remote…")}
-    ${item("tools", "wrench", "Tools", "t")}
-    ${item("git-changes", "git-branch", "Git changes", "⇧g")}
-    <div class="ctx-sep" role="separator"></div>
-    <div class="menu-section-label" role="presentation">App</div>
-    ${item("open-settings", "settings", "Settings", ",", ' data-tab="accounts"')}
-    ${item("help", "help", "Shortcuts", "?")}
-    ${item("toggle-theme", "layers", "Toggle theme")}
-    <div class="ctx-sep" role="separator"></div>
-    ${item("prune", "trash", "Clear stopped")}
+    <div class="tb-menu-head" role="presentation">
+      <span class="tb-menu-title">Actions</span>
+    </div>
+    <div class="tb-menu-section" role="presentation">
+      <div class="tb-menu-section-label">Create</div>
+      ${item("new-session", "plus", "New session", "Start an agent", "n")}
+      ${item("new-project", "folder-git", "New project", "Clone a repository", "⇧n")}
+      ${item("open-shell", "terminal", "Terminal", "Plain shell session", "⇧t")}
+    </div>
+    <div class="tb-menu-sep" role="separator"></div>
+    <div class="tb-menu-section" role="presentation">
+      <div class="tb-menu-section-label">Workspace</div>
+      ${item("open-remote", "external", "Open remote", "Cursor / VS Code / Zed")}
+      ${item("tools", "wrench", "Tools", "Map, memory, browser", "t")}
+      ${item("git-changes", "git-branch", "Changes", "Diff, commit, PR", "⇧g")}
+    </div>
+    <div class="tb-menu-sep" role="separator"></div>
+    <div class="tb-menu-section" role="presentation">
+      <div class="tb-menu-section-label">App</div>
+      ${item("open-settings", "settings", "Settings", "Accounts & host", ",", { extra: ' data-tab="accounts"' })}
+      ${item("help", "help", "Keyboard shortcuts", "Cheat sheet", "?")}
+      ${item("toggle-theme", "layers", "Toggle theme", state.theme === "dark" ? "Switch to light" : "Switch to dark")}
+    </div>
+    <div class="tb-menu-sep" role="separator"></div>
+    <div class="tb-menu-section" role="presentation">
+      ${item("prune", "trash", "Clear stopped", "Remove exited sessions", undefined, { danger: true })}
+    </div>
   `;
   menu.hidden = false;
   anchor.setAttribute("aria-expanded", "true");
+  anchor.classList.add("is-open");
 
   const pad = 8;
   const r = anchor.getBoundingClientRect();
-  // measure after paint
   const rect = menu.getBoundingClientRect();
-  const w = rect.width || 220;
-  const h = rect.height || 320;
+  const w = rect.width || 260;
+  const h = rect.height || 420;
   let left = r.right - w;
-  let top = r.bottom + 6;
+  let top = r.bottom + 8;
   if (left < pad) left = pad;
   if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 8);
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(top)}px`;
 }
@@ -2087,7 +2125,7 @@ function paintConn(): void {
   };
   const label = labels[state.conn];
   el.title = `PTY ${label}`;
-  el.innerHTML = `<span class="conn-dot" aria-hidden="true"></span>${label}`;
+  el.innerHTML = `<span class="conn-dot" aria-hidden="true"></span><span class="conn-label">${label}</span>`;
 }
 
 async function attachActive(): Promise<void> {
@@ -5201,13 +5239,13 @@ function shellHTML(): string {
         </div>
         <div class="tabs" id="tabs" role="tablist" aria-label="Open sessions">${tabsHTML()}</div>
         <div class="topbar-actions">
-          <span class="conn-pill conn-${state.conn}" id="conn-pill" title="PTY connection" aria-live="polite"><span class="conn-dot" aria-hidden="true"></span>idle</span>
-          <button type="button" class="topbar-spotlight" data-action="open-palette" title="Spotlight search (⌘K)" aria-label="Spotlight search">
-            ${iconSvg("search")}
-            <span class="topbar-spotlight-label">Search…</span>
-            <kbd>⌘K</kbd>
+          <span class="conn-pill conn-${state.conn}" id="conn-pill" title="PTY connection" aria-live="polite"><span class="conn-dot" aria-hidden="true"></span><span class="conn-label">idle</span></span>
+          <button type="button" class="tb-search" data-action="open-palette" title="Search (${esc(metaKbd())}K)" aria-label="Search commands and sessions">
+            <span class="tb-search-ico" aria-hidden="true">${iconSvg("search")}</span>
+            <span class="tb-search-placeholder">Search</span>
+            <kbd class="tb-search-kbd"><span class="tb-mod">${esc(metaKbd())}</span>K</kbd>
           </button>
-          <button type="button" class="ghost btn-icon sm" data-action="topbar-more" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">
+          <button type="button" class="tb-more" data-action="topbar-more" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">
             ${iconSvg("more")}
           </button>
         </div>
