@@ -1104,7 +1104,7 @@ function paintTasksList(): void {
     el.innerHTML = tasksListHTML();
   });
   // keep open Vaul tasks panel in sync when present
-  const body = document.querySelector(".vaul-body .tasks-panel");
+  const body = document.querySelector(".app-modal-body .tasks-panel");
   if (body && isAppDrawerOpen()) {
     const draft =
       (document.querySelector("[data-task-draft]") as HTMLInputElement | null)?.value ??
@@ -4084,7 +4084,7 @@ async function refreshGitChanges(): Promise<void> {
   state.gitError = "";
   if (state.panel === "changes") {
     // light status update in branch row without full wipe if possible
-    const row = document.querySelector(".vaul-body .git-branch-row");
+    const row = document.querySelector(".app-modal-body .git-branch-row");
     if (row) row.innerHTML = `<span class="tool-status">Loading…</span>`;
   }
   try {
@@ -4141,23 +4141,23 @@ async function loadGitDiff(): Promise<void> {
 }
 
 function paintGitDiffOnly(): void {
-  const wrap = document.querySelector<HTMLElement>(".vaul-body [data-git-diff-wrap]");
+  const wrap = document.querySelector<HTMLElement>(".app-modal-body [data-git-diff-wrap]");
   if (!wrap) return;
   wrap.innerHTML = state.gitDiffLoading
     ? `<div class="empty-soft">Loading diff…</div>`
     : gitDiffLinesHTML(state.gitDiffText);
-  const head = document.querySelector(".vaul-body .git-diff-col .git-col-head");
+  const head = document.querySelector(".app-modal-body .git-diff-col .git-col-head");
   if (head) {
     const label = state.gitSelectedPath || "All changes";
     head.textContent = `Diff · ${label}`;
     head.setAttribute("title", label);
   }
   // file active states
-  document.querySelectorAll<HTMLElement>(".vaul-body [data-git-path]").forEach((row) => {
+  document.querySelectorAll<HTMLElement>(".app-modal-body [data-git-path]").forEach((row) => {
     const path = row.getAttribute("data-git-path") || "";
     row.classList.toggle("active", state.gitSelectedPath === path);
   });
-  document.querySelectorAll<HTMLElement>(".vaul-body [data-action='git-select-all']").forEach((btn) => {
+  document.querySelectorAll<HTMLElement>(".app-modal-body [data-action='git-select-all']").forEach((btn) => {
     btn.classList.toggle("active", state.gitSelectedPath == null);
   });
 }

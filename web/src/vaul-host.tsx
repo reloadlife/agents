@@ -1,11 +1,10 @@
 /**
- * Minimal Vaul host — title + close + body. No descriptions, no extra chrome.
- * Vanilla main.ts drives open/close via drawer-bridge.
+ * App modal host — content-sized centered dialog (desktop) / bottom sheet (mobile).
+ * Keeps the drawer-bridge API; does NOT use Vaul's bottom-drawer height model
+ * (that caused empty whitespace under short forms).
  */
 import { useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Drawer } from "vaul";
-import "../node_modules/vaul/style.css";
 
 import {
   getDrawerSnapshot,
@@ -33,88 +32,121 @@ function CloseIcon() {
   );
 }
 
-function VaulApp() {
+function AppModal() {
   const [snap, setSnap] = useState<DrawerSnapshot>(() => getDrawerSnapshot());
   const [heldHtml, setHeldHtml] = useState(() => {
     const s = getDrawerSnapshot();
     return s.open ? s.html : "";
   });
+  const [heldTitle, setHeldTitle] = useState(() => {
+    const s = getDrawerSnapshot();
+    return s.open ? s.title : "";
+  });
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const liveHtml = snap.open && snap.html ? snap.html : heldHtml;
+  const title = snap.open ? snap.title : heldTitle;
   const variant = snap.variant || "dialog";
+  const open = snap.open;
 
   useEffect(() => subscribeDrawer(setSnap), []);
 
   useEffect(() => {
     if (snap.open && snap.html) {
       setHeldHtml(snap.html);
+      setHeldTitle(snap.title);
       return;
     }
     if (!snap.open) {
       const t = window.setTimeout(() => {
-        if (!getDrawerSnapshot().open) setHeldHtml("");
-      }, 350);
+        if (!getDrawerSnapshot().open) {
+          setHeldHtml("");
+          setHeldTitle("");
+        }
+      }, 200);
       return () => window.clearTimeout(t);
     }
-  }, [snap.open, snap.html, snap.revision]);
+  }, [snap.open, snap.html, snap.revision, snap.title]);
 
   useEffect(() => {
-    if (!snap.open || !liveHtml) return;
+    if (!open || !liveHtml) return;
     const el = bodyRef.current;
     if (!el) return;
     const focusable = el.querySelector<HTMLElement>(
       "input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select, textarea, button.primary",
     );
     window.requestAnimationFrame(() => focusable?.focus?.());
-  }, [snap.open, liveHtml, snap.revision]);
+  }, [open, liveHtml, snap.revision]);
+
+  // Body scroll lock while open
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  // Esc
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeAppDrawer("user");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  if (!open && !liveHtml) return null;
 
   return (
-    <Drawer.Root
-      open={snap.open}
-      onOpenChange={(open) => {
-        if (!open) closeAppDrawer("user");
-      }}
-      // No background scale — less “extra” motion, fewer layout glitches
-      shouldScaleBackground={false}
-      handleOnly={false}
-      repositionInputs
-      autoFocus={false}
+    <div
+      className={`app-modal-root${open ? " app-modal-root--open" : ""}`}
+      data-state={open ? "open" : "closed"}
+      aria-hidden={!open}
     >
-      <Drawer.Portal>
-        <Drawer.Overlay className="vaul-overlay" />
-        <Drawer.Content
-          className={`vaul-content vaul-content--${variant}`}
-          aria-describedby={undefined}
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          onCloseAutoFocus={(e) => e.preventDefault()}
-        >
-          <div className="vaul-chrome">
-            <div className="vaul-header">
-              <Drawer.Title className="vaul-title">{snap.title || "Dialog"}</Drawer.Title>
-              <button
-                type="button"
-                className="vaul-close"
-                onClick={() => closeAppDrawer("user")}
-                aria-label="Close"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div
-              ref={bodyRef}
-              className="vaul-body"
-              data-vaul-no-drag=""
-              dangerouslySetInnerHTML={{ __html: liveHtml }}
-            />
-          </div>
-        </Drawer.Content>
-      </Drawer.Portal>
-    </Drawer.Root>
+      <div
+        className="app-modal-overlay"
+        onClick={() => closeAppDrawer("user")}
+      />
+      <div
+        ref={panelRef}
+        className={`app-modal app-modal--${variant}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="app-modal-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="app-modal-header">
+          <h2 id="app-modal-title" className="app-modal-title">
+            {title || "Dialog"}
+          </h2>
+          <button
+            type="button"
+            className="app-modal-close"
+            onClick={() => closeAppDrawer("user")}
+            aria-label="Close"
+          >
+            <CloseIcon />
+          </button>
+        </div>
+        <div
+          ref={bodyRef}
+          className="app-modal-body"
+          dangerouslySetInnerHTML={{ __html: liveHtml }}
+        />
+      </div>
+    </div>
   );
 }
 
 let root: Root | null = null;
 
+/** Mount once (idempotent). Name kept for callers. */
 export function mountVaulHost(): void {
   let host = document.getElementById("vaul-host");
   if (!host) {
@@ -124,6 +156,6 @@ export function mountVaulHost(): void {
   }
   if (!root) {
     root = createRoot(host);
-    root.render(<VaulApp />);
+    root.render(<AppModal />);
   }
 }
