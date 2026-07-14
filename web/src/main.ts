@@ -434,27 +434,27 @@ function ensureTerminal(container: HTMLElement): void {
     scrollback: 50000,
     convertEol: true,
     theme: {
-      background: "#0a0c10",
-      foreground: "#d8dce3",
-      cursor: "#a8b4c8",
-      cursorAccent: "#0a0c10",
-      selectionBackground: "#2a3344",
-      black: "#0a0c10",
-      red: "#c97b7b",
-      green: "#7d9b76",
-      yellow: "#c9a227",
-      blue: "#7a92b5",
-      magenta: "#a88bb8",
+      background: "#0c0a08",
+      foreground: "#e8e2d6",
+      cursor: "#c9a66b",
+      cursorAccent: "#0c0a08",
+      selectionBackground: "#3a3228",
+      black: "#0c0a08",
+      red: "#c47862",
+      green: "#7f9a72",
+      yellow: "#c9a66b",
+      blue: "#8a9bb5",
+      magenta: "#b794f6",
       cyan: "#7a9aaa",
-      white: "#d8dce3",
-      brightBlack: "#5c6370",
-      brightRed: "#d49494",
+      white: "#e8e2d6",
+      brightBlack: "#6e665c",
+      brightRed: "#d49484",
       brightGreen: "#96b08f",
       brightYellow: "#d4b54a",
-      brightBlue: "#95aad0",
+      brightBlue: "#a0b0c8",
       brightMagenta: "#c0a4cc",
       brightCyan: "#95b4c0",
-      brightWhite: "#f0f2f5",
+      brightWhite: "#f5f0e8",
     },
     allowProposedApi: true,
   });
@@ -588,10 +588,9 @@ function emptyTermHTML(): string {
   return `
     <div class="term-empty">
       <div class="term-empty-card">
-        <div class="term-empty-mark" aria-hidden="true">◈</div>
-        <h2>No session open</h2>
-        <p>Start an agent or open one from the rail. Closing a browser tab
-        detaches only — the process keeps running in tmux.</p>
+        <div class="term-empty-mark" aria-hidden="true">a</div>
+        <h2>Pick a session</h2>
+        <p>Open one from the rail, or start fresh. Closing a browser tab only detaches — the agent keeps running.</p>
         <div class="term-empty-actions">
           <button type="button" class="primary" data-action="new-session">New session</button>
           <button type="button" class="ghost" data-action="help">Shortcuts</button>
@@ -1062,8 +1061,8 @@ function newSessionHTML(): string {
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-title" data-modal>
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Session</div>
-          <h2 id="new-title">New agent</h2>
+          <div class="eyebrow">Launch</div>
+          <h2 id="new-title">New session</h2>
         </div>
         <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
       </div>
@@ -1141,7 +1140,7 @@ function toolsHTML(): string {
       <div class="modal-head">
         <div>
           <div class="eyebrow">Workspace</div>
-          <h2 id="tools-title">Tools</h2>
+          <h2 id="tools-title">Map · memory · browser</h2>
         </div>
         <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
       </div>
@@ -1297,23 +1296,23 @@ function loginHTML(): string {
   <div class="login">
     <div class="login-card">
       <div class="login-brand">
-        <span class="logo-mark" aria-hidden="true">◈</span>
+        <span class="logo-mark" aria-hidden="true">a</span>
         <div>
           <h1>agents</h1>
-          <p class="sub">Remote control plane</p>
+          <p class="sub">Remote agent desk</p>
         </div>
       </div>
-      <p class="login-lede">Paste the same <code>AGENTSD_TOKEN</code> you use with <code>agentsctl</code>.</p>
+      <p class="login-lede">Same bearer token as <code>agentsctl</code> — paste <code>AGENTSD_TOKEN</code> to connect.</p>
       <form id="login-form">
         <div class="field">
-          <label for="token">Bearer token</label>
-          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="••••••••" required autofocus />
+          <label for="token">Token</label>
+          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Paste token" required autofocus />
         </div>
         <button class="primary" type="submit" style="width:100%">Connect</button>
         ${state.loginError ? `<p class="error">${esc(state.loginError)}</p>` : ""}
         ${state.busy ? `<p class="login-busy">Connecting…</p>` : ""}
       </form>
-      <p class="hint">Token stays in this browser’s localStorage. Prefer localhost or a private tunnel — the token is shell access to agent tools.</p>
+      <p class="hint">Stored in this browser only. Treat it like shell access to every agent tool on the host.</p>
     </div>
   </div>`;
 }
@@ -1325,21 +1324,21 @@ function shellHTML(): string {
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="brand">
-          <span class="logo-mark sm" aria-hidden="true">◈</span>
+          <span class="logo-mark sm" aria-hidden="true">a</span>
           <span class="brand-name">agents</span>
         </div>
-        <button type="button" class="ghost btn-icon" data-action="logout" title="Logout">⎋</button>
+        <button type="button" class="ghost btn-icon" data-action="logout" title="Log out">⎋</button>
       </div>
 
       <div class="sidebar-actions">
         <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
-          <span>+ New session</span>
+          <span>New session</span>
           <kbd>n</kbd>
         </button>
       </div>
 
       <div class="sidebar-filter">
-        <input id="filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" />
+        <input id="filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" />
         <span class="sess-count" id="sess-count" title="running / total">0/0</span>
       </div>
 
@@ -1359,7 +1358,7 @@ function shellHTML(): string {
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
-          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">+ New</button>
+          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">New</button>
           <button type="button" class="ghost btn-sm" data-action="tools" title="Tools (t)">Tools</button>
           <button type="button" class="ghost btn-sm" data-action="help" title="Shortcuts (?)">?</button>
         </div>
@@ -1367,9 +1366,9 @@ function shellHTML(): string {
       <div class="term-wrap">
         <div class="term-empty">
           <div class="term-empty-card">
-            <div class="term-empty-mark" aria-hidden="true">◈</div>
-            <h2>No session open</h2>
-            <p>Start an agent or open one from the rail.</p>
+            <div class="term-empty-mark" aria-hidden="true">a</div>
+            <h2>Pick a session</h2>
+            <p>Open one from the rail, or start fresh. Detach anytime — agents keep running in tmux.</p>
           </div>
         </div>
       </div>
@@ -1383,7 +1382,7 @@ function sessionListHTML(): string {
   if (state.sessions.length === 0) {
     return `<div class="empty-list">
       <p>No sessions yet</p>
-      <button type="button" class="primary btn-sm" data-action="new-session">Start one</button>
+      <button type="button" class="primary btn-sm" data-action="new-session">New session</button>
     </div>`;
   }
   if (list.length === 0) {
@@ -1430,7 +1429,7 @@ function sessionListHTML(): string {
 
 function tabsHTML(): string {
   if (state.openTabs.length === 0) {
-    return `<div class="tabs-empty">Open a session from the rail →</div>`;
+    return `<div class="tabs-empty">No tabs open</div>`;
   }
   return state.openTabs
     .map((t, i) => {
@@ -1451,13 +1450,16 @@ function tabsHTML(): string {
 function statusHTML(): string {
   const cls = state.statusOk ? "ok" : "err";
   const open = state.openTabs.length;
+  const run = state.sessions.filter((s) => s.state === "running").length;
   return `
     <span class="status-dot ${cls}"></span>
     <span>${esc(state.statusText)}</span>
     <span class="sep">·</span>
-    <span>${open} tab${open === 1 ? "" : "s"} open</span>
+    <span>${run} live</span>
     <span class="sep">·</span>
-    <span class="status-hint">detach ≠ kill</span>
+    <span>${open} open</span>
+    <span class="sep">·</span>
+    <span class="status-hint">tab close detaches only</span>
   `;
 }
 
