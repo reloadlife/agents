@@ -53,6 +53,18 @@ import {
   type Session,
   type SSHKey,
 } from "./api";
+import {
+  animateLoginIn,
+  animateModalIn,
+  animateModalOut,
+  animateSessionList,
+  animateSettingsIn,
+  animateSettingsOut,
+  animateShellIn,
+  animateToastIn,
+  animateToastOut,
+  bindPressMotion,
+} from "./motion";
 import { PtyClient } from "./pty";
 
 type OpenTab = {
@@ -199,21 +211,24 @@ let toastTimer: number | null = null;
 let shellBound = false;
 let keysBound = false;
 let uiDelegated = false;
+let shellEntranceDone = false;
+let lastSessionListSig = "";
+let pressMotionBound = false;
 
 const app = document.getElementById("app")!;
 
 function toast(msg: string, kind: ToastKind = "info", ms = 3200): void {
   state.toast = { msg, kind };
-  paintToast();
+  void paintToast();
   if (toastTimer) window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => {
     state.toast = null;
-    paintToast();
+    void paintToast();
   }, ms);
 }
 
 /** Toasts live on document.body above modals (z-index), not inside term-wrap. */
-function paintToast(): void {
+async function paintToast(): Promise<void> {
   let el = document.getElementById("app-toast");
   if (!el) {
     el = document.createElement("div");
@@ -223,6 +238,9 @@ function paintToast(): void {
     document.body.appendChild(el);
   }
   if (!state.toast) {
+    if (!el.hidden) {
+      await animateToastOut(el);
+    }
     el.hidden = true;
     el.textContent = "";
     el.className = "app-toast";
@@ -231,6 +249,7 @@ function paintToast(): void {
   el.hidden = false;
   el.textContent = state.toast.msg;
   el.className = `app-toast toast-${state.toast.kind}`;
+  animateToastIn(el);
 }
 
 function shortId(id: string): string {
@@ -689,7 +708,7 @@ function openPanel(p: Panel): void {
       await refreshAgentAccountsForForm(state.formAgent);
     }
     try {
-      paintPanel();
+      await paintPanel({ animateIn: true });
     } catch (e) {
       console.error("paintPanel failed", e);
       toast((e as Error).message || "failed to open panel", "err", 5000);
@@ -708,11 +727,19 @@ function openPanel(p: Panel): void {
   });
 }
 
-function closePanel(): void {
+async function closePanel(): Promise<void> {
+  const el = document.getElementById("panel-overlay") as HTMLDivElement | null;
+  if (el) {
+    try {
+      await animateModalOut(el);
+    } catch {
+      /* ignore */
+    }
+  }
   state.panel = null;
   state.createError = "";
   try {
-    paintPanel();
+    await paintPanel({ animateIn: false });
   } catch (e) {
     console.error("closePanel paint failed", e);
     document.getElementById("panel-overlay")?.remove();
@@ -729,10 +756,18 @@ function openSettings(tab?: SettingsTab): void {
     state.panel = null;
     document.getElementById("panel-overlay")?.remove();
   }
-  void loadSettingsData().then(() => paintSettings());
+  void loadSettingsData().then(() => paintSettings({ animateIn: true }));
 }
 
-function closeSettings(): void {
+async function closeSettings(): Promise<void> {
+  const root = document.getElementById("settings-root");
+  if (root) {
+    try {
+      await animateSettingsOut(root);
+    } catch {
+      /* ignore */
+    }
+  }
   state.settingsOpen = false;
   document.getElementById("settings-root")?.remove();
   term?.focus();
@@ -772,12 +807,13 @@ async function loadSettingsData(): Promise<void> {
   await Promise.all(tasks);
 }
 
-function paintSettings(): void {
+function paintSettings(opts?: { animateIn?: boolean }): void {
   if (!state.settingsOpen || !state.shellMounted) {
     document.getElementById("settings-root")?.remove();
     return;
   }
   let root = document.getElementById("settings-root");
+  const wasMissing = !root;
   if (!root) {
     root = document.createElement("div");
     root.id = "settings-root";
@@ -785,6 +821,9 @@ function paintSettings(): void {
     document.body.appendChild(root);
   }
   root.innerHTML = settingsHTML();
+  if (opts?.animateIn || wasMissing) {
+    void animateSettingsIn(root);
+  }
 }
 
 function settingsHTML(): string {
@@ -1888,12 +1927,20 @@ async function onGHSetupGit(): Promise<void> {
   }
 }
 
-function paintDrawer(): void {
+async function paintDrawer(): Promise<void> {
   let el = document.getElementById("drawer") as HTMLDivElement | null;
   if (!state.drawer) {
-    el?.remove();
+    if (el) {
+      try {
+        await animateModalOut(el);
+      } catch {
+        /* ignore */
+      }
+      el.remove();
+    }
     return;
   }
+  const wasMissing = !el;
   if (!el) {
     el = document.createElement("div");
     el.id = "drawer";
@@ -1902,11 +1949,11 @@ function paintDrawer(): void {
     el.addEventListener("mousedown", (ev) => {
       if (ev.target === el) {
         state.drawer = null;
-        paintDrawer();
+        void paintDrawer();
       }
     });
   }
-  // Always re-append so drawer stacks above tools panel (same z-index class otherwise loses)
+  // Always re-append so drawer stacks above tools panel
   document.body.appendChild(el);
   el.hidden = false;
   el.style.display = "grid";
@@ -1919,14 +1966,16 @@ function paintDrawer(): void {
       </div>
       <pre class="drawer-body">${esc(state.drawer.body)}</pre>
     </div>`;
+  if (wasMissing) void animateModalIn(el);
 }
 
-function paintPanel(): void {
+async function paintPanel(opts?: { animateIn?: boolean }): Promise<void> {
   let el = document.getElementById("panel-overlay") as HTMLDivElement | null;
   if (!state.panel) {
     el?.remove();
     return;
   }
+  const wasMissing = !el;
   if (!el) {
     el = document.createElement("div");
     el.id = "panel-overlay";
@@ -1936,7 +1985,7 @@ function paintPanel(): void {
     el.addEventListener("mousedown", (ev) => {
       if (ev.target === el) {
         ev.preventDefault();
-        closePanel();
+        void closePanel();
       }
     });
     document.body.appendChild(el);
@@ -1945,15 +1994,20 @@ function paintPanel(): void {
   el.hidden = false;
   el.style.display = "grid";
   el.style.visibility = "visible";
-  el.style.opacity = "1";
   el.style.zIndex = "1000";
 
   let html = "";
   if (state.panel === "new") html = newSessionHTML();
   else if (state.panel === "tools") html = toolsHTML();
   else if (state.panel === "help") html = helpHTML();
-  else html = `<div class="modal"><div class="modal-body">Unknown panel</div></div>`;
+  else html = `<div class="modal" data-modal><div class="modal-body">Unknown panel</div></div>`;
   el.innerHTML = html;
+
+  if (opts?.animateIn || wasMissing) {
+    await animateModalIn(el);
+  } else {
+    el.style.opacity = "1";
+  }
 }
 
 function agentOptionsHTML(): string {
@@ -2265,8 +2319,11 @@ function paint(): void {
     stopPolling();
     state.shellMounted = false;
     shellBound = false;
+    shellEntranceDone = false;
+    lastSessionListSig = "";
     app.innerHTML = loginHTML();
     bindLogin();
+    animateLoginIn(app);
     return;
   }
   if (!state.shellMounted) {
@@ -2275,12 +2332,34 @@ function paint(): void {
     shellBound = false;
     bindShell();
     ensureTermArea();
-    paintPanel();
-    paintDrawer();
+    void paintPanel({ animateIn: false });
+    void paintDrawer();
+    if (!shellEntranceDone) {
+      shellEntranceDone = true;
+      const shell = document.querySelector<HTMLElement>(".shell");
+      if (shell) animateShellIn(shell);
+      // first session list cascade
+      lastSessionListSig = "";
+      maybeAnimateSessionList();
+    }
+    if (!pressMotionBound) {
+      pressMotionBound = true;
+      bindPressMotion(document);
+    }
     if (state.activeId) void attachActive();
     return;
   }
   paintChrome();
+}
+
+function maybeAnimateSessionList(): void {
+  const list = document.getElementById("session-list");
+  if (!list) return;
+  // Signature ignores state (running/exited) so 5s polls don't re-stagger the list
+  const sig = `${state.filter}|${state.sessions.map((s) => s.id).join(",")}`;
+  if (sig === lastSessionListSig) return;
+  lastSessionListSig = sig;
+  animateSessionList(list);
 }
 
 function paintChrome(): void {
@@ -2307,9 +2386,10 @@ function paintChrome(): void {
   const shell = document.querySelector(".shell");
   shell?.classList.toggle("sidebar-open", state.sidebarOpen);
   paintConn();
-  paintToast();
+  void paintToast();
   bindSessionList();
   bindTabs();
+  maybeAnimateSessionList();
 }
 
 function loginHTML(): string {

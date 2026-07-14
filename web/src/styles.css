@@ -1302,16 +1302,7 @@ kbd {
   padding: 1.25rem;
   background: hsl(0 0% 0% / 0.7);
   backdrop-filter: blur(6px);
-  animation: overlay-in 0.12s ease-out;
-}
-
-@keyframes overlay-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  /* enter/exit driven by motion.dev */
 }
 
 .modal {
@@ -1323,8 +1314,9 @@ kbd {
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
-  animation: modal-in 0.14s ease-out;
+  /* enter/exit driven by motion.dev */
   overflow: hidden;
+  will-change: transform, opacity;
 }
 
 .modal-wide {
@@ -1342,17 +1334,6 @@ kbd {
 
 .drawer-overlay {
   z-index: 1200;
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 .modal-head {
@@ -1596,18 +1577,8 @@ kbd {
   box-shadow: var(--shadow);
   font-size: 0.8125rem;
   font-weight: 500;
-  animation: toast-in 0.16s ease-out;
-}
-
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  will-change: transform, opacity;
+  /* enter/exit driven by motion.dev */
 }
 
 .toast-ok {
@@ -1708,16 +1679,7 @@ kbd {
   z-index: 900;
   background: hsl(var(--sidebar-background));
   display: flex;
-  animation: settings-in 0.14s ease-out;
-}
-
-@keyframes settings-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  /* enter/exit driven by motion.dev */
 }
 
 .settings-shell {
