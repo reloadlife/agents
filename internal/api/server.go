@@ -157,6 +157,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/maps", s.handleGetMap)
 	mux.HandleFunc("GET /v1/maps/status", s.handleMapStatus)
 
+	// Workspace tasks (<cwd>/.agents/tasks.json)
+	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
+	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
+	mux.HandleFunc("PATCH /v1/tasks/{id}", s.handleUpdateTask)
+	mux.HandleFunc("DELETE /v1/tasks/{id}", s.handleDeleteTask)
+	mux.HandleFunc("POST /v1/tasks/{id}/delete", s.handleDeleteTask) // alias
+
 	// Workspace memory (FTS) — agents query via CLI/API
 	mux.HandleFunc("POST /v1/memory/index", s.handleMemoryIndex)
 	mux.HandleFunc("POST /v1/memory/search", s.handleMemorySearch)
@@ -1249,9 +1256,9 @@ func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	count, _ := s.mem.Stats(rel)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"cwd":       rel,
-		"indexed":   n,
+		"ok":         true,
+		"cwd":        rel,
+		"indexed":    n,
 		"docs_total": count,
 	})
 }

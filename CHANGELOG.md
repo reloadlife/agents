@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workspace tasks** — lightweight list at `<cwd>/.agents/tasks.json`
+  - API: `GET/POST /v1/tasks`, `PATCH/DELETE /v1/tasks/{id}` (`status`: `todo`|`doing`|`done`)
+  - Web: Tools sheet section + command palette “Workspace tasks” Vaul panel (add / toggle / cycle / delete)
 - **Session git branch** — `GET /v1/sessions` (and get/create) include best-effort `git_branch`
   - Computed via `git -C <cwd> rev-parse --abbrev-ref HEAD` (short timeout; ignored on error)
   - Deduped per unique cwd on list; falls back to worktree `branch` metadata when present

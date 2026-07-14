@@ -286,6 +286,136 @@ func (s *Server) handleSkillsInstall(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// —— Workspace tasks (<cwd>/.agents/tasks.json) ——
+
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	list, err := workspaces.ListTasks(abs)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if list == nil {
+		list = []workspaces.Task{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":     rel,
+		"cwd_abs": abs,
+		"path":    filepath.Join(".agents", workspaces.TasksFile),
+		"tasks":   list,
+	})
+}
+
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd   string `json:"cwd"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t, err := workspaces.CreateTask(abs, body.Title)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.audit(r, "task.create", t.ID, map[string]any{"cwd": rel, "title": t.Title})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"cwd":   rel,
+		"task":  t,
+		"tasks": mustListTasks(abs),
+	})
+}
+
+func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Cwd    string  `json:"cwd"`
+		Status *string `json:"status"`
+		Title  *string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var st *workspaces.TaskStatus
+	if body.Status != nil {
+		v := workspaces.TaskStatus(strings.TrimSpace(*body.Status))
+		st = &v
+	}
+	t, err := workspaces.UpdateTask(abs, id, st, body.Title)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.audit(r, "task.update", id, map[string]any{"cwd": rel, "status": t.Status})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":   rel,
+		"task":  t,
+		"tasks": mustListTasks(abs),
+	})
+}
+
+func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cwd := r.URL.Query().Get("cwd")
+	if cwd == "" && r.Method == http.MethodPost {
+		var body struct {
+			Cwd string `json:"cwd"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		cwd = body.Cwd
+	}
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := workspaces.DeleteTask(abs, id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.audit(r, "task.delete", id, map[string]any{"cwd": rel})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"cwd":   rel,
+		"id":    id,
+		"tasks": mustListTasks(abs),
+	})
+}
+
+func mustListTasks(abs string) []workspaces.Task {
+	list, err := workspaces.ListTasks(abs)
+	if err != nil || list == nil {
+		return []workspaces.Task{}
+	}
+	return list
+}
+
 // —— Workspace dashboard ——
 
 func (s *Server) handleWorkspaceDashboard(w http.ResponseWriter, r *http.Request) {
