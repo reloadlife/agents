@@ -4498,3 +4498,559 @@ a.settings-nav-item {
     animation: none !important;
   }
 }
+
+/* settings-shadcn
+   Full-page settings layout polish — nav, list rows, forms, empty states.
+   Append-only overrides layered on the base Settings block above. */
+
+.settings-nav-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.35;
+  font-weight: 400;
+}
+
+.settings-nav-list {
+  gap: 0.2rem;
+  padding: 0.15rem 0.1rem 0.35rem;
+}
+
+a.settings-nav-item.settings-nav-item,
+.settings-nav-item {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.settings-nav-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  opacity: 0.85;
+}
+
+.settings-nav-ico .menu-ico {
+  width: 1rem;
+  height: 1rem;
+}
+
+.settings-nav-item:hover .settings-nav-ico,
+.settings-nav-item.active .settings-nav-ico {
+  color: inherit;
+  opacity: 1;
+}
+
+.settings-nav-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-nav-item.active {
+  background: hsl(var(--sidebar-accent));
+  color: hsl(var(--sidebar-accent-foreground));
+  box-shadow: inset 0 0 0 1px hsl(var(--sidebar-border) / 0.55);
+  font-weight: 500;
+}
+
+.settings-nav-item.active .settings-nav-label {
+  font-weight: 600;
+}
+
+.settings-nav-item.active .settings-nav-hint {
+  color: hsl(var(--muted-foreground));
+  opacity: 0.9;
+}
+
+.settings-nav-foot {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid hsl(var(--sidebar-border) / 0.55);
+}
+
+.settings-nav-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  width: 100%;
+  height: 2.25rem;
+  padding: 0 0.65rem;
+  font-size: 0.8125rem;
+}
+
+.settings-nav-close .menu-ico {
+  width: 0.95rem;
+  height: 0.95rem;
+  opacity: 0.75;
+}
+
+.settings-main {
+  background: hsl(var(--card));
+  border-color: hsl(var(--border));
+}
+
+.settings-main-head {
+  background: hsl(var(--card));
+}
+
+.settings-body {
+  max-width: 42rem;
+  padding: 1.35rem 1.5rem 2.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.settings-lede {
+  margin: 0 0 1rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.settings-stat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.9rem;
+  padding: 0.7rem 0.95rem;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / 0.35);
+  border-color: hsl(var(--border));
+}
+
+.settings-stat-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1.15rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.settings-stat-items > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.settings-stat-items code {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.acct-live-bar {
+  align-items: center;
+}
+
+/* List rows — account / gh / ssh */
+.settings-cards.acct-list {
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.settings-card.acct-card,
+.settings-list-row,
+.gh-row.settings-list-row,
+.ssh-key-row.settings-list-row {
+  align-items: center;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-card.acct-card:hover,
+.settings-list-row:hover {
+  background: hsl(var(--muted) / 0.28);
+}
+
+.acct-list .acct-card.acct-active {
+  border-left-width: 3px;
+  border-left-color: hsl(var(--success));
+  background: hsl(var(--success) / 0.07);
+}
+
+.acct-list .acct-card.acct-active:hover {
+  background: hsl(var(--success) / 0.1);
+}
+
+.acct-list .acct-card.acct-empty {
+  opacity: 1;
+}
+
+.acct-list .acct-card.acct-empty .settings-card-meta {
+  color: hsl(var(--muted-foreground));
+}
+
+.settings-card-title {
+  gap: 0.35rem 0.45rem;
+}
+
+.settings-card-title strong {
+  font-size: 0.875rem;
+  font-weight: 550;
+  letter-spacing: -0.015em;
+}
+
+.settings-id,
+.settings-card-title code.settings-id,
+.ssh-key-name code.settings-id {
+  font-size: 0.7rem;
+  font-weight: 450;
+  padding: 0.05rem 0.35rem;
+  border-radius: calc(var(--radius) - 4px);
+  background: hsl(var(--muted) / 0.65);
+  border: 1px solid hsl(var(--border) / 0.7);
+  color: hsl(var(--muted-foreground));
+}
+
+.settings-card-meta {
+  font-family: inherit;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.4;
+}
+
+/* Horizontal button groups on rows */
+.settings-btn-group,
+.settings-card-actions.settings-btn-group,
+.ssh-key-actions.settings-btn-group,
+.gh-actions.settings-btn-group {
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.settings-btn-group .btn-sm {
+  height: 1.85rem;
+  padding: 0 0.65rem;
+  font-size: 0.75rem;
+}
+
+.settings-btn-group .primary.btn-sm:disabled {
+  opacity: 0.55;
+}
+
+.settings-btn-group .danger-text:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger) !important;
+}
+
+/* Forms — primary actions right-aligned */
+.settings-form-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.05rem 0.95rem;
+  margin-bottom: 0.9rem;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-soft);
+}
+
+.settings-form-card > .field,
+.settings-form-card > .field-grid {
+  margin: 0;
+}
+
+.settings-form-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-form-head h3,
+.settings-form-card h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: hsl(var(--foreground));
+}
+
+.settings-form-head .form-hint,
+.settings-form-card .form-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground));
+}
+
+.settings-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+}
+
+.settings-form-actions .primary {
+  min-width: 5.5rem;
+}
+
+/* Empty / error states — calm */
+.settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.75rem 1.15rem;
+  border: 1px dashed hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / 0.2);
+  color: hsl(var(--muted-foreground));
+  text-align: center;
+}
+
+.settings-empty--inline {
+  padding: 1.15rem 1rem;
+}
+
+.settings-empty--error {
+  border-color: hsl(var(--error-border) / 0.65);
+  background: hsl(var(--error-bg) / 0.45);
+}
+
+.settings-empty-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+}
+
+.settings-empty-desc {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+.settings-empty-desc code {
+  font-size: 0.72rem;
+}
+
+.settings-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.settings-empty p {
+  margin: 0;
+}
+
+/* About section cards */
+.settings-about {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.settings-about .settings-form-card {
+  margin-bottom: 0.85rem;
+}
+
+.settings-about .keys {
+  margin: 0.15rem 0 0;
+}
+
+.settings-about .keys > div {
+  padding: 0.4rem 0;
+}
+
+.ok-text {
+  color: hsl(var(--success-fg)) !important;
+}
+
+:root[data-theme="light"] .ok-text {
+  color: hsl(142 55% 32%) !important;
+}
+
+/* Platform chips inside settings body */
+.settings-body .platform-chips {
+  margin-bottom: 0.85rem;
+  padding: 0.2rem;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / 0.28);
+  border: 1px solid hsl(var(--border) / 0.65);
+  gap: 0.25rem;
+}
+
+.settings-body .chip.chip-platform {
+  border-color: transparent;
+  background: transparent;
+  max-width: 12rem;
+}
+
+.settings-body .chip.chip-platform:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+.settings-body .chip.chip-platform.active {
+  background: hsl(var(--background));
+  border-color: hsl(var(--border));
+  color: hsl(var(--foreground));
+  box-shadow: var(--shadow-soft);
+}
+
+.settings-body .chip.chip-platform.active .chip-meta {
+  opacity: 0.72;
+}
+
+/* How-to details calm */
+.settings-body .howto-card {
+  margin-top: 0.25rem;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.85rem 0.35rem;
+  background: hsl(var(--muted) / 0.15);
+}
+
+.settings-body .howto-card > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  padding: 0.5rem 0;
+  list-style: none;
+}
+
+.settings-body .howto-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-body .howto-card[open] > summary {
+  color: hsl(var(--foreground));
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+  margin-bottom: 0.35rem;
+}
+
+/* Workspace tool cards in settings */
+.settings-body .settings-cards .settings-card.col {
+  gap: 0.45rem;
+  padding: 0.85rem 0.95rem;
+}
+
+.settings-body .settings-card.col .btn-row {
+  margin-top: 0.15rem;
+}
+
+/* Mobile: top nav strip */
+@media (max-width: 840px) {
+  .settings-nav-sub {
+    display: none;
+  }
+
+  .settings-nav-list {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 0.25rem;
+    flex: 1 1 100%;
+    order: 3;
+    padding: 0.15rem 0 0.1rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .settings-nav-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  a.settings-nav-item.settings-nav-item,
+  .settings-nav-item {
+    flex-direction: row;
+    min-width: auto;
+    min-height: 2.2rem;
+    padding: 0.4rem 0.7rem;
+    white-space: nowrap;
+  }
+
+  .settings-nav-hint {
+    display: none;
+  }
+
+  .settings-nav-text {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .settings-nav-foot {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0;
+    order: 2;
+    width: auto;
+  }
+
+  .settings-nav-close {
+    width: auto;
+  }
+
+  .settings-nav-close .menu-ico {
+    display: none;
+  }
+
+  .settings-body {
+    max-width: none;
+    padding: 1rem 1rem 1.75rem;
+  }
+
+  .settings-card.acct-card,
+  .settings-list-row,
+  .gh-row.settings-list-row,
+  .ssh-key-row.settings-list-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-btn-group,
+  .settings-card-actions.settings-btn-group,
+  .ssh-key-actions.settings-btn-group,
+  .gh-actions.settings-btn-group {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .settings-form-actions {
+    justify-content: stretch;
+  }
+
+  .settings-form-actions .primary,
+  .settings-form-actions .ghost {
+    flex: 1 1 auto;
+  }
+
+  .settings-stat {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-stat > .ghost.btn-sm {
+    align-self: flex-start;
+  }
+}
