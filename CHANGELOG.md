@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] — 2026-07-14
+
+### Added
+
+- **Vaul mobile drawers** (shadcn Drawer pattern):
+  - On viewports ≤840px, New session / Tools / Help / map pack open as bottom sheets
+  - Drag handle, swipe-to-dismiss, background scale (`shouldScaleBackground`)
+  - Lazy-loaded React island + Vaul chunk (desktop stays on centered modals)
+  - `handleOnly` so form/list scrolling works inside the sheet
+
 ## [0.6.1] — 2026-07-14
 
 ### Added

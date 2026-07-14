@@ -54,6 +54,12 @@ import {
   type SSHKey,
 } from "./api";
 import {
+  closeMobileDrawer,
+  isMobileDrawerOpen,
+  isMobileViewport,
+  openMobileDrawer,
+} from "./drawer-bridge";
+import {
   animateLoginIn,
   animateModalIn,
   animateModalOut,
@@ -66,6 +72,14 @@ import {
   bindPressMotion,
 } from "./motion";
 import { PtyClient } from "./pty";
+
+let vaulReady = false;
+async function ensureVaulHost(): Promise<void> {
+  if (vaulReady) return;
+  const { mountVaulHost } = await import("./vaul-host");
+  mountVaulHost();
+  vaulReady = true;
+}
 
 type OpenTab = {
   id: string;
@@ -728,6 +742,9 @@ function openPanel(p: Panel): void {
 }
 
 async function closePanel(): Promise<void> {
+  if (isMobileDrawerOpen()) {
+    closeMobileDrawer("programmatic");
+  }
   const el = document.getElementById("panel-overlay") as HTMLDivElement | null;
   if (el) {
     try {
@@ -1927,9 +1944,41 @@ async function onGHSetupGit(): Promise<void> {
   }
 }
 
+function panelTitle(p: Panel): string {
+  if (p === "new") return "New session";
+  if (p === "tools") return "Quick tools";
+  if (p === "help") return "Shortcuts";
+  return "Panel";
+}
+
+/** Strip modal shell so Vaul can render the body under its handle/title. */
+function stripModalChrome(full: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(full, "text/html");
+    const form = doc.querySelector("form");
+    if (form) return form.outerHTML;
+    const body = doc.querySelector(".modal-body");
+    if (body) return body.outerHTML;
+  } catch {
+    /* fall through */
+  }
+  return full;
+}
+
+function panelBodyHTML(p: Panel): string {
+  if (p === "new") return stripModalChrome(newSessionHTML());
+  if (p === "tools") return stripModalChrome(toolsHTML());
+  if (p === "help") return stripModalChrome(helpHTML());
+  return "";
+}
+
 async function paintDrawer(): Promise<void> {
   let el = document.getElementById("drawer") as HTMLDivElement | null;
   if (!state.drawer) {
+    // Close mobile content drawer only when no panel owns the Vaul host
+    if (isMobileViewport() && isMobileDrawerOpen() && !state.panel) {
+      closeMobileDrawer("programmatic");
+    }
     if (el) {
       try {
         await animateModalOut(el);
@@ -1940,6 +1989,26 @@ async function paintDrawer(): Promise<void> {
     }
     return;
   }
+
+  // Mobile: Vaul bottom sheet
+  if (isMobileViewport()) {
+    el?.remove();
+    await ensureVaulHost();
+    openMobileDrawer({
+      title: state.drawer.title,
+      html: `<pre class="drawer-body">${esc(state.drawer.body)}</pre>`,
+      variant: "content",
+      onClose: (reason) => {
+        if (reason === "user") {
+          state.drawer = null;
+        }
+      },
+    });
+    return;
+  }
+
+  // Desktop: centered modal overlay
+  if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
   const wasMissing = !el;
   if (!el) {
     el = document.createElement("div");
@@ -1953,7 +2022,6 @@ async function paintDrawer(): Promise<void> {
       }
     });
   }
-  // Always re-append so drawer stacks above tools panel
   document.body.appendChild(el);
   el.hidden = false;
   el.style.display = "grid";
@@ -1975,13 +2043,39 @@ async function paintPanel(opts?: { animateIn?: boolean }): Promise<void> {
     el?.remove();
     return;
   }
+
+  // Mobile: Vaul bottom sheet for New / Tools / Help
+  if (isMobileViewport()) {
+    el?.remove();
+    const p = state.panel;
+    await ensureVaulHost();
+    openMobileDrawer({
+      title: panelTitle(p),
+      html: panelBodyHTML(p),
+      variant: p === "tools" || p === "new" ? "tall" : "sheet",
+      onClose: (reason) => {
+        if (reason === "user") {
+          state.panel = null;
+          state.createError = "";
+          term?.focus();
+        }
+      },
+    });
+    if (p === "tools") {
+      // Vaul injects body HTML after React commit — delay status paint
+      window.setTimeout(() => void refreshToolsStatus(), 60);
+    }
+    return;
+  }
+
+  if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
+
   const wasMissing = !el;
   if (!el) {
     el = document.createElement("div");
     el.id = "panel-overlay";
     el.className = "overlay";
     el.setAttribute("role", "presentation");
-    // Backdrop close only (not when clicking inside .modal)
     el.addEventListener("mousedown", (ev) => {
       if (ev.target === el) {
         ev.preventDefault();
@@ -1990,7 +2084,6 @@ async function paintPanel(opts?: { animateIn?: boolean }): Promise<void> {
     });
     document.body.appendChild(el);
   }
-  // Force visible each open (defensive against stale CSS/DOM)
   el.hidden = false;
   el.style.display = "grid";
   el.style.visibility = "visible";
@@ -2321,6 +2414,7 @@ function paint(): void {
     shellBound = false;
     shellEntranceDone = false;
     lastSessionListSig = "";
+    if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
     app.innerHTML = loginHTML();
     bindLogin();
     animateLoginIn(app);
@@ -3162,7 +3256,8 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         ev.stopPropagation();
         state.drawer = null;
-        paintDrawer();
+        if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
+        void paintDrawer();
         break;
       case "prune":
         ev.preventDefault();

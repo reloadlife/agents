@@ -2141,6 +2141,126 @@ kbd {
   }
 }
 
+/* —— Vaul (mobile bottom drawers) —— */
+#vaul-host {
+  /* portal target; content lives in body via Radix portal */
+}
+
+.vaul-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: hsl(0 0% 0% / 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.vaul-content {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1110;
+  outline: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 92dvh;
+  border-radius: 1rem 1rem 0 0;
+  border: 1px solid hsl(var(--border));
+  border-bottom: none;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.vaul-content--sheet {
+  max-height: 78dvh;
+}
+
+.vaul-content--tall {
+  max-height: 92dvh;
+  min-height: 55dvh;
+}
+
+.vaul-content--content {
+  max-height: 88dvh;
+}
+
+.vaul-chrome {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: inherit;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.vaul-handle {
+  margin: 0.55rem auto 0.15rem;
+  width: 2.5rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.35);
+  flex-shrink: 0;
+}
+
+.vaul-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 1rem 0.65rem;
+  border-bottom: 1px solid hsl(var(--border));
+  flex-shrink: 0;
+}
+
+.vaul-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vaul-close {
+  flex-shrink: 0;
+}
+
+.vaul-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.85rem 1rem 1.25rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vaul-body .modal-body {
+  padding: 0;
+}
+
+.vaul-body .drawer-body {
+  max-height: none;
+  padding: 0;
+  font-size: 0.78rem;
+}
+
+.vaul-body .tools-body .tool-block:last-child {
+  margin-bottom: 0;
+}
+
+/* Scale background (Vaul shouldScaleBackground) looks best with a fixed shell */
+[data-vaul-drawer-wrapper] {
+  min-height: 100%;
+}
+
+@media (min-width: 841px) {
+  /* Vaul host unused on desktop; keep portal inert if somehow open */
+  .vaul-content {
+    max-width: 32rem;
+    margin: 0 auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
