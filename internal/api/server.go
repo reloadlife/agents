@@ -47,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/agents", s.handleListAgents)
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
+	mux.HandleFunc("POST /v1/workspaces/clone", s.handleCloneWorkspace)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
 	// Playwright / headed browser stack
@@ -62,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/kill", s.handleKillSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResumeSession)
+	mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/delete", s.handleDeleteSession) // alias for clients without DELETE
 	mux.HandleFunc("POST /v1/sessions/prune", s.handlePruneSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/history", s.handleSessionHistory)
 	// Full remote PTY (tmux attach) over WebSocket — no SSH required
@@ -123,11 +126,32 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	list := workspaces.List(s.cfg)
+	// Also expose flat path strings for simple clients.
+	paths := make([]string, 0, len(list))
+	for _, e := range list {
+		paths = append(paths, e.Path)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace_root": s.cfg.WorkspaceRoot,
 		"default_cwd":    s.cfg.DefaultCwd,
-		"workspaces":     workspaces.List(s.cfg),
+		"workspaces":     list,
+		"paths":          paths,
 	})
+}
+
+func (s *Server) handleCloneWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req workspaces.CloneRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := workspaces.Clone(s.cfg, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +315,23 @@ func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.sess == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.sess.Delete(id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted": true})
 }
 
 func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {

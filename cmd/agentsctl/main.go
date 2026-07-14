@@ -163,10 +163,11 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl doctor                       # health check
   agentsctl agents                       # list CLIs on server
   agentsctl workspaces                   # list allowlisted cwds
+  agentsctl workspaces clone URL [-name DIR] [--fork] [--branch B]
   agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]
-  agentsctl session list | kill ID | resume ID | history ID | prune
+  agentsctl session list | kill ID | delete ID | resume ID | history ID | prune
   agentsctl map generate -r <cwd>        # write .agents/PROJECT_MAP.md on server
   agentsctl map show|status -r <cwd>
   agentsctl memory index -r <cwd>        # index map+docs into FTS memory
@@ -512,6 +513,17 @@ func cmdDoctor(c *client) int {
 }
 
 func cmdWorkspaces(c *client, args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "clone", "c":
+			return cmdWorkspaceClone(c, args[1:])
+		case "list", "ls":
+			args = args[1:]
+		case "help", "-h", "--help":
+			fmt.Fprintln(os.Stderr, "usage: agentsctl workspaces [list] | clone URL [--name DIR] [--fork] [--branch B] [--depth N]")
+			return 2
+		}
+	}
 	asJSON := false
 	for _, a := range args {
 		if a == "--json" || a == "-j" {
@@ -552,7 +564,48 @@ func cmdWorkspaces(c *client, args []string) int {
 		}
 		fmt.Printf("  %s %s\n", mark, w.Path)
 	}
-	fmt.Println("\nuse: agentsctl session start -r <path> -a claude --open")
+	fmt.Println("\nclone: agentsctl workspaces clone owner/repo [--name DIR] [--fork]")
+	fmt.Println("start: agentsctl session start -r <path> -a claude --open")
+	return 0
+}
+
+func cmdWorkspaceClone(c *client, args []string) int {
+	fs := flag.NewFlagSet("workspaces clone", flag.ExitOnError)
+	name := fs.String("name", "", "directory name under workspace_root")
+	branch := fs.String("branch", "", "branch to checkout")
+	depth := fs.Int("depth", 0, "shallow clone depth (0 = full)")
+	fork := fs.Bool("fork", false, "fork on GitHub first (requires gh auth on server)")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fatal("usage: agentsctl workspaces clone URL|owner/repo [--name DIR] [--fork] [--branch B] [--depth N]")
+	}
+	body := map[string]any{
+		"url":  fs.Arg(0),
+		"fork": *fork,
+	}
+	if *name != "" {
+		body["name"] = *name
+	}
+	if *branch != "" {
+		body["branch"] = *branch
+	}
+	if *depth > 0 {
+		body["depth"] = *depth
+	}
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/workspaces/clone", body, &out); err != nil {
+		fatal("%v", err)
+	}
+	cwd, _ := out["cwd"].(string)
+	abs, _ := out["abs"].(string)
+	fmt.Printf("cloned → %s\n", cwd)
+	if abs != "" {
+		fmt.Printf("abs: %s\n", abs)
+	}
+	if f, _ := out["forked"].(bool); f {
+		fmt.Println("(forked on GitHub)")
+	}
+	fmt.Printf("\nnext: agentsctl session start -r %s -a claude --open\n", cwd)
 	return 0
 }
 
@@ -743,7 +796,7 @@ func cmdStatus(c *client, args []string) int {
 
 func cmdSession(c *client, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: agentsctl session start|open|list|attach|kill|resume|history|get|prune ...")
+		fmt.Fprintln(os.Stderr, "usage: agentsctl session start|open|list|attach|kill|delete|resume|history|get|prune ...")
 		return 2
 	}
 	switch args[0] {
@@ -757,6 +810,8 @@ func cmdSession(c *client, args []string) int {
 		return cmdSessionAttachLocal(c, args[1:])
 	case "kill", "stop":
 		return cmdSessionKill(c, args[1:])
+	case "delete", "rm", "remove":
+		return cmdSessionDelete(c, args[1:])
 	case "resume", "restart":
 		return cmdSessionResume(c, args[1:])
 	case "history", "log":
@@ -1039,6 +1094,19 @@ func cmdSessionHistory(c *client, args []string) int {
 	if len(b) > 0 && b[len(b)-1] != '\n' {
 		fmt.Println()
 	}
+	return 0
+}
+
+func cmdSessionDelete(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl session delete SESSION_ID")
+	}
+	id := args[0]
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/sessions/"+id+"/delete", map[string]any{}, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("deleted %s\n", id)
 	return 0
 }
 

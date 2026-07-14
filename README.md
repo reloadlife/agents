@@ -137,6 +137,7 @@ agentsctl session list
 agentsctl session open [id]      # full PTY (WebSocket; auto-reconnect)
 agentsctl session open id --ssh  # fallback: ssh -t … tmux attach
 agentsctl session kill id
+agentsctl session delete id   # stop + remove from list
 agentsctl session resume id   # re-attach if alive, else restart agent (same id)
 agentsctl session history id  # dump terminal scrollback / last snapshot
 ```
@@ -152,8 +153,11 @@ agentsctl session history id  # dump terminal scrollback / last snapshot
 | GET | `/v1/sessions` | List |
 | GET | `/v1/sessions/{id}` | Detail (`pty_path`, attach hints) |
 | GET | `/v1/sessions/{id}/pty` | **WebSocket full PTY** |
-| POST | `/v1/sessions/{id}/kill` | Kill tmux session |
+| POST | `/v1/sessions/{id}/kill` | Stop agent (session stays in list) |
+| POST | `/v1/sessions/{id}/delete` | Stop agent and remove session |
+| DELETE | `/v1/sessions/{id}` | Same as delete |
 | POST | `/v1/sessions/{id}/resume` | Re-attach if tmux alive; else restart agent |
+| POST | `/v1/workspaces/clone` | `git clone` / `gh fork` into workspace |
 | GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 

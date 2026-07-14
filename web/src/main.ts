@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import {
   clearToken,
+  cloneWorkspace,
   createSession,
   generateMap,
   getMap,
@@ -23,6 +24,7 @@ import {
   playwrightStart,
   playwrightStatus,
   playwrightStop,
+  deleteSession,
   pruneSessions,
   resumeSession,
   setToken,
@@ -55,11 +57,21 @@ type AppState = {
   formCwd: string;
   formName: string;
   formPrompt: string;
+  /** New project from git */
+  formGitUrl: string;
+  formGitName: string;
+  formGitBranch: string;
+  formGitFork: boolean;
+  formGitDepth: boolean;
   statusText: string;
   statusOk: boolean;
   toast: { msg: string; kind: ToastKind } | null;
   loginError: string;
+  /** bootstrap / global load */
   busy: boolean;
+  /** create-session in flight */
+  creating: boolean;
+  createError: string;
   shellMounted: boolean;
   mapStatus: string;
   memStatus: string;
@@ -85,11 +97,18 @@ const state: AppState = {
   formCwd: ".",
   formName: "",
   formPrompt: "",
+  formGitUrl: "",
+  formGitName: "",
+  formGitBranch: "",
+  formGitFork: false,
+  formGitDepth: true,
   statusText: "idle",
   statusOk: true,
   toast: null,
   loginError: "",
   busy: false,
+  creating: false,
+  createError: "",
   shellMounted: false,
   mapStatus: "—",
   memStatus: "—",
@@ -113,6 +132,7 @@ let pollTimer: number | null = null;
 let toastTimer: number | null = null;
 let shellBound = false;
 let keysBound = false;
+let uiDelegated = false;
 
 const app = document.getElementById("app")!;
 
@@ -126,23 +146,45 @@ function toast(msg: string, kind: ToastKind = "info", ms = 3200): void {
   }, ms);
 }
 
+/** Toasts live on document.body above modals (z-index), not inside term-wrap. */
 function paintToast(): void {
-  const el = document.getElementById("toast");
-  if (!el) return;
+  let el = document.getElementById("app-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "app-toast";
+    el.className = "app-toast";
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
   if (!state.toast) {
     el.hidden = true;
     el.textContent = "";
-    el.className = "toast";
+    el.className = "app-toast";
     return;
   }
   el.hidden = false;
   el.textContent = state.toast.msg;
-  el.className = `toast toast-${state.toast.kind}`;
+  el.className = `app-toast toast-${state.toast.kind}`;
 }
 
 function shortId(id: string): string {
   if (id.length <= 12) return id;
   return id.slice(0, 8) + "…";
+}
+
+/** Map agent name → CSS class for brand colors. */
+function agentClass(name: string): string {
+  const k = (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (k.includes("claude") || k.includes("anthropic")) return "agent-claude";
+  if (k.includes("grok") || k.includes("xai")) return "agent-grok";
+  if (k.includes("codex") || k.includes("openai") || k === "gpt" || k.startsWith("gpt"))
+    return "agent-codex";
+  if (k.includes("cursor")) return "agent-cursor";
+  if (k.includes("opencode")) return "agent-opencode";
+  if (k.includes("gemini") || k.includes("google")) return "agent-gemini";
+  if (k.includes("copilot")) return "agent-copilot";
+  if (k.includes("aider")) return "agent-aider";
+  return "agent-default";
 }
 
 function tabTitle(s: Session | OpenTab): string {
@@ -167,6 +209,32 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+function normalizeWorkspacePaths(wsRes: {
+  paths?: string[];
+  workspaces?: Array<string | { path?: string }>;
+}): string[] {
+  if (wsRes.paths && wsRes.paths.length > 0) return wsRes.paths;
+  const raw = wsRes.workspaces ?? [];
+  const out: string[] = [];
+  for (const w of raw) {
+    if (typeof w === "string") out.push(w);
+    else if (w && typeof w.path === "string") out.push(w.path);
+  }
+  return out.length > 0 ? out : ["."];
+}
+
+async function refreshWorkspaceList(): Promise<void> {
+  try {
+    const wsRes = await listWorkspaces();
+    state.workspaces = normalizeWorkspacePaths(wsRes);
+    if (!state.workspaces.includes(state.formCwd)) {
+      state.formCwd = wsRes.default_cwd || state.workspaces[0] || ".";
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 async function bootstrapAuthed(): Promise<void> {
   state.busy = true;
   state.loginError = "";
@@ -186,7 +254,7 @@ async function bootstrapAuthed(): Promise<void> {
     if (!state.agents.includes(state.formAgent)) {
       state.formAgent = state.agents[0] ?? "claude";
     }
-    state.workspaces = wsRes.workspaces?.length > 0 ? wsRes.workspaces : ["."];
+    state.workspaces = normalizeWorkspacePaths(wsRes);
     state.defaultCwd = wsRes.default_cwd || state.workspaces[0] || ".";
     if (!state.workspaces.includes(state.formCwd)) {
       state.formCwd = state.defaultCwd;
@@ -366,27 +434,27 @@ function ensureTerminal(container: HTMLElement): void {
     scrollback: 50000,
     convertEol: true,
     theme: {
-      background: "#05070c",
-      foreground: "#dce6f2",
-      cursor: "#3de0c5",
-      cursorAccent: "#05070c",
-      selectionBackground: "#1e3a4a",
-      black: "#0a0e14",
-      red: "#ff6b6b",
-      green: "#3de0c5",
-      yellow: "#f5a524",
-      blue: "#5b9fd4",
-      magenta: "#c084fc",
-      cyan: "#3de0c5",
-      white: "#dce6f2",
-      brightBlack: "#5a6a80",
-      brightRed: "#ff8a8a",
-      brightGreen: "#6eecd6",
-      brightYellow: "#ffc14d",
-      brightBlue: "#7eb8e8",
-      brightMagenta: "#d4a5ff",
-      brightCyan: "#6eecd6",
-      brightWhite: "#ffffff",
+      background: "#0a0c10",
+      foreground: "#d8dce3",
+      cursor: "#a8b4c8",
+      cursorAccent: "#0a0c10",
+      selectionBackground: "#2a3344",
+      black: "#0a0c10",
+      red: "#c97b7b",
+      green: "#7d9b76",
+      yellow: "#c9a227",
+      blue: "#7a92b5",
+      magenta: "#a88bb8",
+      cyan: "#7a9aaa",
+      white: "#d8dce3",
+      brightBlack: "#5c6370",
+      brightRed: "#d49494",
+      brightGreen: "#96b08f",
+      brightYellow: "#d4b54a",
+      brightBlue: "#95aad0",
+      brightMagenta: "#c0a4cc",
+      brightCyan: "#95b4c0",
+      brightWhite: "#f0f2f5",
     },
     allowProposedApi: true,
   });
@@ -495,12 +563,15 @@ function ensureTermArea(): void {
       <div id="term-host" class="term-host"></div>
       <div class="term-toolbar">
         <button type="button" class="btn-sm" id="btn-refit" title="Refit terminal (f)">Fit</button>
-        <button type="button" class="btn-sm danger" id="btn-kill" title="Kill agent process">Kill</button>
-      </div>
-      <div class="toast" id="toast" hidden></div>`;
+        <button type="button" class="btn-sm" id="btn-kill" title="Stop agent (keeps list entry)">Stop</button>
+        <button type="button" class="btn-sm danger" id="btn-delete" title="Stop and delete session">Delete</button>
+      </div>`;
     document.getElementById("btn-refit")?.addEventListener("click", () => fit());
     document.getElementById("btn-kill")?.addEventListener("click", () => {
       if (state.activeId) void onKillSession(state.activeId);
+    });
+    document.getElementById("btn-delete")?.addEventListener("click", () => {
+      if (state.activeId) void onDeleteSession(state.activeId);
     });
     if (term) disposeTerminal();
   } else if (!hasActive && hasHost) {
@@ -508,10 +579,8 @@ function ensureTermArea(): void {
     disposeTerminal();
     setConn("idle");
     wrap.innerHTML = emptyTermHTML();
-    bindEmptyActions();
   } else if (!hasActive && !hasHost) {
     wrap.innerHTML = emptyTermHTML();
-    bindEmptyActions();
   }
 }
 
@@ -524,76 +593,171 @@ function emptyTermHTML(): string {
         <p>Start an agent or open one from the rail. Closing a browser tab
         detaches only — the process keeps running in tmux.</p>
         <div class="term-empty-actions">
-          <button type="button" class="primary" id="btn-empty-new">New session</button>
-          <button type="button" class="ghost" id="btn-empty-help">Shortcuts</button>
+          <button type="button" class="primary" data-action="new-session">New session</button>
+          <button type="button" class="ghost" data-action="help">Shortcuts</button>
         </div>
       </div>
-      <div class="toast" id="toast" hidden></div>
     </div>`;
-}
-
-function bindEmptyActions(): void {
-  document.getElementById("btn-empty-new")?.addEventListener("click", () => openPanel("new"));
-  document.getElementById("btn-empty-help")?.addEventListener("click", () => openPanel("help"));
 }
 
 function openPanel(p: Panel): void {
   state.panel = p;
+  if (p === "new") state.createError = "";
   paintPanel();
   if (p === "new") {
-    window.setTimeout(() => {
-      (document.getElementById("name") as HTMLInputElement | null)?.focus();
-    }, 30);
+    // Focus after paint; prefer agent select so keyboard users can change quickly
+    window.requestAnimationFrame(() => {
+      const name = document.getElementById("sess-name") as HTMLInputElement | null;
+      const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
+      (name ?? agent)?.focus();
+    });
   }
   if (p === "tools") void refreshToolsStatus();
 }
 
 function closePanel(): void {
   state.panel = null;
+  state.createError = "";
   paintPanel();
   term?.focus();
 }
 
-async function onCreateSession(ev: Event): Promise<void> {
-  ev.preventDefault();
-  if (state.busy) return;
-  state.busy = true;
-  const btn = document.querySelector(
-    "#create-form button[type=submit]",
-  ) as HTMLButtonElement | null;
-  if (btn) btn.disabled = true;
+function readCreateForm(): {
+  agent: string;
+  cwd: string;
+  name: string;
+  prompt: string;
+  gitUrl: string;
+  gitName: string;
+  gitBranch: string;
+  gitFork: boolean;
+  gitDepth: boolean;
+} {
+  const agentEl = document.getElementById("sess-agent") as HTMLSelectElement | null;
+  const cwdEl = document.getElementById("sess-cwd") as HTMLSelectElement | null;
+  const nameEl = document.getElementById("sess-name") as HTMLInputElement | null;
+  const promptEl = document.getElementById("sess-prompt") as HTMLTextAreaElement | null;
+  const gitUrlEl = document.getElementById("sess-git-url") as HTMLInputElement | null;
+  const gitNameEl = document.getElementById("sess-git-name") as HTMLInputElement | null;
+  const gitBranchEl = document.getElementById("sess-git-branch") as HTMLInputElement | null;
+  const gitForkEl = document.getElementById("sess-git-fork") as HTMLInputElement | null;
+  const gitDepthEl = document.getElementById("sess-git-depth") as HTMLInputElement | null;
+  const agent = (agentEl?.value || state.formAgent || state.agents[0] || "claude").trim();
+  const cwd = (cwdEl?.value || state.formCwd || state.defaultCwd || ".").trim();
+  const name = (nameEl?.value ?? state.formName).trim();
+  const prompt = (promptEl?.value ?? state.formPrompt).trim();
+  const gitUrl = (gitUrlEl?.value ?? state.formGitUrl).trim();
+  const gitName = (gitNameEl?.value ?? state.formGitName).trim();
+  const gitBranch = (gitBranchEl?.value ?? state.formGitBranch).trim();
+  const gitFork = gitForkEl ? gitForkEl.checked : state.formGitFork;
+  const gitDepth = gitDepthEl ? gitDepthEl.checked : state.formGitDepth;
+  state.formAgent = agent;
+  state.formCwd = cwd;
+  state.formName = name;
+  state.formPrompt = prompt;
+  state.formGitUrl = gitUrl;
+  state.formGitName = gitName;
+  state.formGitBranch = gitBranch;
+  state.formGitFork = gitFork;
+  state.formGitDepth = gitDepth;
+  return { agent, cwd, name, prompt, gitUrl, gitName, gitBranch, gitFork, gitDepth };
+}
+
+async function onCreateSession(ev?: Event): Promise<void> {
+  ev?.preventDefault();
+  if (state.creating) {
+    toast("Already starting a session…", "info", 1500);
+    return;
+  }
+  const form = readCreateForm();
+  if (!form.agent) {
+    state.createError = "Pick an agent";
+    paintPanel();
+    return;
+  }
+  state.creating = true;
+  state.createError = "";
+  paintPanel();
   try {
+    let cwd = form.cwd || ".";
+    if (form.gitUrl) {
+      toast(form.gitFork ? "Forking & cloning…" : "Cloning project…", "info", 60000);
+      const cloned = await cloneWorkspace({
+        url: form.gitUrl,
+        name: form.gitName || undefined,
+        branch: form.gitBranch || undefined,
+        fork: form.gitFork || undefined,
+        depth: form.gitDepth ? 1 : undefined,
+      });
+      cwd = cloned.cwd;
+      state.formCwd = cwd;
+      await refreshWorkspaceList();
+      toast(`Cloned → ${cwd}`, "ok", 2500);
+    }
     const sess = await createSession({
-      agent: state.formAgent,
-      cwd: state.formCwd,
-      name: state.formName || undefined,
-      prompt: state.formPrompt || undefined,
+      agent: form.agent,
+      cwd,
+      name: form.name || undefined,
+      prompt: form.prompt || undefined,
     });
     state.formName = "";
     state.formPrompt = "";
+    state.formGitUrl = "";
+    state.formGitName = "";
+    state.formGitBranch = "";
+    state.formGitFork = false;
+    state.creating = false;
     closePanel();
     await refreshSessions();
     openTab(sess);
-    toast(`Started ${sess.agent} — tab close keeps it running`, "ok");
+    toast(`Started ${sess.agent} in ${cwd}`, "ok");
   } catch (e) {
-    toast((e as Error).message || "create failed", "err");
-  } finally {
-    state.busy = false;
-    if (btn) btn.disabled = false;
+    state.creating = false;
+    const msg = (e as Error).message || "create failed";
+    state.createError = msg;
+    paintPanel();
+    toast(msg, "err", 6000);
   }
+}
+
+function removeSessionLocally(id: string): void {
+  state.sessions = state.sessions.filter((s) => s.id !== id);
+  closeTab(id);
+  // closeTab only switches tabs; ensure list chrome updates
+  paintChrome();
+  ensureTermArea();
 }
 
 async function onKillSession(id: string): Promise<void> {
   const s = state.sessions.find((x) => x.id === id);
   const label = s ? tabTitle(s) : shortId(id);
-  if (!confirm(`Kill “${label}”? This stops the agent in tmux.`)) return;
+  if (!confirm(`Stop “${label}”?\n\nKills the agent process. Session stays in the list (you can resume or delete).`))
+    return;
   try {
     await killSession(id);
     closeTab(id);
     await refreshSessions();
-    toast("Session killed", "ok");
+    toast("Agent stopped", "ok");
   } catch (e) {
     toast((e as Error).message || "kill failed", "err");
+  }
+}
+
+async function onDeleteSession(id: string): Promise<void> {
+  const s = state.sessions.find((x) => x.id === id);
+  const label = s ? tabTitle(s) : shortId(id);
+  const running = s?.state === "running";
+  const msg = running
+    ? `Delete “${label}”?\n\nStops the agent and removes it from the list. Cannot undo.`
+    : `Delete “${label}”?\n\nRemoves this session from the list. Cannot undo.`;
+  if (!confirm(msg)) return;
+  try {
+    await deleteSession(id);
+    removeSessionLocally(id);
+    await refreshSessions();
+    toast("Session deleted", "ok");
+  } catch (e) {
+    toast((e as Error).message || "delete failed", "err");
   }
 }
 
@@ -615,13 +779,13 @@ async function onResumeSession(id: string): Promise<void> {
 }
 
 async function onPrune(): Promise<void> {
-  if (!confirm("Remove all non-running sessions from the list?")) return;
+  if (!confirm("Delete all stopped sessions from the list?\n\nRunning agents are left alone.")) return;
   try {
     const out = await pruneSessions();
-    state.openTabs = state.openTabs.filter((t) => {
-      const s = state.sessions.find((x) => x.id === t.id);
-      return s?.state === "running";
-    });
+    const keep = new Set(
+      state.sessions.filter((s) => s.state === "running").map((s) => s.id),
+    );
+    state.openTabs = state.openTabs.filter((t) => keep.has(t.id));
     if (state.activeId && !state.openTabs.find((t) => t.id === state.activeId)) {
       detachPty();
       disposeTerminal();
@@ -631,28 +795,40 @@ async function onPrune(): Promise<void> {
     await refreshSessions();
     ensureTermArea();
     if (state.activeId) void attachActive();
-    toast(`Pruned ${out.removed} session(s)`, "ok");
+    else paintChrome();
+    toast(`Deleted ${out.removed} stopped session(s)`, "ok");
   } catch (e) {
     toast((e as Error).message || "prune failed", "err");
   }
 }
 
+function toolsCwd(): string {
+  const sel = document.getElementById("tools-cwd-select") as HTMLSelectElement | null;
+  if (sel?.value) {
+    state.formCwd = sel.value;
+    return sel.value;
+  }
+  return state.formCwd || state.defaultCwd || ".";
+}
+
 async function refreshToolsStatus(): Promise<void> {
-  const cwd = state.formCwd || ".";
+  const cwd = toolsCwd();
   try {
     const [ms, mem, pw] = await Promise.all([
-      getMapStatus(cwd),
-      memoryStats(cwd),
+      getMapStatus(cwd).catch((e: Error) => ({ status: { exists: false, reason: e.message } })),
+      memoryStats(cwd).catch(() => ({ docs: 0, engine: "error" })),
       playwrightStatus().catch(() => null),
     ]);
-    const st = ms.status ?? {};
-    if (!st.exists) state.mapStatus = "no map";
+    const st = (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } }).status ?? {};
+    if (!st.exists) state.mapStatus = st.reason ? `error · ${st.reason}` : "no map";
     else if (st.stale) state.mapStatus = `stale · ${st.reason || "outdated"}`;
     else state.mapStatus = "fresh";
-    const eng = mem.engine || "fts";
-    state.memStatus = `${mem.docs ?? 0} docs · ${eng}`;
-    if (mem.vector_enabled) {
-      state.memStatus += ` · emb ${mem.docs_embedded ?? 0}`;
+    const eng = (mem as { engine?: string }).engine || "fts";
+    const docs = (mem as { docs?: number }).docs ?? 0;
+    state.memStatus = `${docs} docs · ${eng}`;
+    const m = mem as { vector_enabled?: boolean; docs_embedded?: number };
+    if (m.vector_enabled) {
+      state.memStatus += ` · emb ${m.docs_embedded ?? 0}`;
     }
     if (pw) {
       state.pwStatus = pw.running ? `running${pw.display ? ` · ${pw.display}` : ""}` : "stopped";
@@ -660,14 +836,17 @@ async function refreshToolsStatus(): Promise<void> {
       state.pwStatus = "unavailable";
     }
     paintTools();
-  } catch {
-    /* optional panels */
+  } catch (e) {
+    state.mapStatus = "error";
+    state.memStatus = (e as Error).message || "failed";
+    paintTools();
   }
 }
 
 async function onMapGenerate(): Promise<void> {
   try {
-    const out = await generateMap(state.formCwd || ".");
+    toast("Generating map…", "info", 6000);
+    const out = await generateMap(toolsCwd());
     toast(`Map written · ${out.map_path || out.cwd}`, "ok");
     await refreshToolsStatus();
   } catch (e) {
@@ -677,7 +856,7 @@ async function onMapGenerate(): Promise<void> {
 
 async function onMapShow(): Promise<void> {
   try {
-    const out = await getMap(state.formCwd || ".");
+    const out = await getMap(toolsCwd());
     if (out.error || !out.markdown) {
       toast(out.error || "No map — generate first", "err");
       return;
@@ -694,9 +873,9 @@ async function onMapShow(): Promise<void> {
 
 async function onMemIndex(): Promise<void> {
   try {
-    toast("Indexing…", "info", 8000);
+    toast("Indexing…", "info", 12000);
     const out = await memoryIndex({
-      cwd: state.formCwd || ".",
+      cwd: toolsCwd(),
       clear: true,
       generate_map: true,
     });
@@ -709,14 +888,17 @@ async function onMemIndex(): Promise<void> {
 
 async function onMemSearch(ev?: Event): Promise<void> {
   ev?.preventDefault();
-  const q = state.memQuery.trim();
+  const input = document.getElementById("mem-query") as HTMLInputElement | null;
+  const q = (input?.value ?? state.memQuery).trim();
+  state.memQuery = q;
   if (!q) {
     toast("Enter a search query", "info");
     return;
   }
   try {
+    toast("Searching…", "info", 4000);
     const out = await memorySearch({
-      cwd: state.formCwd || ".",
+      cwd: toolsCwd(),
       query: q,
       limit: 10,
       mode: "auto",
@@ -724,6 +906,7 @@ async function onMemSearch(ev?: Event): Promise<void> {
     state.memHits = out.hits ?? [];
     paintTools();
     if (state.memHits.length === 0) toast("No memory hits", "info");
+    else toast(`${state.memHits.length} hit(s)`, "ok", 1500);
   } catch (e) {
     toast((e as Error).message || "search failed", "err");
   }
@@ -751,6 +934,7 @@ async function onPwAction(action: "start" | "stop" | "restart"): Promise<void> {
 }
 
 function paintTools(): void {
+  if (state.panel !== "tools") return;
   const mapEl = document.getElementById("map-status");
   if (mapEl) mapEl.textContent = state.mapStatus;
   const memEl = document.getElementById("mem-status");
@@ -759,8 +943,6 @@ function paintTools(): void {
   if (pwEl) pwEl.textContent = state.pwStatus;
   const hits = document.getElementById("mem-hits");
   if (hits) hits.innerHTML = memHitsHTML();
-  const cwdHint = document.getElementById("tools-cwd");
-  if (cwdHint) cwdHint.textContent = state.formCwd || ".";
 }
 
 function paintDrawer(): void {
@@ -805,70 +987,122 @@ function paintPanel(): void {
     el = document.createElement("div");
     el.id = "panel-overlay";
     el.className = "overlay";
+    el.setAttribute("role", "presentation");
     document.body.appendChild(el);
+    // Backdrop close — ignore clicks that originate inside .modal
+    el.addEventListener("click", (ev) => {
+      if (ev.target === el) closePanel();
+    });
   }
   if (state.panel === "new") {
     el.innerHTML = newSessionHTML();
-    bindNewSessionForm();
   } else if (state.panel === "tools") {
     el.innerHTML = toolsHTML();
-    bindToolsPanel();
   } else if (state.panel === "help") {
     el.innerHTML = helpHTML();
-    document.getElementById("panel-close")?.addEventListener("click", () => closePanel());
   }
-  el.onclick = (ev) => {
-    if (ev.target === el) closePanel();
-  };
+}
+
+function agentOptionsHTML(): string {
+  const agents =
+    state.agents.length > 0 ? state.agents : ["claude", "grok", "codex", "opencode", "cursor"];
+  const selected = agents.includes(state.formAgent) ? state.formAgent : agents[0];
+  return agents
+    .map(
+      (a) =>
+        `<option value="${esc(a)}" ${a === selected ? "selected" : ""} data-agent="${esc(agentClass(a))}">${esc(a)}</option>`,
+    )
+    .join("");
+}
+
+function agentSwatchHTML(name: string): string {
+  return `<span class="agent-swatch ${agentClass(name)}" title="${esc(name)}" aria-hidden="true"></span>`;
+}
+
+function workspaceOptionsHTML(): string {
+  const list = state.workspaces.length > 0 ? state.workspaces : [state.defaultCwd || "."];
+  const selected = list.includes(state.formCwd) ? state.formCwd : list[0];
+  return list
+    .map(
+      (w) =>
+        `<option value="${esc(w)}" ${w === selected ? "selected" : ""}>${esc(w)}</option>`,
+    )
+    .join("");
 }
 
 function newSessionHTML(): string {
   return `
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-title">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-title" data-modal>
       <div class="modal-head">
         <div>
           <div class="eyebrow">Session</div>
           <h2 id="new-title">New agent</h2>
         </div>
-        <button type="button" class="ghost btn-sm" id="panel-close">Esc</button>
+        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
       </div>
-      <form id="create-form" class="modal-body">
+      <form id="create-form" class="modal-body" data-action-form="create-session">
         <div class="field-grid">
           <div class="field">
-            <label for="agent">Agent</label>
-            <select id="agent" name="agent">
-              ${state.agents
-                .map(
-                  (a) =>
-                    `<option value="${esc(a)}" ${a === state.formAgent ? "selected" : ""}>${esc(a)}</option>`,
-                )
-                .join("")}
-            </select>
+            <label for="sess-agent">Agent</label>
+            <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
+              ${agentSwatchHTML(state.formAgent)}
+              <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
+                ${agentOptionsHTML()}
+              </select>
+            </div>
           </div>
           <div class="field">
-            <label for="cwd">Workspace</label>
-            <select id="cwd" name="cwd">
-              ${state.workspaces
-                .map(
-                  (w) =>
-                    `<option value="${esc(w)}" ${w === state.formCwd ? "selected" : ""}>${esc(w)}</option>`,
-                )
-                .join("")}
+            <label for="sess-cwd">Workspace</label>
+            <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
+              ${workspaceOptionsHTML()}
             </select>
           </div>
         </div>
         <div class="field">
-          <label for="name">Name <span class="opt">optional</span></label>
-          <input id="name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" />
+          <label for="sess-name">Session label <span class="opt">optional</span></label>
+          <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
         </div>
         <div class="field">
-          <label for="prompt">Seed prompt <span class="opt">optional</span></label>
-          <textarea id="prompt" name="prompt" rows="3" placeholder="Typed into the TTY after start">${esc(state.formPrompt)}</textarea>
+          <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
+          <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
         </div>
-        <p class="form-hint">Runs in server-side tmux. Detach anytime — kill only when you mean stop.</p>
+
+        <details class="clone-block" ${state.formGitUrl ? "open" : ""}>
+          <summary>New project from git</summary>
+          <p class="form-hint" style="margin-top:0.5rem">Clone (or GitHub-fork) into the workspace, then start the agent there. Leave empty to use the workspace above.</p>
+          <div class="field">
+            <label for="sess-git-url">Repo URL or <code>owner/repo</code></label>
+            <input id="sess-git-url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git  or  org/app" autocomplete="off" ${state.creating ? "disabled" : ""} />
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="sess-git-name">Folder name <span class="opt">optional</span></label>
+              <input id="sess-git-name" value="${esc(state.formGitName)}" placeholder="defaults to repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
+            </div>
+            <div class="field">
+              <label for="sess-git-branch">Branch <span class="opt">optional</span></label>
+              <input id="sess-git-branch" value="${esc(state.formGitBranch)}" placeholder="default branch" autocomplete="off" ${state.creating ? "disabled" : ""} />
+            </div>
+          </div>
+          <div class="check-row">
+            <label class="check">
+              <input type="checkbox" id="sess-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+              Fork on GitHub first <span class="opt">(requires <code>gh</code> auth)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="sess-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+              Shallow clone
+            </label>
+          </div>
+        </details>
+
+        <p class="form-hint">Runs in server-side tmux. Closing a browser tab detaches only — Stop/Delete from the rail.</p>
+        ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
         <div class="modal-actions">
-          <button type="button" class="ghost" id="panel-cancel">Cancel</button>
-          <button class="primary" type="submit" ${state.busy ? "disabled" : ""}>Start session</button>
+          <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
+          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
+            ${state.creating ? (state.formGitUrl ? "Cloning & starting…" : "Starting…") : state.formGitUrl ? "Clone & start" : "Start session"}
+          </button>
         </div>
       </form>
     </div>`;
@@ -876,27 +1110,31 @@ function newSessionHTML(): string {
 
 function toolsHTML(): string {
   return `
-    <div class="modal modal-tools" role="dialog" aria-modal="true" aria-labelledby="tools-title">
+    <div class="modal modal-tools" role="dialog" aria-modal="true" aria-labelledby="tools-title" data-modal>
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Workspace tools</div>
-          <h2 id="tools-title">Map · Memory · Browser</h2>
+          <div class="eyebrow">Workspace</div>
+          <h2 id="tools-title">Tools</h2>
         </div>
-        <button type="button" class="ghost btn-sm" id="panel-close">Esc</button>
+        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
       </div>
       <div class="modal-body tools-body">
-        <p class="tools-cwd-line">Target: <code id="tools-cwd">${esc(state.formCwd || ".")}</code>
-          <span class="muted"> (from last new-session workspace)</span></p>
+        <div class="field">
+          <label for="tools-cwd-select">Target workspace</label>
+          <select id="tools-cwd-select" data-action-change="tools-cwd">
+            ${workspaceOptionsHTML()}
+          </select>
+        </div>
 
         <section class="tool-block">
           <div class="tool-block-head">
             <h3>Project map</h3>
             <span class="tool-status" id="map-status">${esc(state.mapStatus)}</span>
           </div>
-          <p class="tool-desc">Durable orientation file under <code>.agents/PROJECT_MAP.md</code>.</p>
+          <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
           <div class="btn-row">
-            <button type="button" id="btn-map-gen">Generate</button>
-            <button type="button" id="btn-map-show">Show</button>
+            <button type="button" data-action="map-gen">Generate</button>
+            <button type="button" data-action="map-show">Show</button>
           </div>
         </section>
 
@@ -905,12 +1143,12 @@ function toolsHTML(): string {
             <h3>Memory</h3>
             <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span>
           </div>
-          <p class="tool-desc">FTS (and optional vectors) over workspace docs for agent retrieval.</p>
+          <p class="tool-desc">Full-text (and optional vector) index for retrieval</p>
           <div class="btn-row">
-            <button type="button" id="btn-mem-index">Reindex</button>
+            <button type="button" data-action="mem-index">Reindex</button>
           </div>
-          <form id="mem-search-form" class="mem-search">
-            <input id="mem-query" placeholder="Search docs…" value="${esc(state.memQuery)}" />
+          <form class="mem-search" data-action-form="mem-search">
+            <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
             <button type="submit" class="primary">Search</button>
           </form>
           <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
@@ -921,11 +1159,11 @@ function toolsHTML(): string {
             <h3>Playwright</h3>
             <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span>
           </div>
-          <p class="tool-desc">Headed browser stack for agents that need a real browser.</p>
+          <p class="tool-desc">Headed browser stack for agents</p>
           <div class="btn-row">
-            <button type="button" id="btn-pw-start">Start</button>
-            <button type="button" id="btn-pw-stop">Stop</button>
-            <button type="button" id="btn-pw-restart">Restart</button>
+            <button type="button" data-action="pw-start">Start</button>
+            <button type="button" data-action="pw-stop">Stop</button>
+            <button type="button" data-action="pw-restart">Restart</button>
           </div>
         </section>
       </div>
@@ -934,13 +1172,13 @@ function toolsHTML(): string {
 
 function helpHTML(): string {
   return `
-    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="help-title" data-modal>
       <div class="modal-head">
         <div>
           <div class="eyebrow">Keyboard</div>
           <h2 id="help-title">Shortcuts</h2>
         </div>
-        <button type="button" class="ghost btn-sm" id="panel-close">Esc</button>
+        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
       </div>
       <div class="modal-body">
         <dl class="keys">
@@ -956,39 +1194,6 @@ function helpHTML(): string {
         <p class="form-hint">Shortcuts ignore events when typing in inputs. Closing a tab never kills the agent.</p>
       </div>
     </div>`;
-}
-
-function bindNewSessionForm(): void {
-  document.getElementById("panel-close")?.addEventListener("click", () => closePanel());
-  document.getElementById("panel-cancel")?.addEventListener("click", () => closePanel());
-  const form = document.getElementById("create-form") as HTMLFormElement | null;
-  form?.addEventListener("submit", (ev) => void onCreateSession(ev));
-  form?.querySelector("#agent")?.addEventListener("change", (e) => {
-    state.formAgent = (e.target as HTMLSelectElement).value;
-  });
-  form?.querySelector("#cwd")?.addEventListener("change", (e) => {
-    state.formCwd = (e.target as HTMLSelectElement).value;
-  });
-  form?.querySelector("#name")?.addEventListener("input", (e) => {
-    state.formName = (e.target as HTMLInputElement).value;
-  });
-  form?.querySelector("#prompt")?.addEventListener("input", (e) => {
-    state.formPrompt = (e.target as HTMLTextAreaElement).value;
-  });
-}
-
-function bindToolsPanel(): void {
-  document.getElementById("panel-close")?.addEventListener("click", () => closePanel());
-  document.getElementById("btn-map-gen")?.addEventListener("click", () => void onMapGenerate());
-  document.getElementById("btn-map-show")?.addEventListener("click", () => void onMapShow());
-  document.getElementById("btn-mem-index")?.addEventListener("click", () => void onMemIndex());
-  document.getElementById("mem-search-form")?.addEventListener("submit", (ev) => void onMemSearch(ev));
-  document.getElementById("mem-query")?.addEventListener("input", (e) => {
-    state.memQuery = (e.target as HTMLInputElement).value;
-  });
-  document.getElementById("btn-pw-start")?.addEventListener("click", () => void onPwAction("start"));
-  document.getElementById("btn-pw-stop")?.addEventListener("click", () => void onPwAction("stop"));
-  document.getElementById("btn-pw-restart")?.addEventListener("click", () => void onPwAction("restart"));
 }
 
 function memHitsHTML(): string {
@@ -1089,18 +1294,18 @@ function loginHTML(): string {
 function shellHTML(): string {
   return `
   <div class="shell${state.sidebarOpen ? " sidebar-open" : ""}">
-    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="close-sidebar" hidden></div>
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="brand">
           <span class="logo-mark sm" aria-hidden="true">◈</span>
           <span class="brand-name">agents</span>
         </div>
-        <button type="button" class="ghost btn-icon" id="btn-logout" title="Logout">⎋</button>
+        <button type="button" class="ghost btn-icon" data-action="logout" title="Logout">⎋</button>
       </div>
 
       <div class="sidebar-actions">
-        <button type="button" class="primary sidebar-new" id="btn-new">
+        <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
           <span>+ New session</span>
           <kbd>n</kbd>
         </button>
@@ -1116,19 +1321,20 @@ function shellHTML(): string {
       </div>
 
       <div class="sidebar-foot">
-        <button type="button" class="ghost btn-sm" id="btn-prune" title="Remove non-running sessions">Prune</button>
-        <button type="button" class="ghost btn-sm" id="btn-tools-side">Tools</button>
+        <button type="button" class="ghost btn-sm" data-action="prune" title="Delete all stopped sessions">Clear stopped</button>
+        <button type="button" class="ghost btn-sm" data-action="tools">Tools</button>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button type="button" class="ghost btn-icon mobile-only" id="btn-sidebar" title="Sessions (w)" aria-label="Toggle sessions">☰</button>
+        <button type="button" class="ghost btn-icon mobile-only" data-action="toggle-sidebar" title="Sessions (w)" aria-label="Toggle sessions">☰</button>
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
-          <button type="button" class="ghost btn-sm" id="btn-tools" title="Tools (t)">Tools</button>
-          <button type="button" class="ghost btn-sm" id="btn-help" title="Shortcuts (?)">?</button>
+          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">+ New</button>
+          <button type="button" class="ghost btn-sm" data-action="tools" title="Tools (t)">Tools</button>
+          <button type="button" class="ghost btn-sm" data-action="help" title="Shortcuts (?)">?</button>
         </div>
       </header>
       <div class="term-wrap">
@@ -1150,7 +1356,7 @@ function sessionListHTML(): string {
   if (state.sessions.length === 0) {
     return `<div class="empty-list">
       <p>No sessions yet</p>
-      <button type="button" class="primary btn-sm" id="btn-list-new">Start one</button>
+      <button type="button" class="primary btn-sm" data-action="new-session">Start one</button>
     </div>`;
   }
   if (list.length === 0) {
@@ -1168,26 +1374,27 @@ function sessionListHTML(): string {
     .map((s) => {
       const active = s.id === state.activeId ? "active" : "";
       const age = relativeTime(s.created_at);
+      const ag = agentClass(s.agent);
       return `
-      <div class="session-item ${active}" data-open="${esc(s.id)}">
+      <div class="session-item ${active} ${ag}" data-open="${esc(s.id)}">
         <div class="session-item-main">
           <div class="session-top">
             <span class="session-name">${esc(s.name || shortId(s.id))}</span>
             <span class="badge ${esc(s.state)}">${esc(s.state)}</span>
           </div>
           <div class="session-meta">
-            <span class="agent-chip">${esc(s.agent)}</span>
+            <span class="agent-chip ${ag}">${agentSwatchHTML(s.agent)}${esc(s.agent)}</span>
             <span class="cwd-chip" title="${esc(s.cwd)}">${esc(basename(s.cwd))}</span>
             ${age ? `<span class="age">${esc(age)}</span>` : ""}
           </div>
         </div>
         <div class="session-actions">
-          <button type="button" class="ghost btn-icon sm" data-copy="${esc(s.id)}" title="Copy id">⎘</button>
           ${
             s.state === "running"
-              ? `<button type="button" class="ghost btn-icon sm danger-text" data-kill="${esc(s.id)}" title="Kill">×</button>`
-              : `<button type="button" class="ghost btn-icon sm resume-text" data-resume="${esc(s.id)}" title="Resume (restart agent if dead)">↻</button>`
+              ? `<button type="button" class="ghost btn-sm act" data-kill="${esc(s.id)}" title="Stop agent">Stop</button>`
+              : `<button type="button" class="ghost btn-sm act resume-text" data-resume="${esc(s.id)}" title="Resume agent">Resume</button>`
           }
+          <button type="button" class="ghost btn-sm act danger-text" data-delete="${esc(s.id)}" title="Delete session">Delete</button>
         </div>
       </div>`;
     })
@@ -1202,9 +1409,10 @@ function tabsHTML(): string {
     .map((t, i) => {
       const active = t.id === state.activeId ? "active" : "";
       const live = t.state === "running" ? "live" : "dead";
+      const ag = agentClass(t.agent);
       return `
-      <div class="tab ${active} ${live}" data-tab="${esc(t.id)}" title="${esc(t.id)}">
-        <span class="tab-dot"></span>
+      <div class="tab ${active} ${live} ${ag}" data-tab="${esc(t.id)}" title="${esc(t.agent)} · ${esc(t.id)}">
+        <span class="tab-dot" title="${esc(t.agent)}"></span>
         <span class="tab-label">${esc(t.title)}</span>
         ${i < 9 ? `<span class="tab-num">${i + 1}</span>` : ""}
         <button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)">×</button>
@@ -1330,25 +1538,128 @@ function bindKeys(): void {
   });
 }
 
+/** Document-level delegation — survives innerHTML rewrites of lists/tabs/modals. */
+function ensureUIDelegation(): void {
+  if (uiDelegated) return;
+  uiDelegated = true;
+
+  document.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement | null;
+    if (!t) return;
+    const actionEl = t.closest<HTMLElement>("[data-action]");
+    if (!actionEl) return;
+    // don't steal clicks from disabled controls
+    if (actionEl.hasAttribute("disabled") || (actionEl as HTMLButtonElement).disabled) return;
+    const action = actionEl.getAttribute("data-action");
+    if (!action) return;
+
+    switch (action) {
+      case "new-session":
+        ev.preventDefault();
+        if (!state.token) return;
+        openPanel("new");
+        break;
+      case "tools":
+        ev.preventDefault();
+        if (!state.token) return;
+        openPanel("tools");
+        break;
+      case "help":
+        ev.preventDefault();
+        if (!state.token) return;
+        openPanel("help");
+        break;
+      case "close-panel":
+        ev.preventDefault();
+        closePanel();
+        break;
+      case "prune":
+        ev.preventDefault();
+        void onPrune();
+        break;
+      case "logout":
+        ev.preventDefault();
+        logout();
+        break;
+      case "toggle-sidebar":
+        ev.preventDefault();
+        state.sidebarOpen = !state.sidebarOpen;
+        paintChrome();
+        break;
+      case "close-sidebar":
+        ev.preventDefault();
+        state.sidebarOpen = false;
+        paintChrome();
+        break;
+      case "map-gen":
+        ev.preventDefault();
+        void onMapGenerate();
+        break;
+      case "map-show":
+        ev.preventDefault();
+        void onMapShow();
+        break;
+      case "mem-index":
+        ev.preventDefault();
+        void onMemIndex();
+        break;
+      case "pw-start":
+        ev.preventDefault();
+        void onPwAction("start");
+        break;
+      case "pw-stop":
+        ev.preventDefault();
+        void onPwAction("stop");
+        break;
+      case "pw-restart":
+        ev.preventDefault();
+        void onPwAction("restart");
+        break;
+      default:
+        break;
+    }
+  });
+
+  document.addEventListener("submit", (ev) => {
+    const form = (ev.target as HTMLElement | null)?.closest?.("[data-action-form]") as
+      | HTMLFormElement
+      | null;
+    if (!form) return;
+    const kind = form.getAttribute("data-action-form");
+    if (kind === "create-session") {
+      ev.preventDefault();
+      void onCreateSession(ev);
+    } else if (kind === "mem-search") {
+      ev.preventDefault();
+      void onMemSearch(ev);
+    }
+  });
+
+  document.addEventListener("change", (ev) => {
+    const el = ev.target as HTMLElement | null;
+    if (!el) return;
+    const kind = el.getAttribute("data-action-change");
+    if (kind === "tools-cwd" && el instanceof HTMLSelectElement) {
+      state.formCwd = el.value;
+      void refreshToolsStatus();
+    }
+    if (kind === "sess-agent" && el instanceof HTMLSelectElement) {
+      state.formAgent = el.value;
+      const row = document.getElementById("sess-agent-row");
+      if (row) {
+        row.className = `agent-select-row ${agentClass(el.value)}`;
+        const sw = row.querySelector(".agent-swatch");
+        if (sw) sw.className = `agent-swatch ${agentClass(el.value)}`;
+      }
+    }
+  });
+}
+
 function bindShell(): void {
   if (shellBound) return;
   shellBound = true;
+  ensureUIDelegation();
   bindKeys();
-
-  document.getElementById("btn-logout")?.addEventListener("click", () => logout());
-  document.getElementById("btn-new")?.addEventListener("click", () => openPanel("new"));
-  document.getElementById("btn-tools")?.addEventListener("click", () => openPanel("tools"));
-  document.getElementById("btn-tools-side")?.addEventListener("click", () => openPanel("tools"));
-  document.getElementById("btn-help")?.addEventListener("click", () => openPanel("help"));
-  document.getElementById("btn-prune")?.addEventListener("click", () => void onPrune());
-  document.getElementById("btn-sidebar")?.addEventListener("click", () => {
-    state.sidebarOpen = !state.sidebarOpen;
-    paintChrome();
-  });
-  document.getElementById("sidebar-backdrop")?.addEventListener("click", () => {
-    state.sidebarOpen = false;
-    paintChrome();
-  });
 
   const filter = document.getElementById("filter") as HTMLInputElement | null;
   filter?.addEventListener("input", (e) => {
@@ -1366,18 +1677,16 @@ function bindShell(): void {
 }
 
 function bindSessionList(): void {
-  document.getElementById("btn-list-new")?.addEventListener("click", () => openPanel("new"));
-
   document.querySelectorAll<HTMLElement>("[data-open]").forEach((el) => {
     el.onclick = (ev) => {
       const t = ev.target as HTMLElement;
-      if (t.closest("[data-kill], [data-copy], [data-resume]")) return;
+      if (t.closest("[data-kill], [data-delete], [data-resume], [data-copy]")) return;
       const id = el.getAttribute("data-open");
       if (!id) return;
       const s = state.sessions.find((x) => x.id === id);
       if (!s) return;
       if (s.state !== "running") {
-        void onResumeSession(s.id);
+        toast("Not running — Resume or Delete", "info", 2200);
         return;
       }
       openTab(s);
@@ -1392,25 +1701,19 @@ function bindSessionList(): void {
     };
   });
 
+  document.querySelectorAll<HTMLElement>("[data-delete]").forEach((el) => {
+    el.onclick = (ev) => {
+      ev.stopPropagation();
+      const id = el.getAttribute("data-delete");
+      if (id) void onDeleteSession(id);
+    };
+  });
+
   document.querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => {
     el.onclick = (ev) => {
       ev.stopPropagation();
       const id = el.getAttribute("data-resume");
       if (id) void onResumeSession(id);
-    };
-  });
-
-  document.querySelectorAll<HTMLElement>("[data-copy]").forEach((el) => {
-    el.onclick = async (ev) => {
-      ev.stopPropagation();
-      const id = el.getAttribute("data-copy");
-      if (!id) return;
-      try {
-        await navigator.clipboard.writeText(id);
-        toast("Session id copied", "ok", 1500);
-      } catch {
-        toast(id, "info", 4000);
-      }
     };
   });
 }

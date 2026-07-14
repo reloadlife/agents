@@ -106,6 +106,14 @@ export function killSession(id: string): Promise<Session> {
   });
 }
 
+/** Stop agent (if running) and remove session from the server list. */
+export function deleteSession(id: string): Promise<{ ok: boolean; id: string; deleted: boolean }> {
+  return request(`/v1/sessions/${encodeURIComponent(id)}/delete`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 /** Re-attach if tmux still alive; otherwise restart agent with same id/agent/cwd. */
 export function resumeSession(id: string): Promise<Session> {
   return request(`/v1/sessions/${encodeURIComponent(id)}/resume`, {
@@ -175,12 +183,43 @@ export function listAgents(): Promise<{
   return request("/v1/agents");
 }
 
+export type WorkspaceEntry = {
+  path: string;
+  abs?: string;
+  exists?: boolean;
+  is_dir?: boolean;
+  default?: boolean;
+};
+
 export function listWorkspaces(): Promise<{
   workspace_root: string;
   default_cwd: string;
-  workspaces: string[];
+  workspaces: Array<string | WorkspaceEntry>;
+  paths?: string[];
 }> {
   return request("/v1/workspaces");
+}
+
+export function cloneWorkspace(body: {
+  url: string;
+  name?: string;
+  branch?: string;
+  depth?: number;
+  fork?: boolean;
+}): Promise<{
+  ok: boolean;
+  cwd: string;
+  abs: string;
+  url: string;
+  name: string;
+  forked?: boolean;
+  command?: string;
+  output?: string;
+}> {
+  return request("/v1/workspaces/clone", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function getStatus(): Promise<StatusSnapshot> {

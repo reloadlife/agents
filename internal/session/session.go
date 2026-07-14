@@ -502,6 +502,34 @@ func (m *Manager) Kill(id string) (*Session, error) {
 	return s, nil
 }
 
+// Delete stops the agent if still running and removes session metadata (JSON +
+// pane snapshot) so it no longer appears in list. Irreversible.
+func (m *Manager) Delete(id string) error {
+	m.refreshStates()
+	m.mu.Lock()
+	s, ok := m.byID[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session not found")
+	}
+	tmux := s.Tmux
+	m.mu.Unlock()
+
+	// Best-effort history snapshot then kill tmux (running or not).
+	if tmuxAlive(tmux) {
+		m.SnapshotHistory(id)
+		_ = exec.Command("tmux", "kill-session", "-t", tmux).Run()
+	}
+
+	m.mu.Lock()
+	delete(m.byID, id)
+	m.mu.Unlock()
+	_ = os.Remove(m.path(id))
+	_ = os.Remove(m.historyPath(id))
+	m.log.Info("session deleted", "id", id, "tmux", tmux)
+	return nil
+}
+
 // Resume re-opens a session that still has metadata on disk.
 //
 //   - If the tmux session is still alive (e.g. agentsd restarted but agents

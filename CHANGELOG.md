@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-07-14
+
+### Added
+
+- **Session delete:** `DELETE|POST /v1/sessions/{id}/delete`, `agentsctl session delete`, Web UI Stop/Delete
+- **Clone project into workspace:** `POST /v1/workspaces/clone`, `agentsctl workspaces clone URL [--fork]`, New-session “New project from git”
+- Per-agent brand colors in the Web UI (Claude / Grok / Codex / Cursor / …)
+
+### Fixed
+
+- New session / Tools buttons (event delegation, form reads DOM, toasts above modals)
+- Workspace list clients handle `{path}` objects + flat `paths[]`
+
+### Changed
+
+- Web UI palette: muted steel (no neon pulse); clearer session lifecycle actions
+
 ## [0.3.0] — 2026-07-14
 
 ### Added
