@@ -20,6 +20,7 @@ import (
 	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/projmap"
 	"github.com/reloadlife/agents/internal/session"
+	"github.com/reloadlife/agents/internal/ghauth"
 	"github.com/reloadlife/agents/internal/sshkeys"
 	"github.com/reloadlife/agents/internal/status"
 	"github.com/reloadlife/agents/internal/webui"
@@ -57,6 +58,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/ssh-keys/{name}", s.handleGetSSHKey)
 	mux.HandleFunc("DELETE /v1/ssh-keys/{name}", s.handleDeleteSSHKey)
 	mux.HandleFunc("POST /v1/ssh-keys/{name}/delete", s.handleDeleteSSHKey)
+
+	// GitHub CLI accounts (tokens never returned)
+	mux.HandleFunc("GET /v1/gh/accounts", s.handleGHStatus)
+	mux.HandleFunc("POST /v1/gh/login", s.handleGHLogin)
+	mux.HandleFunc("POST /v1/gh/switch", s.handleGHSwitch)
+	mux.HandleFunc("POST /v1/gh/logout", s.handleGHLogout)
+	mux.HandleFunc("POST /v1/gh/setup-git", s.handleGHSetupGit)
 
 	// Playwright / headed browser stack
 	mux.HandleFunc("GET /v1/playwright", s.handlePlaywrightStatus)
@@ -238,6 +246,99 @@ func (s *Server) handleDeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("ssh key deleted", "name", name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": name, "deleted": true})
+}
+
+func (s *Server) ghMgr() (*ghauth.Manager, error) {
+	return ghauth.New()
+}
+
+func (s *Server) handleGHStatus(w http.ResponseWriter, r *http.Request) {
+	m, err := s.ghMgr()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	st, err := m.Status()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGHLogin(w http.ResponseWriter, r *http.Request) {
+	m, err := s.ghMgr()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var req ghauth.LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// never log the token
+	st, err := m.Login(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("gh login", "host", req.Host, "accounts", len(st.Accounts), "active", st.Active)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGHSwitch(w http.ResponseWriter, r *http.Request) {
+	m, err := s.ghMgr()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var req ghauth.SwitchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, err := m.Switch(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("gh switch", "user", req.User, "host", req.Host, "active", st.Active)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGHLogout(w http.ResponseWriter, r *http.Request) {
+	m, err := s.ghMgr()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var req ghauth.LogoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, err := m.Logout(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("gh logout", "user", req.User, "host", req.Host)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGHSetupGit(w http.ResponseWriter, r *http.Request) {
+	m, err := s.ghMgr()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	if err := m.SetupGit(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, _ := m.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

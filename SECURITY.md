@@ -18,7 +18,7 @@ Latest tagged release on `main` (currently `v0.2.x`). Security fixes land on `ma
 
 | Asset | Risk if stolen |
 |-------|----------------|
-| `AGENTSD_TOKEN` | Create/kill sessions, attach PTY, run print jobs, manage server SSH **public** identities (private keys never leave the host) |
+| `AGENTSD_TOKEN` | Create/kill sessions, attach PTY, run print jobs, manage server SSH **public** identities, login/switch/logout **gh** accounts (private keys / tokens never returned by the API) |
 | PTY WebSocket | Interactive control of the agent TUI (and tools it can run) |
 | Embedded web UI (`/`) | Static login shell is public; all control is still via `/v1/*` + token |
 | Workspace allowlist escape | Read/write outside intended repos |

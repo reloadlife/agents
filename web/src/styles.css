@@ -1399,6 +1399,77 @@ label.check input {
   }
 }
 
+.gh-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.gh-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+}
+
+.gh-row.active {
+  border-color: var(--line-strong);
+  background: var(--brass-soft);
+}
+
+.gh-user {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.15rem;
+}
+
+.gh-host {
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+  font-family: var(--mono);
+}
+
+.gh-meta {
+  font-size: 0.7rem;
+  color: var(--paper-dim);
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.gh-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.gh-login {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.4rem;
+}
+
+.gh-login input {
+  min-width: 0;
+  font-size: 0.84rem;
+  padding: 0.45rem 0.55rem;
+}
+
+@media (max-width: 840px) {
+  .gh-login {
+    grid-template-columns: 1fr;
+  }
+}
+
 .drawer-body {
   margin: 0;
   padding: 1.1rem 1.2rem;

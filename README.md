@@ -141,6 +141,7 @@ agentsctl session delete id   # stop + remove from list
 agentsctl session resume id   # re-attach if alive, else restart agent (same id)
 agentsctl session history id  # dump terminal scrollback / last snapshot
 agentsctl ssh-keys list|gen NAME|show NAME|delete NAME
+agentsctl gh status|login|switch|logout|setup-git
 ```
 
 ## HTTP API (v1)
@@ -161,6 +162,10 @@ agentsctl ssh-keys list|gen NAME|show NAME|delete NAME
 | POST | `/v1/workspaces/clone` | `git clone` / `gh fork` into workspace |
 | GET/POST | `/v1/ssh-keys` | List / generate SSH identities (public only) |
 | GET/DELETE | `/v1/ssh-keys/{name}` | Show public key / delete pair |
+| GET | `/v1/gh/accounts` | List GitHub CLI accounts on server (no tokens) |
+| POST | `/v1/gh/login` | `gh auth login --with-token` (token write-only) |
+| POST | `/v1/gh/switch` | Switch active gh account |
+| POST | `/v1/gh/logout` | Logout local gh account |
 | GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 

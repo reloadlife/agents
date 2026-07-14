@@ -241,6 +241,60 @@ export function deleteSSHKey(name: string): Promise<{ ok: boolean; name: string;
   });
 }
 
+export type GHAccount = {
+  host: string;
+  user: string;
+  active: boolean;
+  git_protocol?: string;
+  scopes?: string[];
+  config_file?: string;
+};
+
+export type GHStatus = {
+  ok: boolean;
+  binary?: string;
+  accounts: GHAccount[];
+  active?: string;
+  error?: string;
+};
+
+export function ghAccounts(): Promise<GHStatus> {
+  return request("/v1/gh/accounts");
+}
+
+export function ghLogin(body: {
+  token: string;
+  host?: string;
+  git_protocol?: string;
+  insecure_storage?: boolean;
+}): Promise<GHStatus> {
+  return request("/v1/gh/login", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function ghSwitch(body: { user: string; host?: string }): Promise<GHStatus> {
+  return request("/v1/gh/switch", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function ghLogout(body: { user?: string; host?: string }): Promise<GHStatus> {
+  return request("/v1/gh/logout", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function ghSetupGit(): Promise<{ ok: boolean; status?: GHStatus }> {
+  return request("/v1/gh/setup-git", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function cloneWorkspace(body: {
   url: string;
   name?: string;

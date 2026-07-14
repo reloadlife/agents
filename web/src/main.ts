@@ -16,6 +16,11 @@ import {
   getMapStatus,
   getStatus,
   getToken,
+  ghAccounts,
+  ghLogin,
+  ghLogout,
+  ghSetupGit,
+  ghSwitch,
   killSession,
   listAgents,
   listSessions,
@@ -31,6 +36,8 @@ import {
   pruneSessions,
   resumeSession,
   setToken,
+  type GHAccount,
+  type GHStatus,
   type MemoryHit,
   type Session,
   type SSHKey,
@@ -92,6 +99,9 @@ type AppState = {
   sshGenName: string;
   sshGenComment: string;
   sshBusy: boolean;
+  ghStatus: GHStatus | null;
+  ghLoginToken: string;
+  ghBusy: boolean;
 };
 
 const state: AppState = {
@@ -134,6 +144,9 @@ const state: AppState = {
   sshGenName: "id_agents",
   sshGenComment: "",
   sshBusy: false,
+  ghStatus: null,
+  ghLoginToken: "",
+  ghBusy: false,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -637,6 +650,7 @@ function openPanel(p: Panel): void {
       if (p === "tools") {
       void refreshToolsStatus();
       void refreshSSHKeys();
+      void refreshGHAccounts();
     }
   });
 }
@@ -985,6 +999,17 @@ function paintTools(): void {
     genBtn.disabled = state.sshBusy;
     genBtn.textContent = state.sshBusy ? "…" : "Generate";
   }
+  const ghList = document.getElementById("gh-account-list");
+  if (ghList) ghList.innerHTML = ghAccountsHTML();
+  const ghActive = document.getElementById("gh-active");
+  if (ghActive) ghActive.textContent = state.ghStatus?.active || "—";
+  const ghLoginBtn = document.querySelector(
+    '[data-action="gh-login"]',
+  ) as HTMLButtonElement | null;
+  if (ghLoginBtn) {
+    ghLoginBtn.disabled = state.ghBusy;
+    ghLoginBtn.textContent = state.ghBusy ? "…" : "Login";
+  }
 }
 
 async function refreshSSHKeys(): Promise<void> {
@@ -1090,6 +1115,113 @@ async function onSSHDelete(name: string): Promise<void> {
     await refreshSSHKeys();
   } catch (e) {
     toast((e as Error).message || "delete failed", "err");
+  }
+}
+
+async function refreshGHAccounts(): Promise<void> {
+  try {
+    state.ghStatus = await ghAccounts();
+    paintTools();
+  } catch (e) {
+    state.ghStatus = {
+      ok: false,
+      accounts: [],
+      error: (e as Error).message || "gh status failed",
+    };
+    paintTools();
+  }
+}
+
+function ghAccountsHTML(): string {
+  const st = state.ghStatus;
+  if (!st) return `<div class="empty-soft">Loading…</div>`;
+  if (!st.accounts?.length) {
+    return `<div class="empty-soft">${esc(st.error || "No GitHub accounts logged in on the server")}</div>`;
+  }
+  return st.accounts
+    .map((a: GHAccount) => {
+      const active = a.active ? "active" : "";
+      const scopes = (a.scopes || []).join(", ");
+      return `<div class="gh-row ${active}">
+        <div class="gh-main">
+          <div class="gh-user">
+            <strong>${esc(a.user)}</strong>
+            ${a.active ? `<span class="badge running">active</span>` : ""}
+            <span class="gh-host">${esc(a.host)}</span>
+          </div>
+          <div class="gh-meta">proto ${esc(a.git_protocol || "—")}${scopes ? ` · ${esc(scopes)}` : ""}</div>
+        </div>
+        <div class="gh-actions">
+          ${
+            a.active
+              ? ""
+              : `<button type="button" class="ghost btn-sm" data-action="gh-switch" data-user="${esc(a.user)}" data-host="${esc(a.host)}">Switch</button>`
+          }
+          <button type="button" class="ghost btn-sm danger-text" data-action="gh-logout" data-user="${esc(a.user)}" data-host="${esc(a.host)}">Logout</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+async function onGHLogin(): Promise<void> {
+  if (state.ghBusy) return;
+  const tokEl = document.getElementById("gh-login-token") as HTMLInputElement | null;
+  const token = (tokEl?.value || state.ghLoginToken || "").trim();
+  if (!token) {
+    toast("Paste a GitHub token", "err");
+    return;
+  }
+  state.ghBusy = true;
+  paintTools();
+  try {
+    state.ghStatus = await ghLogin({
+      token,
+      host: "github.com",
+      git_protocol: "https",
+      insecure_storage: true,
+    });
+    state.ghLoginToken = "";
+    if (tokEl) tokEl.value = "";
+    toast(`GitHub active: ${state.ghStatus.active || "ok"}`, "ok");
+    paintTools();
+  } catch (e) {
+    toast((e as Error).message || "gh login failed", "err");
+  } finally {
+    state.ghBusy = false;
+    paintTools();
+  }
+}
+
+async function onGHSwitch(user: string, host: string): Promise<void> {
+  try {
+    state.ghStatus = await ghSwitch({ user, host: host || "github.com" });
+    toast(`Active: ${state.ghStatus.active}`, "ok");
+    paintTools();
+  } catch (e) {
+    toast((e as Error).message || "switch failed", "err");
+  }
+}
+
+async function onGHLogout(user: string, host: string): Promise<void> {
+  if (!confirm(`Log out GitHub account “${user}” on the server?\n\nOnly removes local gh config — does not revoke the token.`))
+    return;
+  try {
+    state.ghStatus = await ghLogout({ user, host: host || "github.com" });
+    toast(`Logged out ${user}`, "ok");
+    paintTools();
+  } catch (e) {
+    toast((e as Error).message || "logout failed", "err");
+  }
+}
+
+async function onGHSetupGit(): Promise<void> {
+  try {
+    await ghSetupGit();
+    toast("git credential helper set via gh", "ok");
+    await refreshGHAccounts();
+  } catch (e) {
+    toast((e as Error).message || "setup-git failed", "err");
   }
 }
 
@@ -1324,6 +1456,20 @@ function toolsHTML(): string {
             <button type="button" data-action="pw-start">Start</button>
             <button type="button" data-action="pw-stop">Stop</button>
             <button type="button" data-action="pw-restart">Restart</button>
+          </div>
+        </section>
+
+        <section class="tool-block">
+          <div class="tool-block-head">
+            <h3>GitHub accounts</h3>
+            <span class="tool-status" id="gh-active" title="Active account">${esc(state.ghStatus?.active || "—")}</span>
+          </div>
+          <p class="tool-desc">Server <code>gh</code> logins (tokens never returned). Used for clone/fork and GitHub API.</p>
+          <div id="gh-account-list" class="gh-account-list">${ghAccountsHTML()}</div>
+          <div class="gh-login">
+            <input id="gh-login-token" type="password" placeholder="Paste PAT / fine-grained token" value="" autocomplete="off" />
+            <button type="button" class="primary" data-action="gh-login" ${state.ghBusy ? "disabled" : ""}>${state.ghBusy ? "…" : "Login"}</button>
+            <button type="button" class="ghost" data-action="gh-setup-git" title="gh auth setup-git">Setup git</button>
           </div>
         </section>
 
@@ -1817,6 +1963,28 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         const n = actionEl.getAttribute("data-name");
         if (n) void onSSHDelete(n);
+        break;
+      }
+      case "gh-login":
+        ev.preventDefault();
+        void onGHLogin();
+        break;
+      case "gh-setup-git":
+        ev.preventDefault();
+        void onGHSetupGit();
+        break;
+      case "gh-switch": {
+        ev.preventDefault();
+        const u = actionEl.getAttribute("data-user") || "";
+        const h = actionEl.getAttribute("data-host") || "github.com";
+        if (u) void onGHSwitch(u, h);
+        break;
+      }
+      case "gh-logout": {
+        ev.preventDefault();
+        const u = actionEl.getAttribute("data-user") || "";
+        const h = actionEl.getAttribute("data-host") || "github.com";
+        if (u) void onGHLogout(u, h);
         break;
       }
       default:

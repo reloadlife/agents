@@ -125,6 +125,8 @@ cmd:
 		os.Exit(cmdWorkspaces(c, cmdArgs))
 	case "ssh-keys", "sshkeys", "keys":
 		os.Exit(cmdSSHKeys(c, cmdArgs))
+	case "gh", "github":
+		os.Exit(cmdGH(c, cmdArgs))
 	case "doctor":
 		os.Exit(cmdDoctor(c))
 	case "playwright", "pw":
@@ -167,6 +169,7 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl workspaces                   # list allowlisted cwds
   agentsctl workspaces clone URL [-name DIR] [--fork] [--branch B]
   agentsctl ssh-keys list|gen|show|delete   # manage server ~/.ssh identities
+  agentsctl gh status|login|switch|logout   # GitHub CLI accounts on the server
   agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]
@@ -569,6 +572,183 @@ func cmdWorkspaces(c *client, args []string) int {
 	}
 	fmt.Println("\nclone: agentsctl workspaces clone owner/repo [--name DIR] [--fork]")
 	fmt.Println("start: agentsctl session start -r <path> -a claude --open")
+	return 0
+}
+
+func cmdGH(c *client, args []string) int {
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+	switch args[0] {
+	case "status", "list", "ls", "accounts":
+		return cmdGHStatus(c)
+	case "login":
+		return cmdGHLogin(c, args[1:])
+	case "switch", "use":
+		return cmdGHSwitch(c, args[1:])
+	case "logout", "rm":
+		return cmdGHLogout(c, args[1:])
+	case "setup-git":
+		return cmdGHSetupGit(c)
+	case "help", "-h", "--help":
+		fmt.Fprintln(os.Stderr, "usage: agentsctl gh status|login|switch|logout|setup-git")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "unknown gh command: %s\n", args[0])
+		return 2
+	}
+}
+
+func cmdGHStatus(c *client) int {
+	var out struct {
+		OK       bool   `json:"ok"`
+		Active   string `json:"active"`
+		Binary   string `json:"binary"`
+		Error    string `json:"error"`
+		Accounts []struct {
+			Host        string   `json:"host"`
+			User        string   `json:"user"`
+			Active      bool     `json:"active"`
+			GitProtocol string   `json:"git_protocol"`
+			Scopes      []string `json:"scopes"`
+		} `json:"accounts"`
+	}
+	if err := c.json(http.MethodGet, "/v1/gh/accounts", nil, &out); err != nil {
+		fatal("%v", err)
+	}
+	if out.Binary != "" {
+		fmt.Printf("gh: %s\n", out.Binary)
+	}
+	if out.Active != "" {
+		fmt.Printf("active: %s\n\n", out.Active)
+	} else {
+		fmt.Println("active: (none)")
+		fmt.Println()
+	}
+	if len(out.Accounts) == 0 {
+		fmt.Println("(no accounts)")
+		if out.Error != "" {
+			fmt.Println(out.Error)
+		}
+		fmt.Println("login: agentsctl gh login --token ghp_…")
+		return 0
+	}
+	for _, a := range out.Accounts {
+		mark := " "
+		if a.Active {
+			mark = "*"
+		}
+		fmt.Printf("  %s %-20s  %s  proto=%s\n", mark, a.User, a.Host, a.GitProtocol)
+		if len(a.Scopes) > 0 {
+			fmt.Printf("      scopes: %s\n", strings.Join(a.Scopes, ", "))
+		}
+	}
+	return 0
+}
+
+func cmdGHLogin(c *client, args []string) int {
+	fs := flag.NewFlagSet("gh login", flag.ExitOnError)
+	token := fs.String("token", "", "GitHub token (or set GH_TOKEN / pipe via --token-env)")
+	tokenEnv := fs.String("token-env", "", "read token from this env var (e.g. GH_TOKEN)")
+	host := fs.String("hostname", "github.com", "GitHub host")
+	proto := fs.String("git-protocol", "https", "https or ssh")
+	insecure := fs.Bool("insecure-storage", true, "store in hosts.yml (typical for headless agentsd)")
+	_ = fs.Parse(args)
+
+	tok := strings.TrimSpace(*token)
+	if tok == "" && *tokenEnv != "" {
+		tok = strings.TrimSpace(os.Getenv(*tokenEnv))
+	}
+	if tok == "" {
+		// also accept GH_TOKEN / GITHUB_TOKEN
+		tok = strings.TrimSpace(os.Getenv("GH_TOKEN"))
+		if tok == "" {
+			tok = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+		}
+	}
+	if tok == "" {
+		// stdin if not a tty
+		fi, _ := os.Stdin.Stat()
+		if fi != nil && (fi.Mode()&os.ModeCharDevice) == 0 {
+			b, _ := io.ReadAll(os.Stdin)
+			tok = strings.TrimSpace(string(b))
+		}
+	}
+	if tok == "" {
+		fatal("usage: agentsctl gh login --token TOKEN | --token-env GH_TOKEN | GH_TOKEN=… agentsctl gh login")
+	}
+
+	body := map[string]any{
+		"token":            tok,
+		"host":             *host,
+		"git_protocol":     *proto,
+		"insecure_storage": *insecure,
+	}
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/gh/login", body, &out); err != nil {
+		fatal("%v", err)
+	}
+	if active, _ := out["active"].(string); active != "" {
+		fmt.Printf("logged in — active %s\n", active)
+	} else {
+		fmt.Println("logged in")
+	}
+	return 0
+}
+
+func cmdGHSwitch(c *client, args []string) int {
+	fs := flag.NewFlagSet("gh switch", flag.ExitOnError)
+	user := fs.String("user", "", "account username")
+	host := fs.String("hostname", "github.com", "GitHub host")
+	_ = fs.Parse(args)
+	u := *user
+	if u == "" && fs.NArg() >= 1 {
+		u = fs.Arg(0)
+	}
+	if u == "" {
+		fatal("usage: agentsctl gh switch --user USERNAME")
+	}
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/gh/switch", map[string]any{
+		"user": u,
+		"host": *host,
+	}, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("active: %v\n", out["active"])
+	return 0
+}
+
+func cmdGHLogout(c *client, args []string) int {
+	fs := flag.NewFlagSet("gh logout", flag.ExitOnError)
+	user := fs.String("user", "", "account username")
+	host := fs.String("hostname", "github.com", "GitHub host")
+	_ = fs.Parse(args)
+	u := *user
+	if u == "" && fs.NArg() >= 1 {
+		u = fs.Arg(0)
+	}
+	body := map[string]any{"host": *host}
+	if u != "" {
+		body["user"] = u
+	}
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/gh/logout", body, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Println("logged out")
+	if active, _ := out["active"].(string); active != "" {
+		fmt.Printf("active now: %s\n", active)
+	}
+	return 0
+}
+
+func cmdGHSetupGit(c *client) int {
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/gh/setup-git", map[string]any{}, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Println("git credential helper configured via gh")
 	return 0
 }
 
