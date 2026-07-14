@@ -9,110 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Git Changes panel** — review agent worktree diffs without leaving the control plane
-  - API: `GET /v1/git/status`, `/v1/git/diff`, `/v1/git/file`
-  - Write: `POST /v1/git/commit` (never push), `POST /v1/git/pull-request` via `gh`
-  - Web: `/changes` Vaul sheet (file list, unified diff, commit, create PR)
-  - Entry: sidebar git icon, Tools, palette, `⇧g`
-- **Isolated worktrees** — `POST /v1/sessions` `{ "worktree": true }` creates git worktree under `.agents/worktrees/`
-  - Session cwd points at worktree; delete best-effort removes worktree
-  - New session form: “Isolated worktree” checkbox
-- **Session git branch** — list/get include best-effort `git_branch` on session rows
-- **Workspace tasks** — `<cwd>/.agents/tasks.json` + Tools/palette UI
-- **Open remote file+line** — `POST /v1/workspaces/open` accepts `path` / `line`
-- **Plain shell terminal** — agent `shell`; UI **Terminal** / `⇧t`
-- **Open remote** — Cursor / Zed / VS Code SSH-remote commands
+- **Git Changes UI polish** — worktree checkbox on New session; API field alignment (`additions` / `commit` SHA)
+- Embedded web dist rebuild for Changes panel + worktree form
 
 ### Changed
 
-- **Web performance** — session list / tabs / status paint only when signatures change; debounced filter; lighter motion; `content-visibility` on rows
+- Changelog organized per ship step (v0.7.2–v0.7.9)
 
 ## [0.7.8] — 2026-07-14
 
-### Changed
+### Added
 
-- **Agent accounts**: empty profile slots can be activated (**Use empty**) via cursor-switch
-  - Clears live login so you can sign into a new account, then **Save current**
-  - Requires cursor-account-switcher with empty-slot switch support
+- **Workspace tasks** — lightweight list at `<cwd>/.agents/tasks.json`
+  - API: `GET/POST /v1/tasks`, `PATCH/DELETE /v1/tasks/{id}` (`todo`|`doing`|`done`)
+  - Web: Tools sheet section + palette “Workspace tasks” panel
 
 ## [0.7.7] — 2026-07-14
 
-### Fixed
+### Added
 
-- **Session chat resume after reboot**
-  - Persist `agent_session_id` (native CLI conversation id) on the control-plane session
-  - **grok**: create with `--session-id <uuid>`; resume with `--resume <uuid>` (discover last under `~/.grok/sessions/` for legacy sessions; else `--continue`)
-  - **claude** / **codex** / **opencode**: `--resume` / `resume` / `--session` when known; else continue/last for cwd
-  - Optional per-agent `session_id_args` / `resume_args` templates in config (`{id}` placeholder)
-  - Terminal scrollback snapshot behavior unchanged
+- **Session git branch** — `GET /v1/sessions` includes best-effort `git_branch`
+  - Short-timeout `git rev-parse`; deduped per cwd; worktree branch fallback
+  - Web list meta: `agent · cwd · branch · age`; filter matches branch
 
 ## [0.7.6] — 2026-07-14
 
 ### Changed
 
-- **Web UI polish** (minimal dark shadcn hierarchy)
-  - Sidebar: one primary **New session**; quiet new-project link
-  - Topbar: conn pill · command palette · overflow menu (no CTA spam)
-  - Session rows: Stop/Resume/Delete behind ⋯ menu
-  - Empty desk: unified copy + ⌘K hint
-  - Create sheets: body-only Vaul forms; account options collapsed
-  - Shared workspace tools body (Tools sheet + Settings → Workspace)
-  - Settings mobile: Back always visible; SSH key layout fixed
-
-### Added
-
-- **Keyboard session/tab switching**
-  - `j/k` list · `⇧j/⇧k` step+open · `h/l` tabs · `Ctrl+Tab` (works in TTY)
-  - `Ctrl+1–9` jump tab from TTY · `y` copy id · `i` focus term · full `?` help
-
-### Fixed
-
-- Integration test auth: hand-built config sets `TokenMap` (CI green again)
-- Vaul drawer empty body (content inject + flex height)
+- **Web performance**
+  - Session list / tabs / status paint only when display signatures change
+  - Debounced filter (120ms); poll no longer thrashing full chrome
+  - Lighter motion (no stuck opacity); `content-visibility` on session rows
+  - Tab-close via document delegation
 
 ## [0.7.5] — 2026-07-14
 
-### Fixed
+### Added
 
-- **Agent account switcher** (cursor-switch)
-  - `switch` now passes `--plain` so it works under systemd (no TTY / spinner)
-  - Full Settings → Agent accounts UI: platform chips, live login, Switch / Save / Remove / Add
-  - `POST /v1/agent-accounts/remove` (+ DELETE alias)
-  - New session account picker shows email + saved status and links to manage accounts
+- **Git write APIs** (never auto-push)
+  - `POST /v1/git/commit` — `{ cwd, message, all?, paths? }`
+  - `POST /v1/git/pull-request` — `{ cwd, title, body?, base?, draft? }` via `gh pr create`
 
 ## [0.7.4] — 2026-07-14
 
 ### Added
 
-- **New project modal** — `/project/new` (also `/projects/new`, `/new/project`)
-  - Clone or GitHub-fork into `workspace_root`
-  - Optional “Open new session after clone”
-  - Sidebar **+ New project**, topbar **Project**, palette, `Shift+n`
-  - New session form links to this flow (clone removed from session form)
+- **Git read APIs** for workspace review
+  - `GET /v1/git/status?cwd=` — branch, dirty, files, summary
+  - `GET /v1/git/diff?cwd=&path=&staged=&base=` — unified diff (1.5 MiB cap)
+  - `GET /v1/git/file?cwd=&path=&ref=` — blob at ref
+- Web **Changes** panel (`/changes`, sidebar, `⇧g`) — file list + diff + commit/PR forms
 
 ## [0.7.3] — 2026-07-14
 
 ### Added
 
-- **Web UI client routing** (History API + SPA fallback)
-  - `/` · `/new` — new session modal
-  - `/desk` — desk without modal
-  - `/tools` · `/help` · `/profile[/:tab]` (and `/settings` alias)
-  - `/project/:projectId/session/:sessionId[/tools]` — shareable session links
-  - Session list + tabs + breadcrumbs are real `<a>` links
-  - Browser back/forward restores the matching view
+- **Isolated git worktrees** for parallel agents
+  - `POST /v1/sessions` `{ "worktree": true, "worktree_branch"?: "…" }`
+  - Worktree under `.agents/worktrees/<id>`; session `cwd` points at worktree
+  - Delete best-effort `git worktree remove` (never fails session delete)
 
 ## [0.7.2] — 2026-07-14
 
-### Fixed
+### Added
 
-- **Image paste into the web terminal (hardened)**
-  - Document-level capture paste/drop (survives term-host rebuilds; beats xterm text paste)
-  - Reads `clipboardData.files` + `items` + HTML `data:image` URLs + async `clipboard.read()`
-  - Accepts clipboard files with empty MIME (extension / server MIME fallback)
-  - PTY input sent as binary WebSocket frames (no JSON-control collision)
-  - Toolbar **Image** button as file-picker fallback
-  - Still uploads to `<cwd>/.agents/pastes/` and types the absolute path into the PTY
+- **Open remote file + line**
+  - `POST /v1/workspaces/open` accepts `path` / `line`
+  - Cursor / VS Code / Zed remote and local goto-style commands
 
 ## [0.7.1] — 2026-07-14
 
@@ -122,313 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Paste or drag-drop images onto the PTY
   - Uploads to `<cwd>/.agents/pastes/` via `POST /v1/uploads/image`
   - Inserts the absolute file path into the terminal so agents can `Read` it
-  - Avoids dumping binary clipboard data as garbled text
 
 ## [0.7.0] — 2026-07-14
 
 ### Added
 
 - **Session recording** (`sessions.recording`) — archive pane snapshots under `jobs_dir/recordings`
-  - `GET /v1/recordings`, `GET /v1/recordings/{id}`, `POST /v1/sessions/{id}/record`
-  - `agentsctl recordings list|show|snap`
-- **History search** — `GET /v1/history/search?q=` + `agentsctl history search`
-- **Session templates** — presets (agent/cwd/prompt/account)
-  - `GET/POST /v1/templates`, `POST /v1/templates/{id}/start`
-  - `agentsctl templates list|save|start|delete`
-- **Webhooks** — `[notify] webhook_url` + events; `agentsctl notify test`
-- **Multi-token auth** — `auth.extra_tokens` + optional `trusted_header` (Tailscale/CF Access)
-- **Audit log** — JSONL under `jobs_dir/audit`; `GET /v1/audit`, `agentsctl audit`
-- **Backup/restore** — `POST /v1/backup`, `POST /v1/backup/restore`; `agentsctl backup`
-- **Workspace dashboard** — `GET /v1/dashboard`, `agentsctl dashboard`
-- **Skill install helper** — `POST /v1/skills/install`, `agentsctl skills install`
-- **Session limits** — `sessions.max_concurrent`
-- **Auto-notes** — on stop/delete write memory note (`sessions.auto_note`, default true)
-- **Hybrid memory search** — FTS + vector RRF when embeddings configured
-- **Web command palette** — `Ctrl/Cmd+K` or `p` (templates, dashboard, backup, theme…)
-- **Light/dark theme** toggle (palette)
+- **History search** — `GET /v1/history/search?q=`
+- Templates, audit, notify, command palette foundations
 
-## [0.6.3] — 2026-07-14
+## Earlier
 
-### Changed
-
-- **All popups use Vaul (shadcn Drawer) on desktop and mobile**
-  - New session, Tools, Help, map/pack content sheets
-  - Desktop: floating centered bottom sheet (dialog variants)
-  - Mobile: full-width bottom sheet with drag handle + swipe dismiss
-  - Removed legacy custom modal overlays for panels/drawers
-  - Background scale + blur overlay
-
-## [0.6.2] — 2026-07-14
-
-### Added
-
-- **Vaul mobile drawers** (shadcn Drawer pattern):
-  - On viewports ≤840px, New session / Tools / Help / map pack open as bottom sheets
-  - Drag handle, swipe-to-dismiss, background scale (`shouldScaleBackground`)
-  - Lazy-loaded React island + Vaul chunk (desktop stays on centered modals)
-  - `handleOnly` so form/list scrolling works inside the sheet
-
-## [0.6.1] — 2026-07-14
-
-### Added
-
-- **Motion.dev animations** across the Web UI (`motion` package):
-  - Spring open/close for modals (New session, Tools, Help, map drawer)
-  - Settings page cascade in/out
-  - Toast slide-up
-  - Shell first-paint: sidebar + inset card + menu stagger
-  - Session list stagger when membership/filter changes (not on poll)
-  - Soft press feedback on primary chrome
-  - Respects `prefers-reduced-motion`
-
-## [0.6.0] — 2026-07-14
-
-### Changed
-
-- **Web UI overhaul — shadcn sidebar-08 dashboard**
-  - Inset main panel (rounded card on sidebar background)
-  - Structured sidebar: Platform nav · Sessions list · host user footer
-  - Header breadcrumb + session tabs + connection pill
-  - Terminal stage sits in a bordered inset surface
-  - Settings page matches the same sidebar-08 chrome
-  - All session/PTY/tools behavior unchanged
-
-## [0.5.2] — 2026-07-14
-
-### Added
-
-- **`agentsctl web`** — open the browser UI and auto-authenticate with the client token
-  - Builds `http://…/#token=…` (fragment not sent to the server)
-  - SPA stores token in localStorage and strips it from the URL
-  - Flags: `--print`, `--no-auth`, `--path`, `--check=false`
-
-## [0.5.1] — 2026-07-14
-
-### Fixed
-
-- **Tools panel** map / memory / Playwright actually work in the Web UI:
-  - Playwright status used a non-existent `running` field → always showed "stopped"; now uses `container` / `server_ok` / `message`
-  - Map Show drawer was buried under the tools overlay (z-index); drawer now stacks on top
-  - Status labels use `data-status` so Settings + Tools don't fight over duplicate ids
-  - Map GET 404 is soft-handled (prompt to Generate) instead of a raw throw
-  - Memory Reindex no longer `clear:true` by default (keeps notes); always regenerates map
-  - Tools ↔ Settings no longer stack conflicting overlays; tools prefer active session cwd
-  - Added Playwright **Install browsers** action + live status while actions run
-
-## [0.5.0] — 2026-07-14
-
-### Added
-
-- **Context manager** for faster / better agent orientation:
-  - `internal/ctxmgr` — ensure map + memory + pack `CONTEXT.md` / `INSTRUCTIONS.md`
-  - Auto **ensure on session create** and after workspace **clone** (config defaults on)
-  - Short **TTY orientation seed** (`seed_orientation`) so agents read map/context first
-  - API: `GET/POST /v1/context/{status,ensure,pack,note}`
-  - CLI: `agentsctl context status|ensure|pack|note`
-  - Web Tools + Settings → Workspace: Ensure / Show pack
-  - Durable notes: `agentsctl context note` → memory `source=note`
-  - Docs: [docs/CONTEXT.md](docs/CONTEXT.md)
-
-### Changed
-
-- Session create response includes `context` summary fields
-- Memory index also picks up `.agents/*.md`, `GEMINI.md`, `CODEX.md`
-- TTY seed prompt chunking + slightly longer wait for slow agent UIs
-
-## [0.4.1] — 2026-07-14
-
-### Added
-
-- **Keyboard workflow shortcuts** for the Web UI:
-  - Session list: `j`/`k`, arrows, `Enter`/`o` open, `/` filter
-  - Tabs: `[`/`]`, `1`–`9`, `0` last, `x` close, `Shift+x` close all
-  - Lifecycle: `s` stop, `e` resume, `Shift+d` delete, `c` prune, `r` refresh
-  - Panels: `n` new, `t` tools, `,`/`a` settings, `g` GitHub, `Shift+k` SSH, `?` help
-  - **Alt+** chords work while the terminal is focused; Esc blurs TTY to arm bare keys
-  - Settings: bare `1`–`5` or `Alt+Shift+1`–`5` switch settings tabs
-
-## [0.4.0] — 2026-07-14
-
-### Changed
-
-- **Web UI overhaul** — shadcn-style dark zinc design system:
-  - Inter + JetBrains Mono, zinc HSL tokens, white primary buttons
-  - Cleaner cards, dialogs, badges, session rail, and settings layout
-  - Terminal palette aligned with zinc dark
-  - Same features; visual language only (vanilla TS, not React rewrite)
-
-## [0.3.7] — 2026-07-14
-
-### Added
-
-- **Full Settings page** in the Web UI (`, ` or **Settings**):
-  - Agent accounts (save / global switch / add slots per platform)
-  - GitHub CLI logins
-  - SSH keys
-  - Workspace tools (map / memory / Playwright)
-  - About + shortcuts
-
-## [0.3.6] — 2026-07-14
-
-### Added
-
-- **Multi-account agent profiles** via [cursor-account-switcher](https://github.com/reloadlife/cursor-account-switcher):
-  - Platforms: cursor, claude, codex, **grok**, vscode
-  - `GET /v1/agent-accounts`, save/switch/add
-  - Session field `account` + `account_mode`: **`isolated`** (parallel-safe private HOME) or `global` (host-wide switch)
-  - New-session UI: account profile picker when the agent maps to a platform
-  - Requires `cursor-switch` on the agents host PATH
-
-## [0.3.5] — 2026-07-14
-
-### Added
-
-- **GitHub account manager** (`gh` on the agents host):
-  - `GET /v1/gh/accounts`, `POST /v1/gh/login|switch|logout|setup-git`
-  - `agentsctl gh status|login|switch|logout|setup-git`
-  - Tools panel: list accounts, switch, logout, login with PAT
-  - **Tokens never returned** (login accepts write-only token)
-
-## [0.3.4] — 2026-07-14
-
-### Added
-
-- **SSH key manager** for the agents host: `GET/POST /v1/ssh-keys`, `GET/DELETE /v1/ssh-keys/{name}`, `agentsctl ssh-keys list|gen|show|delete`, Tools panel UI
-  - Lists identities under server `~/.ssh`, generates ed25519/rsa, copies public keys
-  - **Private keys are never returned over the API**
-
-## [0.3.3] — 2026-07-14
-
-### Changed
-
-- **Web UI redesign:** warm “ink workshop” palette (brass chrome on dark paper), serif display wordmark, denser session cards, cleaner empty state and modals; agent brand colors retained
-
-## [0.3.2] — 2026-07-14
-
-### Fixed
-
-- Web UI **Tools / New / Help** modals not painting: harden workspace option rendering, raise overlay z-index, open panel after click settles (no instant dismiss)
-
-## [0.3.1] — 2026-07-14
-
-### Added
-
-- **Session delete:** `DELETE|POST /v1/sessions/{id}/delete`, `agentsctl session delete`, Web UI Stop/Delete
-- **Clone project into workspace:** `POST /v1/workspaces/clone`, `agentsctl workspaces clone URL [--fork]`, New-session “New project from git”
-- Per-agent brand colors in the Web UI (Claude / Grok / Codex / Cursor / …)
-
-### Fixed
-
-- New session / Tools buttons (event delegation, form reads DOM, toasts above modals)
-- Workspace list clients handle `{path}` objects + flat `paths[]`
-
-### Changed
-
-- Web UI palette: muted steel (no neon pulse); clearer session lifecycle actions
-
-## [0.3.0] — 2026-07-14
-
-### Added
-
-- **Embedded Web UI** at `GET /` — multi-tab xterm.js sessions over the existing PTY WebSocket
-- Web UI **project map** + **memory** panels (generate/show map, index/search)
-- `web/` frontend (Vite + TypeScript + xterm.js); `make web` builds into `internal/webui/dist`
-- Config `[web] enabled` (default true) to disable the SPA
-- Auth: only `/v1/*` requires bearer token; static UI shell is public
-- **Project maps:** `agentsctl map generate|show|status`, `POST/GET /v1/maps`, writes `.agents/PROJECT_MAP.md`
-- **Workspace memory:** SQLite FTS5 + optional OpenAI-compatible **vector** embeddings
-  - `agentsctl memory index|search|stats` (`--mode auto|fts|vector`)
-  - `/v1/memory/*`
-- Skill: [skills/project-map/SKILL.md](skills/project-map/SKILL.md)
-- Docs: [docs/WEB.md](docs/WEB.md), [docs/PROJECT-MAP.md](docs/PROJECT-MAP.md), [docs/MEMORY.md](docs/MEMORY.md)
-- **Self-update:** `agentsctl update` and `agentsd update` download the matching GitHub release tarball and replace the binary in place (`--check`, `--force`, `--version TAG`, `--all`)
-
-### Changed
-
-- **Web UI redesign:** sessions-first rail, new-session modal, tools drawer (map/memory/Playwright), connection pill, filter/prune/kill-from-list, keyboard shortcuts, mobile sidebar, ops-console styling
-- **Sessions survive agentsd restart:** systemd units use `KillMode=process`; tmux started with setsid; manager reloads JSON + re-probes live tmux
-- **`POST /v1/sessions/{id}/resume`**, `agentsctl session resume`, Web UI resume — re-attach if alive, else restart agent under same id
-- **Terminal history:** seed PTY attach with `tmux capture-pane` scrollback; snapshot `.pane` on kill/detach; `GET /v1/sessions/{id}/history` + `agentsctl session history`
-
-## [0.2.2] — 2026-07-13
-
-### Changed
-
-- Archive design/plan docs rewritten with generic examples (historical, not host-specific)
-- Pathallow unit tests use generic fixture names (`my-app`, `team/*`, …)
-
-### Security
-
-- Removed remaining personal host/repo identifiers from archived docs and tests
-
-## [0.2.1] — 2026-07-13
-
-### Changed
-
-- Project naming aligned to **agents** (`reloadlife/agents`); README/SECURITY/NOTICE/help text
-- `scripts/install.sh` installs from GitHub **release tarballs** (source build fallback)
-- Example configs use generic paths only; personal host config removed from tree
-- SSH snippet uses placeholders (no real LAN IP)
-- OPEN-SOURCE.md refreshed for v0.2.x public preview status
-- systemd `WorkingDirectory` → `/var/lib/agents`
-
-### Security
-
-- Scrubbed personal host paths/IPs from committed examples
-
-## [0.2.0] — 2026-07-13
-
-### Added
-
-- **Default CLI UX:** bare `agentsctl` (no subcommand) opens the TUI session picker
-- **TUI workspace picker:** press `w` to cycle allowlisted cwds from `/v1/workspaces`
-- **PTY reconnect:** client auto-reconnects with status banner after transient drops; mutual keepalive pings
-- **Non-root install:** `deploy/agentsd.user.service` + docs for systemd user units under `$HOME`
-- **CI integration test:** `go test -tags=integration` for tmux + mock agent session create/list/kill
-- Release tarballs named `agents_${ver}_${os}_${arch}.tar.gz` (legacy `local-agents_*` still published)
-
-### Changed
-
-- TUI help/status shows agent + cwd; quick-start uses selected workspace
-- INSTALL.md prefers non-root layout
-
-## [0.1.2] — 2026-07-13
-
-### Added
-
-- `agentsctl playwright status|start|stop|restart|install` and `/v1/playwright/*` API
-- Server-side Playwright/Xvfb/docker compose management
-
-## [0.1.1] — 2026-07-13
-
-### Added
-
-- Headed browser support for agent sessions via Xvfb (`sessions.display`)
-- Session env: `DISPLAY`, `PLAYWRIGHT_HEADLESS=0`, `PLAYWRIGHT_BROWSERS_PATH`, optional `PLAYWRIGHT_SERVER`
-- `deploy/xvfb.service` and `scripts/setup-playwright.sh`
-- Optional Playwright Docker server (`deploy/docker-compose.playwright.yml`)
-- Status panel shows display active/down
-- Docs: `docs/PLAYWRIGHT.md`
-
-## [0.1.0] — 2026-07-13
-
-### Added
-
-- Interactive agent sessions via `tmux` (Claude, Grok, Codex, OpenCode, Cursor Agent)
-- Full remote PTY over WebSocket (`GET /v1/sessions/{id}/pty`) — no SSH required for TTY
-- `agentsctl` CLI with status panel, session commands, Bubble Tea TUI (`agentsctl tui`)
-- `agentsctl doctor` — client health checks against agentsd
-- `agentsctl workspaces` / `GET /v1/workspaces` — allowlisted cwd browser
-- `agentsctl session prune` / `POST /v1/sessions/prune` — clean stopped sessions
-- Headless print/API job queue (opt-in; can use API credits)
-- Workspace path allowlist, bearer auth, log redaction helpers
-- Agent catalog API (`GET /v1/agents`) and status probes (docker, optional GKE)
-- Host memory in status (when `/proc/meminfo` available)
-- PTY WebSocket write serialization + keepalive pings
-- Example systemd unit and deploy configs
-- AGPL-3.0 license
-
-### Security
-
-- Bearer token required on all `/v1/*` routes including PTY WebSocket
-- Elevated job caps require explicit confirm
+See git tags `v0.6.x` … `v0.2.x` and commit history for prior releases.
