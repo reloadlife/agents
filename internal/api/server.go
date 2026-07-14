@@ -106,6 +106,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/git/file", s.handleGitFile)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
+	// Gated git write ops (local commit never pushes; PR via authenticated gh)
+	mux.HandleFunc("POST /v1/git/commit", s.handleGitCommit)
+	mux.HandleFunc("POST /v1/git/pull-request", s.handleGitPullRequest)
+
 	// SSH identity keys (public only; private never served)
 	mux.HandleFunc("GET /v1/ssh-keys", s.handleListSSHKeys)
 	mux.HandleFunc("POST /v1/ssh-keys", s.handleGenerateSSHKey)
