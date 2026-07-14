@@ -69,6 +69,8 @@ func TestIntegration_MockSession(t *testing.T) {
 		DefaultTimeoutDur: 5 * time.Minute,
 		MaxTimeoutDur:     10 * time.Minute,
 		Token:             token,
+		// Middleware reads TokenMap (populated by config load); set explicitly for hand-built cfg.
+		TokenMap: map[string]string{"default": token},
 		Auth: config.AuthConfig{
 			BearerEnv: "AGENTSD_TOKEN",
 		},
