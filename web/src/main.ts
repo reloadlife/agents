@@ -3520,6 +3520,16 @@ function panelTitle(p: Panel): string {
   return "Panel";
 }
 
+/** Optional DialogDescription under Vaul title (shadcn-style). */
+function panelDescription(p: Panel): string {
+  if (p === "new") return "Pick an agent and workspace. Runs in tmux and survives browser disconnects.";
+  if (p === "new-project") return "Clone or fork into the host workspace root.";
+  if (p === "tools") return "Workspace utilities for the selected cwd.";
+  if (p === "changes") return "Status, diff, commit, and pull requests.";
+  if (p === "help") return "Bare keys outside the terminal. Hold Alt while the TTY is focused.";
+  return "";
+}
+
 /** Strip modal shell so Vaul can render the body under its handle/title. */
 function stripModalChrome(full: string): string {
   try {
@@ -3594,6 +3604,7 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   await ensureVaulHost();
   openAppDrawer({
     title: panelTitle(p),
+    description: panelDescription(p),
     html: panelBodyHTML(p),
     variant:
       p === "changes"
@@ -3653,16 +3664,16 @@ function workspaceOptionsHTML(): string {
 }
 
 function newSessionHTML(): string {
-  // Body-only: Vaul owns title/close chrome.
+  // Body-only: Vaul owns title / description / close chrome.
   const accountBlock = state.agentAccountPlatform
-    ? `<details class="details-block" ${state.formAccount ? "open" : ""}>
+    ? `<details class="details-block field-disclosure" ${state.formAccount ? "open" : ""}>
         <summary>Account <span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></summary>
-        <div class="field" style="margin-top:0.65rem">
-          <label for="sess-account" class="sr-only">Account profile</label>
+        <div class="field field--nested">
+          <label for="sess-account">Profile</label>
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
-          <div class="check-row" style="margin-top:0.55rem">
+          <div class="check-row check-row--tight">
             <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — private HOME</label>
             <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch</label>
           </div>
@@ -3672,7 +3683,6 @@ function newSessionHTML(): string {
     : "";
   return `
     <form id="create-form" class="modal-body sheet-form" data-action-form="create-session">
-      <p class="form-hint sheet-lede">Pick an agent and workspace. The session runs in tmux and survives browser disconnects.</p>
       <div class="field-grid">
         <div class="field">
           <label for="sess-agent">Agent</label>
@@ -3694,10 +3704,13 @@ function newSessionHTML(): string {
         <label for="sess-name">Label <span class="opt">optional</span></label>
         <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
       </div>
-      <div class="check-row" style="margin-bottom:0.75rem">
-        <label class="check" title="Isolated git worktree under .agents/worktrees — safe parallel agents">
+      <div class="field field--check">
+        <label class="check check--block" title="Isolated git worktree under .agents/worktrees — safe parallel agents">
           <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
-          Isolated worktree <span class="opt">git only</span>
+          <span class="check-text">
+            <span class="check-title">Isolated worktree</span>
+            <span class="form-hint">Git only · creates a branch under <code>.agents/worktrees</code> for parallel agents</span>
+          </span>
         </label>
       </div>
       ${accountBlock}
@@ -3719,10 +3732,10 @@ function newSessionHTML(): string {
 function newProjectHTML(): string {
   return `
     <form id="project-form" class="modal-body sheet-form" data-action-form="create-project">
-      <p class="form-hint sheet-lede">Clone or fork into the host workspace root, then open a session on the new folder.</p>
       <div class="field">
         <label for="proj-git-url">Repo URL or owner/repo</label>
         <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
+        <p class="form-hint">HTTPS, SSH, or short <code>owner/repo</code></p>
       </div>
       <div class="field-grid">
         <div class="field">
@@ -3734,19 +3747,22 @@ function newProjectHTML(): string {
           <input id="proj-git-branch" name="branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
         </div>
       </div>
-      <div class="check-row">
-        <label class="check">
-          <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-          Fork on GitHub first
-        </label>
-        <label class="check">
-          <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-          Shallow clone
-        </label>
-        <label class="check">
-          <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
-          Open session after clone
-        </label>
+      <div class="field field--checks">
+        <span class="field-label">Options</span>
+        <div class="check-row">
+          <label class="check">
+            <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+            Fork on GitHub first
+          </label>
+          <label class="check">
+            <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+            Shallow clone
+          </label>
+          <label class="check">
+            <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
+            Open session after clone
+          </label>
+        </div>
       </div>
       <p class="form-hint">Auth via host SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">Settings → GitHub</a></p>
       ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
@@ -3810,7 +3826,7 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
         </form>
         <div id="mem-hits" class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
       </section>
-      <section class="${wrap}">
+      <section class="${wrap} tool-block--tasks">
         <div class="${head}">
           <${titleOpen}>Tasks</${titleClose}>
           <span class="tool-status" data-status="tasks" id="tasks-status">${esc(
@@ -3822,7 +3838,8 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
         <p class="tool-desc">Workspace list · <code>.agents/tasks.json</code></p>
         <div class="tasks-list-wrap" data-tasks-list>${tasksListHTML()}</div>
         <form class="task-add" data-action-form="task-add">
-          <input name="title" data-task-draft placeholder="New task…" value="${esc(state.tasksDraft)}" autocomplete="off" ${state.tasksBusy ? "disabled" : ""} />
+          <label class="sr-only" for="task-draft-input">New task</label>
+          <input id="task-draft-input" name="title" data-task-draft placeholder="New task…" value="${esc(state.tasksDraft)}" autocomplete="off" ${state.tasksBusy ? "disabled" : ""} />
           <button type="submit" class="primary btn-sm" ${state.tasksBusy ? "disabled" : ""}>Add</button>
         </form>
       </section>
@@ -3845,14 +3862,13 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
 function toolsHTML(): string {
   return `
     <div class="modal-body tools-body sheet-form">
-      <p class="form-hint sheet-lede">Workspace utilities for the selected cwd. Accounts &amp; host keys live in Settings.</p>
       <div class="btn-row tools-quick">
         <button type="button" class="primary btn-sm" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
         <button type="button" class="ghost btn-sm" data-action="open-remote">${iconSvg("external")} Open remote</button>
         <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Git changes</button>
       </div>
       ${workspaceToolsBodyHTML()}
-      <p class="form-hint">
+      <p class="form-hint tools-foot">
         Accounts, GitHub, SSH →
         <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Open settings</button>
       </p>
@@ -4007,7 +4023,7 @@ function gitChangesHTML(): string {
       </div>
       ${gitBranchMetaHTML()}
       ${state.gitError && state.gitStatus ? `<p class="form-error" role="alert">${esc(state.gitError)}</p>` : ""}
-      <div class="git-split">
+      <div class="git-split" role="group" aria-label="Files and diff">
         <div class="git-files-col">
           <div class="git-col-head">Files</div>
           ${gitFileListHTML()}
@@ -4019,51 +4035,53 @@ function gitChangesHTML(): string {
           </div>
         </div>
       </div>
-      <details class="details-block git-commit-block" open>
-        <summary>Commit <span class="opt">${esc(commitScope)}</span></summary>
-        <form class="git-commit-form" data-action-form="git-commit">
-          <div class="field">
-            <label for="git-commit-msg">Message</label>
-            <textarea id="git-commit-msg" name="message" rows="2" placeholder="Commit message" required ${state.gitBusy ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
-          </div>
-          <div class="btn-row">
-            <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
-          </div>
-        </form>
-      </details>
-      <details class="details-block git-pr-block">
-        <summary>Create pull request</summary>
-        <form class="git-pr-form" data-action-form="git-pr">
-          <div class="field">
-            <label for="git-pr-title">Title</label>
-            <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
-          </div>
-          <div class="field">
-            <label for="git-pr-body">Body <span class="opt">optional</span></label>
-            <textarea id="git-pr-body" name="body" rows="2" placeholder="Description" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
-          </div>
-          <div class="field-grid">
+      <div class="git-actions-stack">
+        <details class="details-block git-commit-block" open>
+          <summary>Commit <span class="opt">${esc(commitScope)}</span></summary>
+          <form class="git-commit-form" data-action-form="git-commit">
             <div class="field">
-              <label for="git-pr-base">Base <span class="opt">optional</span></label>
-              <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+              <label for="git-commit-msg">Message</label>
+              <textarea id="git-commit-msg" name="message" rows="2" placeholder="Commit message" required ${state.gitBusy ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
             </div>
-            <div class="field" style="display:flex;align-items:flex-end">
-              <label class="check">
-                <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
-                Draft PR
-              </label>
+            <div class="btn-row">
+              <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
             </div>
-          </div>
-          <div class="btn-row">
-            <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
-          </div>
-          ${
-            state.gitPrUrl
-              ? `<p class="form-hint git-pr-url">PR: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
-              : ""
-          }
-        </form>
-      </details>
+          </form>
+        </details>
+        <details class="details-block git-pr-block">
+          <summary>Create pull request</summary>
+          <form class="git-pr-form" data-action-form="git-pr">
+            <div class="field">
+              <label for="git-pr-title">Title</label>
+              <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+            </div>
+            <div class="field">
+              <label for="git-pr-body">Body <span class="opt">optional</span></label>
+              <textarea id="git-pr-body" name="body" rows="2" placeholder="Description" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="git-pr-base">Base <span class="opt">optional</span></label>
+                <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+              </div>
+              <div class="field field--check-end">
+                <label class="check">
+                  <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
+                  Draft PR
+                </label>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
+            </div>
+            ${
+              state.gitPrUrl
+                ? `<p class="form-hint git-pr-url">PR: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
+                : ""
+            }
+          </form>
+        </details>
+      </div>
     </div>`;
 }
 
@@ -4254,7 +4272,6 @@ function helpHTML(): string {
   return `
     <div class="modal-body help-body sheet-form">
       <p class="form-hint help-lede">
-        Bare keys outside the terminal. Hold <kbd>Alt</kbd> while the TTY is focused.
         <kbd>Ctrl</kbd><kbd>Tab</kbd> always switches tabs (even over the agent).
       </p>
       <div class="help-grid">
@@ -4318,7 +4335,7 @@ function helpHTML(): string {
           </dl>
         </section>
       </div>
-      <p class="form-hint">Tab close never kills the agent — use <kbd>s</kbd> Stop or <kbd>⇧</kbd><kbd>d</kbd> Delete.</p>
+      <p class="form-hint help-foot">Tab close never kills the agent — use <kbd>s</kbd> Stop or <kbd>⇧</kbd><kbd>d</kbd> Delete.</p>
     </div>`;
 }
 

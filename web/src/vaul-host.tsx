@@ -1,6 +1,9 @@
 /**
  * React island: Vaul drawer host for all app popups (desktop + mobile).
  * Vanilla main.ts drives open/close via drawer-bridge.
+ *
+ * UX: mobile = bottom sheet + drag handle; desktop = centered dialog card.
+ * Chrome: title (+ optional description) + icon close — no redundant "Close" text.
  */
 import { useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,6 +15,7 @@ import {
   subscribeDrawer,
   type DrawerSnapshot,
   closeAppDrawer,
+  isMobileViewport,
 } from "./drawer-bridge";
 
 function CloseIcon() {
@@ -33,6 +37,24 @@ function CloseIcon() {
   );
 }
 
+function useIsMobileDrawer(): boolean {
+  const [mobile, setMobile] = useState(() => {
+    try {
+      return isMobileViewport();
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 840px)");
+    const apply = () => setMobile(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+  return mobile;
+}
+
 function VaulApp() {
   const [snap, setSnap] = useState<DrawerSnapshot>(() => getDrawerSnapshot());
   // Retain body through Vaul/Radix close animation (Content unmounts after exit).
@@ -40,24 +62,44 @@ function VaulApp() {
     const s = getDrawerSnapshot();
     return s.open ? s.html : "";
   });
+  const [heldMeta, setHeldMeta] = useState(() => {
+    const s = getDrawerSnapshot();
+    return {
+      title: s.open ? s.title : "",
+      description: s.open ? s.description : "",
+      variant: s.open ? s.variant : ("sheet" as DrawerSnapshot["variant"]),
+    };
+  });
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobileDrawer();
   const liveHtml = snap.open && snap.html ? snap.html : heldHtml;
-  const variant = snap.variant || "sheet";
+  const title = snap.open ? snap.title : heldMeta.title;
+  const description = snap.open ? snap.description : heldMeta.description;
+  const variant = (snap.open ? snap.variant : heldMeta.variant) || "sheet";
+  const hasDesc = Boolean(description?.trim());
 
   useEffect(() => subscribeDrawer(setSnap), []);
 
   useEffect(() => {
     if (snap.open && snap.html) {
       setHeldHtml(snap.html);
+      setHeldMeta({
+        title: snap.title,
+        description: snap.description,
+        variant: snap.variant,
+      });
       return;
     }
     if (!snap.open) {
       const t = window.setTimeout(() => {
-        if (!getDrawerSnapshot().open) setHeldHtml("");
+        if (!getDrawerSnapshot().open) {
+          setHeldHtml("");
+          setHeldMeta({ title: "", description: "", variant: "sheet" });
+        }
       }, 400);
       return () => window.clearTimeout(t);
     }
-  }, [snap.open, snap.html, snap.revision]);
+  }, [snap.open, snap.html, snap.revision, snap.title, snap.description, snap.variant]);
 
   useEffect(() => {
     if (!snap.open || !liveHtml) return;
@@ -88,33 +130,38 @@ function VaulApp() {
       onOpenChange={(open) => {
         if (!open) closeAppDrawer("user");
       }}
-      shouldScaleBackground
-      setBackgroundColorOnScale
-      handleOnly
+      shouldScaleBackground={isMobile}
+      setBackgroundColorOnScale={isMobile}
+      handleOnly={isMobile}
       repositionInputs
       autoFocus={false}
     >
       <Drawer.Portal>
         <Drawer.Overlay className="vaul-overlay" />
         <Drawer.Content
-          className={`vaul-content vaul-content--${variant}`}
-          aria-describedby={undefined}
+          className={`vaul-content vaul-content--${variant}${isMobile ? " vaul-content--mobile" : " vaul-content--desktop"}`}
+          // Suppress describedby when description is sr-only only.
+          {...(hasDesc ? {} : { "aria-describedby": undefined })}
           onOpenAutoFocus={(e) => e.preventDefault()}
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           <div className="vaul-chrome">
-            <Drawer.Handle className="vaul-handle" />
-            <div className="vaul-header">
+            {/* Drag handle — mobile sheet only (desktop is a centered dialog). */}
+            {isMobile ? <Drawer.Handle className="vaul-handle" /> : null}
+            <div className={`vaul-header${hasDesc ? " vaul-header--with-desc" : ""}`}>
               <div className="vaul-header-text">
-                <p className="vaul-eyebrow" aria-hidden="true">
-                  agents
-                </p>
                 <Drawer.Title className="vaul-title">
-                  {snap.title || "Dialog"}
+                  {title || "Dialog"}
                 </Drawer.Title>
-                <Drawer.Description className="vaul-desc sr-only">
-                  {snap.title || "Dialog"} panel
-                </Drawer.Description>
+                {hasDesc ? (
+                  <Drawer.Description className="vaul-desc">
+                    {description}
+                  </Drawer.Description>
+                ) : (
+                  <Drawer.Description className="vaul-desc sr-only">
+                    {title || "Dialog"} panel
+                  </Drawer.Description>
+                )}
               </div>
               <button
                 type="button"
