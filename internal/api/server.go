@@ -288,9 +288,11 @@ func (s *Server) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "workspace.open", req.Cwd, map[string]any{
-		"editor":  req.Editor,
-		"launch":  req.Launch,
-		"abs":     out.Abs,
+		"editor":   req.Editor,
+		"launch":   req.Launch,
+		"path":     req.Path,
+		"line":     req.Line,
+		"abs":      out.Abs,
 		"launched": out.Launched,
 	})
 	writeJSON(w, http.StatusOK, out)

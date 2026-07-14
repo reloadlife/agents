@@ -480,6 +480,8 @@ export function cloneWorkspace(body: {
 export type WorkspaceOpenResult = {
   cwd: string;
   abs: string;
+  path?: string;
+  line?: number;
   ssh_host?: string;
   commands: Record<string, string>;
   editors?: string[];
@@ -487,9 +489,11 @@ export type WorkspaceOpenResult = {
   launch_error?: string;
 };
 
-/** Build remote/local open commands; optional launch of editor binary on host. */
+/** Build remote/local open commands; optional file path/line and host-side launch. */
 export function openWorkspace(body: {
   cwd: string;
+  path?: string;
+  line?: number;
   editor?: string;
   launch?: boolean;
 }): Promise<WorkspaceOpenResult> {
