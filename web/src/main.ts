@@ -535,6 +535,7 @@ function openPanelOnly(p: Panel): void {
       state.formCwd = tab.cwd;
     }
   }
+  paintSidebarActive();
   window.queueMicrotask(async () => {
     if (state.panel !== p) return;
     if (p === "new") {
@@ -570,6 +571,7 @@ async function closePanelOnly(): Promise<void> {
   state.panel = null;
   state.createError = "";
   document.getElementById("panel-overlay")?.remove();
+  paintSidebarActive();
 }
 
 function openSettingsOnly(tab?: SettingsTab): void {
@@ -581,6 +583,7 @@ function openSettingsOnly(tab?: SettingsTab): void {
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
   }
+  paintSidebarActive();
   void loadSettingsData().then(() => paintSettings({ animateIn: true }));
 }
 
@@ -595,6 +598,7 @@ async function closeSettingsOnly(): Promise<void> {
   }
   state.settingsOpen = false;
   document.getElementById("settings-root")?.remove();
+  paintSidebarActive();
 }
 
 function openTabOnly(s: Session): void {
@@ -671,7 +675,7 @@ function paletteItems(): PaletteItem[] {
       group: "Navigate",
       run: () => openPanel("new-project"),
     },
-    { id: "tools", label: "Quick tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
+    { id: "tools", label: "Tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
     {
       id: "changes",
       label: "Git changes",
@@ -681,7 +685,7 @@ function paletteItems(): PaletteItem[] {
     },
     {
       id: "shell",
-      label: "Open terminal (shell)",
+      label: "Terminal",
       hint: "⇧t",
       group: "Navigate",
       run: () => {
@@ -690,7 +694,7 @@ function paletteItems(): PaletteItem[] {
     },
     {
       id: "open-remote",
-      label: "Open project in remote editor…",
+      label: "Open remote editor…",
       group: "Navigate",
       run: () => {
         void showOpenRemoteDrawer();
@@ -3299,23 +3303,26 @@ async function refreshSSHKeys(): Promise<void> {
 
 function sshKeysHTML(): string {
   if (!state.sshKeys.length) {
-    return `<div class="empty-soft">No keys in server ~/.ssh yet</div>`;
+    return `<div class="settings-empty settings-empty--inline">
+      <p class="settings-empty-title">No SSH keys</p>
+      <p class="settings-empty-desc">No keys in server <code>~/.ssh</code> yet. Generate one above.</p>
+    </div>`;
   }
   return state.sshKeys
     .map((k) => {
       const kind = k.has_private && k.has_public ? "pair" : k.has_public ? "pub" : "priv";
       const fp = k.fingerprint ? esc(k.fingerprint) : "";
-      return `<div class="ssh-key-row">
+      return `<div class="ssh-key-row settings-list-row">
         <div class="ssh-key-main">
           <div class="ssh-key-name">
-            <code>${esc(k.name)}</code>
+            <code class="settings-id">${esc(k.name)}</code>
             <span class="badge">${esc(k.type || "?")}</span>
             <span class="badge">${esc(kind)}</span>
           </div>
           ${fp ? `<div class="ssh-key-fp" title="${fp}">${fp}</div>` : ""}
           ${k.comment ? `<div class="ssh-key-comment">${esc(k.comment)}</div>` : ""}
         </div>
-        <div class="ssh-key-actions">
+        <div class="ssh-key-actions settings-btn-group">
           <button type="button" class="ghost btn-sm" data-action="ssh-copy" data-name="${esc(k.name)}" ${k.public_key ? "" : "disabled"}>Copy pub</button>
           <button type="button" class="ghost btn-sm danger-text" data-action="ssh-delete" data-name="${esc(k.name)}" ${k.protected ? "disabled" : ""}>Delete</button>
         </div>
@@ -3406,15 +3413,22 @@ async function refreshGHAccounts(): Promise<void> {
 
 function ghAccountsHTML(): string {
   const st = state.ghStatus;
-  if (!st) return `<div class="empty-soft">Loading…</div>`;
+  if (!st) {
+    return `<div class="settings-empty settings-empty--inline">
+      <p class="settings-empty-desc">Loading accounts…</p>
+    </div>`;
+  }
   if (!st.accounts?.length) {
-    return `<div class="empty-soft">${esc(st.error || "No GitHub accounts logged in on the server")}</div>`;
+    return `<div class="settings-empty settings-empty--inline">
+      <p class="settings-empty-title">No GitHub accounts</p>
+      <p class="settings-empty-desc">${esc(st.error || "No GitHub accounts logged in on the server. Login with a token below.")}</p>
+    </div>`;
   }
   return st.accounts
     .map((a: GHAccount) => {
       const active = a.active ? "active" : "";
       const scopes = (a.scopes || []).join(", ");
-      return `<div class="gh-row ${active}">
+      return `<div class="gh-row settings-list-row ${active}">
         <div class="gh-main">
           <div class="gh-user">
             <strong>${esc(a.user)}</strong>
@@ -3423,11 +3437,11 @@ function ghAccountsHTML(): string {
           </div>
           <div class="gh-meta">proto ${esc(a.git_protocol || "—")}${scopes ? ` · ${esc(scopes)}` : ""}</div>
         </div>
-        <div class="gh-actions">
+        <div class="gh-actions settings-btn-group">
           ${
             a.active
-              ? ""
-              : `<button type="button" class="ghost btn-sm" data-action="gh-switch" data-user="${esc(a.user)}" data-host="${esc(a.host)}">Switch</button>`
+              ? `<button type="button" class="primary btn-sm" disabled title="Already active">Active</button>`
+              : `<button type="button" class="primary btn-sm" data-action="gh-switch" data-user="${esc(a.user)}" data-host="${esc(a.host)}">Switch</button>`
           }
           <button type="button" class="ghost btn-sm danger-text" data-action="gh-logout" data-user="${esc(a.user)}" data-host="${esc(a.host)}">Logout</button>
         </div>
@@ -3593,6 +3607,7 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
       if (reason === "user") {
         state.panel = null;
         state.createError = "";
+        paintSidebarActive();
         term?.focus();
         syncUrlFromUI({ replace: true });
       }
@@ -4402,8 +4417,9 @@ function sessionListPaintSig(): string {
     .map((s) => {
       const active = s.id === state.activeId ? "1" : "0";
       const cursor = s.id === state.listCursorId ? "1" : "0";
-      // Display fields only: id, state, name, agent, cwd (title + meta + classes)
-      return `${s.id}\0${s.state}\0${s.name || ""}\0${s.agent}\0${s.cwd}\0${active}\0${cursor}`;
+      const branch = (s.git_branch || s.branch || "").trim();
+      // Display fields only: id, state, name, agent, cwd, branch (title + meta + classes)
+      return `${s.id}\0${s.state}\0${s.name || ""}\0${s.agent}\0${s.cwd}\0${branch}\0${active}\0${cursor}`;
     })
     .join("\n");
   return rows;
@@ -4494,12 +4510,33 @@ function paintBreadcrumb(force = false): void {
   crumb.outerHTML = breadcrumbHTML();
 }
 
+/** Sync data-active on sidebar tools when panel/settings open. */
+function paintSidebarActive(): void {
+  const root = document.getElementById("sidebar");
+  if (!root) return;
+  const active: Record<string, boolean> = {
+    "new-session": state.panel === "new",
+    "new-project": state.panel === "new-project",
+    tools: state.panel === "tools",
+    "git-changes": state.panel === "changes",
+    help: state.panel === "help",
+    "open-settings": state.settingsOpen,
+  };
+  root.querySelectorAll<HTMLElement>("[data-action]").forEach((el) => {
+    const action = el.getAttribute("data-action") || "";
+    if (!(action in active)) return;
+    if (active[action]) el.setAttribute("data-active", "true");
+    else el.removeAttribute("data-active");
+  });
+}
+
 function paintChrome(): void {
   if (!state.shellMounted) return;
   paintSessionList();
   paintTabs();
   paintStatusChrome();
   paintBreadcrumb();
+  paintSidebarActive();
   paintConn();
   // Do not re-paint toast here — poll/chrome would re-trigger entrance animation.
 }
@@ -4570,6 +4607,16 @@ function iconSvg(name: string): string {
       return `<svg ${common}><path d="m9 18 6-6-6-6"/></svg>`;
     case "x":
       return `<svg ${common}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+    case "users":
+      return `<svg ${common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
+    case "github":
+      return `<svg ${common}><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>`;
+    case "key":
+      return `<svg ${common}><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>`;
+    case "layers":
+      return `<svg ${common}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`;
+    case "info":
+      return `<svg ${common}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
     default:
       return "";
   }
@@ -4608,49 +4655,73 @@ function breadcrumbHTML(): string {
   </nav>`;
 }
 
+function sbNavActiveAttr(action: string): string {
+  const on =
+    (action === "new-session" && state.panel === "new") ||
+    (action === "new-project" && state.panel === "new-project") ||
+    (action === "tools" && state.panel === "tools") ||
+    (action === "git-changes" && state.panel === "changes") ||
+    (action === "help" && state.panel === "help") ||
+    (action === "open-settings" && state.settingsOpen);
+  return on ? ' data-active="true"' : "";
+}
+
 function shellHTML(): string {
   const host = (state.statusText || "host").split("·")[0]?.trim() || "host";
   return `
   <div class="shell${state.sidebarOpen ? " sidebar-open" : ""}" data-sidebar="08">
     <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="close-sidebar" hidden></div>
 
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar" id="sidebar" data-sidebar="sidebar">
       <div class="sidebar-inner">
-        <header class="sb-head">
-          <a href="/desk" class="sb-brand" data-nav data-route="desk" title="Desk">
+        <header class="sb-head" data-sidebar="header">
+          <a href="/desk" class="sb-brand" data-nav data-route="desk" title="Desk" aria-label="agents desk">
             <span class="sb-brand-mark" aria-hidden="true">a</span>
             <span class="sb-brand-name">agents</span>
           </a>
-          <a href="/new" class="sb-cta" data-action="new-session" data-nav id="btn-new" title="New session (n)">
-            ${iconSvg("plus")}<span>New</span>
+          <a href="/new" class="sb-cta" data-action="new-session" data-nav id="btn-new" title="New session (n)" aria-label="New session"${sbNavActiveAttr("new-session")}>
+            ${iconSvg("plus")}<span>New</span><kbd>n</kbd>
           </a>
         </header>
 
-        <nav class="sb-tools" aria-label="Workspace">
-          <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)">${iconSvg("folder-git")}<span class="sb-tool-label">Project</span></a>
-          <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)">${iconSvg("terminal")}<span class="sb-tool-label">Shell</span></button>
-          <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor">${iconSvg("external")}<span class="sb-tool-label">Remote</span></button>
-          <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)">${iconSvg("wrench")}<span class="sb-tool-label">Tools</span></a>
-          <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)">${iconSvg("git-branch")}<span class="sb-tool-label">Git</span></a>
-          <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">${iconSvg("settings")}<span class="sb-tool-label">Settings</span></a>
-        </nav>
+        <div class="sb-group" data-sidebar="group">
+          <div class="sb-sessions-head sb-group-head">
+            <span class="sb-group-label sb-sessions-label" id="sb-create-label">Create</span>
+          </div>
+          <nav class="sb-tools" aria-labelledby="sb-create-label">
+            <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)" aria-label="New project"${sbNavActiveAttr("new-project")}>${iconSvg("folder-git")}<span class="sb-tool-label">Project</span></a>
+            <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)" aria-label="Open terminal">${iconSvg("terminal")}<span class="sb-tool-label">Shell</span></button>
+            <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor" aria-label="Open remote editor">${iconSvg("external")}<span class="sb-tool-label">Remote</span></button>
+          </nav>
+        </div>
 
-        <section class="sb-sessions" aria-label="Sessions">
+        <div class="sb-group" data-sidebar="group">
+          <div class="sb-sessions-head sb-group-head">
+            <span class="sb-group-label sb-sessions-label" id="sb-ws-label">Workspace</span>
+          </div>
+          <nav class="sb-tools" aria-labelledby="sb-ws-label">
+            <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)" aria-label="Tools"${sbNavActiveAttr("tools")}>${iconSvg("wrench")}<span class="sb-tool-label">Tools</span></a>
+            <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)" aria-label="Git changes"${sbNavActiveAttr("git-changes")}>${iconSvg("git-branch")}<span class="sb-tool-label">Git</span></a>
+            <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)" aria-label="Settings"${sbNavActiveAttr("open-settings")}>${iconSvg("settings")}<span class="sb-tool-label">Settings</span></a>
+          </nav>
+        </div>
+
+        <section class="sb-sessions" data-sidebar="content" aria-label="Sessions">
           <div class="sb-sessions-head">
-            <span class="sb-sessions-label">Sessions</span>
+            <span class="sb-sessions-label" id="sb-sessions-label">Sessions</span>
             <span class="sb-sessions-count" id="sess-count" title="running / total">0/0</span>
           </div>
           <div class="sb-filter-wrap">
             <span class="sb-filter-ico" aria-hidden="true">${iconSvg("search")}</span>
-            <input id="filter" class="sb-filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" spellcheck="false" />
+            <input id="filter" class="sb-filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" spellcheck="false" aria-label="Filter sessions" aria-controls="session-list" />
           </div>
-          <div class="session-list" id="session-list" role="list">
+          <div class="session-list" id="session-list" role="list" aria-labelledby="sb-sessions-label">
             ${sessionListHTML()}
           </div>
         </section>
 
-        <footer class="sb-foot">
-          <button type="button" class="sb-host" data-action="open-settings" data-tab="about" title="Host status &amp; settings">
+        <footer class="sb-foot" data-sidebar="footer">
+          <button type="button" class="sb-host" data-action="open-settings" data-tab="about" title="Host status &amp; settings" aria-label="Host status and settings"${sbNavActiveAttr("open-settings")}>
             <span class="sb-host-dot" aria-hidden="true"></span>
             <span class="sb-host-text">
               <strong id="nav-host">${esc(host)}</strong>
@@ -4658,10 +4729,10 @@ function shellHTML(): string {
             </span>
             ${iconSvg("chevrons-up-down")}
           </button>
-          <div class="sb-foot-actions">
-            <button type="button" class="sb-tool" data-action="help" title="Shortcuts (?)">${iconSvg("help")}</button>
-            <button type="button" class="sb-tool" data-action="prune" title="Clear stopped sessions">${iconSvg("trash")}</button>
-            <button type="button" class="sb-tool" data-action="logout" title="Log out">${iconSvg("logout")}</button>
+          <div class="sb-foot-actions" role="toolbar" aria-label="Utilities">
+            <button type="button" class="sb-tool" data-action="help" title="Shortcuts (?)" aria-label="Keyboard shortcuts"${sbNavActiveAttr("help")}>${iconSvg("help")}</button>
+            <button type="button" class="sb-tool" data-action="prune" title="Clear stopped sessions" aria-label="Clear stopped sessions">${iconSvg("trash")}</button>
+            <button type="button" class="sb-tool" data-action="logout" title="Log out" aria-label="Log out">${iconSvg("logout")}</button>
           </div>
         </footer>
       </div>
@@ -4711,45 +4782,49 @@ function shellHTML(): string {
 
 function sessionListHTML(): string {
   if (state.sessions.length === 0) {
-    return `<div class="empty-list">
-      <p class="empty-list-title">No sessions yet</p>
-      <p class="empty-list-hint">Start an agent in a workspace. It keeps running after you leave.</p>
+    return `<div class="empty-list" role="status">
+      <p class="empty-list-title">No sessions</p>
+      <p class="empty-list-hint">Start an agent to begin.</p>
       <button type="button" class="primary btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>
     </div>`;
   }
   const sorted = filteredSessionsSorted();
   if (sorted.length === 0) {
-    return `<div class="empty-list">
+    return `<div class="empty-list" role="status">
       <p class="empty-list-title">No matches</p>
-      <p class="empty-list-hint">Try another filter, or clear the search.</p>
+      <p class="empty-list-hint">Try a different filter.</p>
     </div>`;
   }
   return sorted
     .map((s) => {
       const isActive = s.id === state.activeId;
       const cursor = s.id === state.listCursorId ? " cursor" : "";
-      const age = relativeTime(s.created_at);
       const ag = agentClass(s.agent);
       const href = sessionPath(s.cwd, s.id);
       const label = s.name || shortId(s.id);
       const live = s.state === "running" ? "live" : "dead";
       const branch = (s.git_branch || s.branch || "").trim();
-      const metaBits = [s.agent, basename(s.cwd)];
-      if (branch) metaBits.push(branch);
-      if (age) metaBits.push(age);
+      const cwdBase = basename(s.cwd);
+      const age = relativeTime(s.created_at);
       const tipBits = [s.agent, s.cwd];
       if (branch) tipBits.push(branch);
+      if (age) tipBits.push(age);
       tipBits.push(s.state, "right-click for actions");
       const stateLabel =
         s.state === "running" ? "Live" : s.state === "exited" ? "Exited" : s.state;
-      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav title="${esc(tipBits.join(" · "))}">
+      const activeAttr = isActive ? ' data-active="true" aria-current="page"' : "";
+      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav${activeAttr} title="${esc(tipBits.join(" · "))}">
   <span class="session-dot ${ag}" aria-hidden="true"></span>
   <span class="session-body">
     <span class="session-name">${esc(label)}</span>
-    <span class="session-meta">${esc(metaBits.join(" · "))}</span>
+    <span class="session-meta"><span class="session-agent">${esc(s.agent)}</span><span class="session-sep" aria-hidden="true"> · </span><span class="session-cwd">${esc(cwdBase)}</span>${
+      branch
+        ? `<span class="session-sep" aria-hidden="true"> · </span><span class="session-branch">${esc(branch)}</span>`
+        : ""
+    }</span>
   </span>
   <span class="session-state ${esc(s.state)}" title="${esc(s.state)}">${esc(stateLabel)}</span>
-  <button type="button" class="session-more" data-ctx="${esc(s.id)}" title="Actions" aria-label="Session actions" tabindex="-1">${iconSvg("more")}</button>
+  <button type="button" class="session-more" data-ctx="${esc(s.id)}" title="Actions" aria-label="Actions for ${esc(label)}" tabindex="-1">${iconSvg("more")}</button>
 </a>`;
     })
     .join("");
