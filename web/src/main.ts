@@ -22,6 +22,7 @@ import {
   ghSetupGit,
   ghSwitch,
   killSession,
+  listAgentAccounts,
   listAgents,
   listSessions,
   listSSHKeys,
@@ -36,6 +37,8 @@ import {
   pruneSessions,
   resumeSession,
   setToken,
+  type AgentAccount,
+  type AgentPlatformStatus,
   type GHAccount,
   type GHStatus,
   type MemoryHit,
@@ -74,6 +77,10 @@ type AppState = {
   formGitBranch: string;
   formGitFork: boolean;
   formGitDepth: boolean;
+  formAccount: string;
+  formAccountMode: string; // isolated | global
+  agentAccounts: AgentAccount[];
+  agentAccountPlatform: string;
   statusText: string;
   statusOk: boolean;
   toast: { msg: string; kind: ToastKind } | null;
@@ -121,6 +128,10 @@ const state: AppState = {
   formGitBranch: "",
   formGitFork: false,
   formGitDepth: true,
+  formAccount: "",
+  formAccountMode: "isolated",
+  agentAccounts: [],
+  agentAccountPlatform: "",
   statusText: "idle",
   statusOk: true,
   toast: null,
@@ -631,8 +642,11 @@ function openPanel(p: Panel): void {
   if (p === "new") state.createError = "";
   // Defer paint past the triggering click so a full-screen overlay is not
   // immediately hit by the same pointer event (closes as it opens).
-  window.queueMicrotask(() => {
+  window.queueMicrotask(async () => {
     if (state.panel !== p) return;
+    if (p === "new") {
+      await refreshAgentAccountsForForm(state.formAgent);
+    }
     try {
       paintPanel();
     } catch (e) {
@@ -647,7 +661,7 @@ function openPanel(p: Panel): void {
         (name ?? agent)?.focus();
       });
     }
-      if (p === "tools") {
+    if (p === "tools") {
       void refreshToolsStatus();
       void refreshSSHKeys();
       void refreshGHAccounts();
@@ -677,6 +691,8 @@ function readCreateForm(): {
   gitBranch: string;
   gitFork: boolean;
   gitDepth: boolean;
+  account: string;
+  accountMode: string;
 } {
   const agentEl = document.getElementById("sess-agent") as HTMLSelectElement | null;
   const cwdEl = document.getElementById("sess-cwd") as HTMLSelectElement | null;
@@ -687,6 +703,10 @@ function readCreateForm(): {
   const gitBranchEl = document.getElementById("sess-git-branch") as HTMLInputElement | null;
   const gitForkEl = document.getElementById("sess-git-fork") as HTMLInputElement | null;
   const gitDepthEl = document.getElementById("sess-git-depth") as HTMLInputElement | null;
+  const accountEl = document.getElementById("sess-account") as HTMLSelectElement | null;
+  const modeEl = document.querySelector(
+    'input[name="sess-account-mode"]:checked',
+  ) as HTMLInputElement | null;
   const agent = (agentEl?.value || state.formAgent || state.agents[0] || "claude").trim();
   const cwd = (cwdEl?.value || state.formCwd || state.defaultCwd || ".").trim();
   const name = (nameEl?.value ?? state.formName).trim();
@@ -696,6 +716,8 @@ function readCreateForm(): {
   const gitBranch = (gitBranchEl?.value ?? state.formGitBranch).trim();
   const gitFork = gitForkEl ? gitForkEl.checked : state.formGitFork;
   const gitDepth = gitDepthEl ? gitDepthEl.checked : state.formGitDepth;
+  const account = (accountEl?.value ?? state.formAccount).trim();
+  const accountMode = (modeEl?.value || state.formAccountMode || "isolated").trim();
   state.formAgent = agent;
   state.formCwd = cwd;
   state.formName = name;
@@ -705,7 +727,60 @@ function readCreateForm(): {
   state.formGitBranch = gitBranch;
   state.formGitFork = gitFork;
   state.formGitDepth = gitDepth;
-  return { agent, cwd, name, prompt, gitUrl, gitName, gitBranch, gitFork, gitDepth };
+  state.formAccount = account;
+  state.formAccountMode = accountMode;
+  return {
+    agent,
+    cwd,
+    name,
+    prompt,
+    gitUrl,
+    gitName,
+    gitBranch,
+    gitFork,
+    gitDepth,
+    account,
+    accountMode,
+  };
+}
+
+function agentPlatformFor(agent: string): string {
+  const a = agent.toLowerCase();
+  if (a.includes("cursor")) return "cursor";
+  if (a.includes("claude")) return "claude";
+  if (a.includes("codex") || a === "gpt") return "codex";
+  if (a.includes("grok")) return "grok";
+  if (a.includes("copilot")) return "vscode";
+  return "";
+}
+
+async function refreshAgentAccountsForForm(agent?: string): Promise<void> {
+  const plat = agentPlatformFor(agent || state.formAgent);
+  state.agentAccountPlatform = plat;
+  if (!plat) {
+    state.agentAccounts = [];
+    return;
+  }
+  try {
+    const out = (await listAgentAccounts(plat)) as AgentPlatformStatus;
+    state.agentAccounts = out.accounts || [];
+  } catch {
+    state.agentAccounts = [];
+  }
+}
+
+function accountOptionsHTML(): string {
+  const opts = [`<option value="">(default / none)</option>`];
+  for (const a of state.agentAccounts) {
+    const label = a.saved
+      ? `${a.label || a.id}${a.email ? " · " + a.email : ""}`
+      : `${a.label || a.id} (not saved)`;
+    const sel = a.id === state.formAccount ? "selected" : "";
+    opts.push(
+      `<option value="${esc(a.id)}" ${sel} ${a.saved ? "" : "disabled"}>${esc(label)}</option>`,
+    );
+  }
+  return opts.join("");
 }
 
 async function onCreateSession(ev?: Event): Promise<void> {
@@ -744,6 +819,8 @@ async function onCreateSession(ev?: Event): Promise<void> {
       cwd,
       name: form.name || undefined,
       prompt: form.prompt || undefined,
+      account: form.account || undefined,
+      account_mode: form.account ? form.accountMode || "isolated" : undefined,
     });
     state.formName = "";
     state.formPrompt = "";
@@ -755,7 +832,10 @@ async function onCreateSession(ev?: Event): Promise<void> {
     closePanel();
     await refreshSessions();
     openTab(sess);
-    toast(`Started ${sess.agent} in ${cwd}`, "ok");
+    const accNote = form.account
+      ? ` · account ${form.account} (${form.accountMode || "isolated"})`
+      : "";
+    toast(`Started ${sess.agent} in ${cwd}${accNote}`, "ok");
   } catch (e) {
     state.creating = false;
     const msg = (e as Error).message || "create failed";
@@ -1354,6 +1434,21 @@ function newSessionHTML(): string {
           <label for="sess-name">Session label <span class="opt">optional</span></label>
           <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
         </div>
+        ${
+          state.agentAccountPlatform
+            ? `<div class="field">
+          <label for="sess-account">Account profile <span class="opt">${esc(state.agentAccountPlatform)}</span></label>
+          <select id="sess-account" ${state.creating ? "disabled" : ""}>
+            ${accountOptionsHTML()}
+          </select>
+          <div class="check-row" style="margin-top:0.45rem">
+            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated (parallel-safe)</label>
+            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch (host-wide)</label>
+          </div>
+          <p class="form-hint" style="margin:0.4rem 0 0">Save profiles: <code>cursor-switch --platform ${esc(state.agentAccountPlatform)} save personal</code></p>
+        </div>`
+            : ""
+        }
         <div class="field">
           <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
           <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
@@ -2023,6 +2118,10 @@ function ensureUIDelegation(): void {
         const sw = row.querySelector(".agent-swatch");
         if (sw) sw.className = `agent-swatch ${agentClass(el.value)}`;
       }
+      // reload account profiles for this agent platform
+      void refreshAgentAccountsForForm(el.value).then(() => {
+        if (state.panel === "new") paintPanel();
+      });
     }
   });
 }

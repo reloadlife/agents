@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/reloadlife/agents/internal/agentacct"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/pathallow"
 )
@@ -46,6 +47,10 @@ type Session struct {
 	State     State     `json:"state"`
 	Prompt    string    `json:"prompt,omitempty"` // optional seed text for TTY
 	CreatedAt time.Time `json:"created_at"`
+	// Multi-account (cursor-account-switcher profiles)
+	Account     string `json:"account,omitempty"`      // profile id e.g. personal|work
+	AccountMode string `json:"account_mode,omitempty"` // isolated|global
+	AccountHome string `json:"account_home,omitempty"` // isolated HOME path
 	// How you attach (filled on create/get)
 	Attach     string `json:"attach"`
 	SSHAttach  string `json:"ssh_attach,omitempty"`
@@ -59,6 +64,11 @@ type CreateRequest struct {
 	Name   string `json:"name,omitempty"`
 	Prompt string `json:"prompt,omitempty"` // typed into TTY after start (not -p)
 	Mode   Mode   `json:"mode,omitempty"`   // default tty
+	// Account: cursor-switch profile id for this agent platform (e.g. personal, work).
+	// Mode isolated (default when set): materialize auth under a private HOME so
+	// multiple accounts can run in parallel. global: switch the host-wide login first.
+	Account     string `json:"account,omitempty"`
+	AccountMode string `json:"account_mode,omitempty"` // isolated|global
 }
 
 // Manager creates interactive agent sessions in tmux.
@@ -150,7 +160,36 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 
 	args := m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt)
-	if err := m.startTmux(tmuxName, cwdAbs, bin, args); err != nil {
+	env := m.sessionEnv()
+	account := strings.TrimSpace(req.Account)
+	accountMode := strings.ToLower(strings.TrimSpace(req.AccountMode))
+	accountHome := ""
+	if account != "" {
+		plat := agentacct.MapAgentToPlatform(req.Agent)
+		if plat == "" {
+			return nil, fmt.Errorf("agent %q does not support multi-account profiles (cursor/claude/codex/grok)", req.Agent)
+		}
+		am, err := agentacct.New(m.cfg.JobsDir)
+		if err != nil {
+			return nil, err
+		}
+		if accountMode == "global" {
+			if err := am.Switch(plat, account); err != nil {
+				return nil, fmt.Errorf("account switch (%s/%s): %w", plat, account, err)
+			}
+			accountMode = "global"
+		} else {
+			// isolated (default): parallel-safe private HOME
+			home, err := am.EnsureIsolated(plat, account)
+			if err != nil {
+				return nil, fmt.Errorf("account isolate (%s/%s): %w — save a profile first: cursor-switch --platform %s save %s", plat, account, err, plat, account)
+			}
+			accountHome = home
+			accountMode = "isolated"
+			env = agentacct.SessionEnv(env, plat, home)
+		}
+	}
+	if err := m.startTmux(tmuxName, cwdAbs, bin, args, env); err != nil {
 		return nil, err
 	}
 
@@ -160,16 +199,19 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 
 	s := &Session{
-		ID:        id,
-		Name:      req.Name,
-		Agent:     req.Agent,
-		Mode:      req.Mode,
-		Cwd:       req.Cwd,
-		CwdAbs:    cwdAbs,
-		Tmux:      tmuxName,
-		State:     StateRunning,
-		Prompt:    req.Prompt,
-		CreatedAt: time.Now().UTC(),
+		ID:          id,
+		Name:        req.Name,
+		Agent:       req.Agent,
+		Mode:        req.Mode,
+		Cwd:         req.Cwd,
+		CwdAbs:      cwdAbs,
+		Tmux:        tmuxName,
+		State:       StateRunning,
+		Prompt:      req.Prompt,
+		CreatedAt:   time.Now().UTC(),
+		Account:     account,
+		AccountMode: accountMode,
+		AccountHome: accountHome,
 	}
 	m.fillAttach(s)
 	if err := m.save(s); err != nil {
@@ -178,7 +220,7 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	m.mu.Lock()
 	m.byID[s.ID] = s
 	m.mu.Unlock()
-	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd)
+	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "account", account, "account_mode", accountMode)
 	return s, nil
 }
 
@@ -189,7 +231,7 @@ const defaultHistoryLimit = 50000
 // Setsid so a terminal SIGHUP/process-group kill of agentsd does not take
 // down the agent. Under systemd, also set KillMode=process (see deploy units)
 // so control-group stop does not kill the tmux server in the same cgroup.
-func (m *Manager) startTmux(tmuxName, cwdAbs, bin string, args []string) error {
+func (m *Manager) startTmux(tmuxName, cwdAbs, bin string, args []string, env []string) error {
 	tmuxArgs := []string{
 		"new-session", "-d",
 		"-s", tmuxName,
@@ -198,7 +240,10 @@ func (m *Manager) startTmux(tmuxName, cwdAbs, bin string, args []string) error {
 	}
 	tmuxArgs = append(tmuxArgs, args...)
 	cmd := exec.Command("tmux", tmuxArgs...)
-	cmd.Env = m.sessionEnv()
+	if env == nil {
+		env = m.sessionEnv()
+	}
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux new-session: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -603,9 +648,25 @@ func (m *Manager) Resume(id string) (*Session, error) {
 		mode = ModeTTY
 	}
 	args := m.buildArgs(s.Agent, acfg, mode, "")
+	env := m.sessionEnv()
+	if s.Account != "" && s.AccountMode != "global" {
+		plat := agentacct.MapAgentToPlatform(s.Agent)
+		if plat != "" {
+			if am, err := agentacct.New(m.cfg.JobsDir); err == nil {
+				home := s.AccountHome
+				if home == "" {
+					home = am.IsolatedHome(plat, s.Account)
+				}
+				if _, err := am.Materialize(plat, s.Account, home); err == nil {
+					env = agentacct.SessionEnv(env, plat, home)
+					s.AccountHome = home
+				}
+			}
+		}
+	}
 	// Drop any leftover name collision, then start fresh.
 	_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
-	if err := m.startTmux(s.Tmux, cwdAbs, bin, args); err != nil {
+	if err := m.startTmux(s.Tmux, cwdAbs, bin, args, env); err != nil {
 		return nil, err
 	}
 

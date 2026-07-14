@@ -20,6 +20,7 @@ import (
 	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/projmap"
 	"github.com/reloadlife/agents/internal/session"
+	"github.com/reloadlife/agents/internal/agentacct"
 	"github.com/reloadlife/agents/internal/ghauth"
 	"github.com/reloadlife/agents/internal/sshkeys"
 	"github.com/reloadlife/agents/internal/status"
@@ -65,6 +66,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/gh/switch", s.handleGHSwitch)
 	mux.HandleFunc("POST /v1/gh/logout", s.handleGHLogout)
 	mux.HandleFunc("POST /v1/gh/setup-git", s.handleGHSetupGit)
+
+	// Multi-account agent profiles (cursor-account-switcher)
+	mux.HandleFunc("GET /v1/agent-accounts", s.handleAgentAccounts)
+	mux.HandleFunc("POST /v1/agent-accounts/save", s.handleAgentAccountSave)
+	mux.HandleFunc("POST /v1/agent-accounts/switch", s.handleAgentAccountSwitch)
+	mux.HandleFunc("POST /v1/agent-accounts/add", s.handleAgentAccountAdd)
 
 	// Playwright / headed browser stack
 	mux.HandleFunc("GET /v1/playwright", s.handlePlaywrightStatus)
@@ -338,6 +345,114 @@ func (s *Server) handleGHSetupGit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := m.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) agentAcct() (*agentacct.Manager, error) {
+	return agentacct.New(s.cfg.JobsDir)
+}
+
+func (s *Server) handleAgentAccounts(w http.ResponseWriter, r *http.Request) {
+	m, err := s.agentAcct()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
+	if platform == "" || platform == "all" {
+		list, err := m.ListAll()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"platforms": list, "bin": m.Bin})
+		return
+	}
+	st, err := m.Status(platform)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleAgentAccountSave(w http.ResponseWriter, r *http.Request) {
+	m, err := s.agentAcct()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var body struct {
+		Platform string `json:"platform"`
+		ID       string `json:"id"`
+		Label    string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Platform == "" || body.ID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("platform and id required"))
+		return
+	}
+	if err := m.Save(body.Platform, body.ID, body.Label); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, _ := m.Status(body.Platform)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handleAgentAccountSwitch(w http.ResponseWriter, r *http.Request) {
+	m, err := s.agentAcct()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var body struct {
+		Platform string `json:"platform"`
+		ID       string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Platform == "" || body.ID == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("platform and id required"))
+		return
+	}
+	if err := m.Switch(body.Platform, body.ID); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, _ := m.Status(body.Platform)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handleAgentAccountAdd(w http.ResponseWriter, r *http.Request) {
+	m, err := s.agentAcct()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var body struct {
+		Platform string `json:"platform"`
+		ID       string `json:"id"`
+		Label    string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.Platform == "" || body.ID == "" || body.Label == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("platform, id, and label required"))
+		return
+	}
+	if err := m.AddAccount(body.Platform, body.ID, body.Label); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, _ := m.Status(body.Platform)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
 }
 

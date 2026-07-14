@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — 2026-07-14
+
+### Added
+
+- **Multi-account agent profiles** via [cursor-account-switcher](https://github.com/reloadlife/cursor-account-switcher):
+  - Platforms: cursor, claude, codex, **grok**, vscode
+  - `GET /v1/agent-accounts`, save/switch/add
+  - Session field `account` + `account_mode`: **`isolated`** (parallel-safe private HOME) or `global` (host-wide switch)
+  - New-session UI: account profile picker when the agent maps to a platform
+  - Requires `cursor-switch` on the agents host PATH
+
 ## [0.3.5] — 2026-07-14
 
 ### Added

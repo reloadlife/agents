@@ -92,8 +92,54 @@ export function createSession(body: {
   cwd: string;
   name?: string;
   prompt?: string;
+  account?: string;
+  account_mode?: string;
 }): Promise<Session> {
   return request("/v1/sessions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export type AgentAccount = {
+  id: string;
+  label: string;
+  email?: string;
+  saved?: boolean;
+  active?: boolean;
+  saved_at?: string;
+};
+
+export type AgentPlatformStatus = {
+  platform: string;
+  current?: string;
+  active?: string;
+  accounts: AgentAccount[];
+};
+
+export function listAgentAccounts(
+  platform?: string,
+): Promise<AgentPlatformStatus | { platforms: AgentPlatformStatus[]; bin?: string }> {
+  const q = platform ? `?platform=${encodeURIComponent(platform)}` : "?platform=all";
+  return request(`/v1/agent-accounts${q}`);
+}
+
+export function saveAgentAccount(body: {
+  platform: string;
+  id: string;
+  label?: string;
+}): Promise<{ ok: boolean; status?: AgentPlatformStatus }> {
+  return request("/v1/agent-accounts/save", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function switchAgentAccount(body: {
+  platform: string;
+  id: string;
+}): Promise<{ ok: boolean; status?: AgentPlatformStatus }> {
+  return request("/v1/agent-accounts/switch", {
     method: "POST",
     body: JSON.stringify(body),
   });
