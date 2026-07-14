@@ -33,6 +33,10 @@ import {
   installSkills,
   listRecordings,
   listTemplates,
+  listTasks,
+  createTask,
+  updateTask,
+  deleteTask,
   notifyTest,
   startTemplate,
   uploadImage,
@@ -62,6 +66,10 @@ import {
   saveAgentAccount,
   switchAgentAccount,
   formatPlaywrightStatus,
+  gitCommit,
+  gitDiff,
+  gitPullRequest,
+  gitStatus,
   memoryIndex,
   memorySearch,
   memoryStats,
@@ -77,10 +85,14 @@ import {
   type AgentPlatformStatus,
   type GHAccount,
   type GHStatus,
+  type GitFileEntry,
+  type GitStatusResult,
   type MemoryHit,
   type Session,
   type SessionTemplate,
   type SSHKey,
+  type TaskStatus,
+  type WorkspaceTask,
 } from "./api";
 import {
   closeAppDrawer,
@@ -89,7 +101,6 @@ import {
 } from "./drawer-bridge";
 import {
   animateLoginIn,
-  animateSessionList,
   animateSettingsIn,
   animateSettingsOut,
   animateShellIn,
@@ -119,7 +130,7 @@ type OpenTab = {
   state: string;
 };
 
-type Panel = null | "new" | "new-project" | "tools" | "help";
+type Panel = null | "new" | "new-project" | "tools" | "help" | "changes";
 type SettingsTab = ProfileTab;
 type ConnState = "idle" | "connecting" | "live" | "reconnecting" | "error";
 type ToastKind = "info" | "ok" | "err";
@@ -189,7 +200,27 @@ type AppState = {
   commandPalette: boolean;
   paletteQuery: string;
   templates: SessionTemplate[];
+  tasks: WorkspaceTask[];
+  tasksDraft: string;
+  tasksBusy: boolean;
   theme: "dark" | "light";
+  /** Git Changes panel */
+  gitStatus: GitStatusResult | null;
+  gitLoading: boolean;
+  gitError: string;
+  /** null = all changes */
+  gitSelectedPath: string | null;
+  /** paths checked for commit (empty = all dirty files) */
+  gitCheckedPaths: string[];
+  gitDiffText: string;
+  gitDiffLoading: boolean;
+  gitCommitMsg: string;
+  gitPrTitle: string;
+  gitPrBody: string;
+  gitPrBase: string;
+  gitPrDraft: boolean;
+  gitPrUrl: string;
+  gitBusy: boolean;
 };
 
 const state: AppState = {
@@ -253,7 +284,24 @@ const state: AppState = {
   commandPalette: false,
   paletteQuery: "",
   templates: [],
+  tasks: [],
+  tasksDraft: "",
+  tasksBusy: false,
   theme: (localStorage.getItem("agents_theme") as "dark" | "light") || "dark",
+  gitStatus: null,
+  gitLoading: false,
+  gitError: "",
+  gitSelectedPath: null,
+  gitCheckedPaths: [],
+  gitDiffText: "",
+  gitDiffLoading: false,
+  gitCommitMsg: "",
+  gitPrTitle: "",
+  gitPrBody: "",
+  gitPrBase: "",
+  gitPrDraft: false,
+  gitPrUrl: "",
+  gitBusy: false,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -268,11 +316,22 @@ let shellBound = false;
 let keysBound = false;
 let uiDelegated = false;
 let shellEntranceDone = false;
-let lastSessionListSig = "";
+/** Full list paint signature (content + selection). Skip DOM rewrite when unchanged. */
+let lastSessionListPaintSig = "";
+/** Tabs strip signature — skip rewrite when open tabs unchanged. */
+let lastTabsPaintSig = "";
+/** Status bar + sess-count + nav status signature. */
+let lastStatusPaintSig = "";
+/** Breadcrumb signature. */
+let lastCrumbPaintSig = "";
+/** Debounce timer for sidebar filter input. */
+let filterDebounceTimer: number | null = null;
 let pressMotionBound = false;
 /** True while applying a route → UI actions must not push history again. */
 let applyingRoute = false;
 let routerBound = false;
+/** Session id for the open right-click / ⋯ context menu. */
+let ctxSessionId: string | null = null;
 
 const app = document.getElementById("app")!;
 
@@ -298,6 +357,7 @@ function routeFromUI(): Route {
     }
     return { name: "tools" };
   }
+  if (state.panel === "changes") return { name: "changes" };
   if (state.panel === "help") return { name: "help" };
   if (state.panel === "new-project") return { name: "new-project" };
   if (state.panel === "new") return { name: "new" };
@@ -380,6 +440,10 @@ async function applyRoute(
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "tools") openPanelOnly("tools");
         break;
+      case "changes":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "changes") openPanelOnly("changes");
+        break;
       case "help":
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "help") openPanelOnly("help");
@@ -461,11 +525,11 @@ function openPanelOnly(p: Panel): void {
   if (!p) return;
   state.panel = p;
   if (p === "new") state.createError = "";
-  if (p === "tools" && state.settingsOpen) {
+  if ((p === "tools" || p === "changes") && state.settingsOpen) {
     state.settingsOpen = false;
     document.getElementById("settings-root")?.remove();
   }
-  if (p === "tools") {
+  if (p === "tools" || p === "changes") {
     const tab = state.openTabs.find((t) => t.id === state.activeId);
     if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
       state.formCwd = tab.cwd;
@@ -497,6 +561,7 @@ function openPanelOnly(p: Panel): void {
       });
     }
     if (p === "tools") void refreshToolsStatus();
+    if (p === "changes") void refreshGitChanges();
   });
 }
 
@@ -608,6 +673,13 @@ function paletteItems(): PaletteItem[] {
     },
     { id: "tools", label: "Quick tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
     {
+      id: "changes",
+      label: "Git changes",
+      hint: "⇧g",
+      group: "Navigate",
+      run: () => openPanel("changes"),
+    },
+    {
       id: "shell",
       label: "Open terminal (shell)",
       hint: "⇧t",
@@ -653,6 +725,14 @@ function paletteItems(): PaletteItem[] {
       group: "Workspace",
       run: () => {
         void showDashboardDrawer();
+      },
+    },
+    {
+      id: "tasks",
+      label: "Workspace tasks",
+      group: "Workspace",
+      run: () => {
+        void showTasksDrawer();
       },
     },
     {
@@ -939,6 +1019,160 @@ async function showTemplatesDrawer(): Promise<void> {
   }
 }
 
+async function showTasksDrawer(): Promise<void> {
+  await ensureVaulHost();
+  await loadTasks();
+  // Prefer interactive Vaul (not plain pre drawer)
+  if (state.panel) {
+    state.panel = null;
+  }
+  state.drawer = null;
+  openAppDrawer({
+    title: `Tasks · ${toolsCwd()}`,
+    html: tasksPanelHTML(),
+    variant: "sheet",
+    onClose: (reason) => {
+      if (reason === "user") {
+        term?.focus();
+      }
+    },
+  });
+}
+
+function tasksListHTML(): string {
+  const tasks = state.tasks || [];
+  if (!tasks.length) {
+    return `<p class="tool-desc tasks-empty">No tasks yet — add one below. Stored in <code>.agents/tasks.json</code></p>`;
+  }
+  return `<ul class="task-list">${tasks
+    .map((t) => {
+      const done = t.status === "done";
+      return `<li class="task-row ${done ? "task-row--done" : ""}" data-task-id="${esc(t.id)}">
+        <button type="button" class="task-check" data-action="task-toggle" data-id="${esc(t.id)}" data-status="${esc(t.status)}" title="Toggle done" aria-label="Toggle done">
+          ${done ? "✓" : t.status === "doing" ? "…" : ""}
+        </button>
+        <span class="task-title">${esc(t.title)}</span>
+        <button type="button" class="task-status task-status--${esc(t.status)}" data-action="task-cycle" data-id="${esc(t.id)}" data-status="${esc(t.status)}" title="Cycle status">
+          ${esc(t.status)}
+        </button>
+        <button type="button" class="ghost btn-sm danger-text task-del" data-action="task-delete" data-id="${esc(t.id)}" title="Delete" aria-label="Delete">×</button>
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function tasksPanelHTML(): string {
+  const n = state.tasks.length;
+  const open = state.tasks.filter((t) => t.status !== "done").length;
+  return `
+    <div class="tasks-panel">
+      <p class="tool-desc">${open} open · ${n} total · <code>.agents/tasks.json</code></p>
+      <div class="tasks-list-wrap" data-tasks-list>${tasksListHTML()}</div>
+      <form class="task-add" data-action-form="task-add">
+        <input name="title" data-task-draft placeholder="New task…" value="${esc(state.tasksDraft)}" autocomplete="off" ${state.tasksBusy ? "disabled" : ""} />
+        <button type="submit" class="primary btn-sm" ${state.tasksBusy ? "disabled" : ""}>Add</button>
+      </form>
+    </div>`;
+}
+
+async function loadTasks(cwd?: string): Promise<void> {
+  const use = (cwd || toolsCwd() || state.formCwd || state.defaultCwd || ".").trim() || ".";
+  try {
+    const out = await listTasks(use);
+    state.tasks = out.tasks || [];
+  } catch (e) {
+    state.tasks = [];
+    // soft — tools sheet still works without tasks
+    console.warn("tasks load", e);
+  }
+}
+
+function paintTasksList(): void {
+  document.querySelectorAll("[data-tasks-list]").forEach((el) => {
+    el.innerHTML = tasksListHTML();
+  });
+  // keep open Vaul tasks panel in sync when present
+  const body = document.querySelector(".vaul-body .tasks-panel");
+  if (body && isAppDrawerOpen()) {
+    const draft =
+      (document.querySelector("[data-task-draft]") as HTMLInputElement | null)?.value ??
+      state.tasksDraft;
+    state.tasksDraft = draft;
+    body.outerHTML = tasksPanelHTML();
+  }
+}
+
+function nextTaskStatus(cur: TaskStatus): TaskStatus {
+  if (cur === "todo") return "doing";
+  if (cur === "doing") return "done";
+  return "todo";
+}
+
+async function onTaskAdd(ev?: Event): Promise<void> {
+  const form = (ev?.target as HTMLElement | null)?.closest?.("form") as HTMLFormElement | null;
+  const input =
+    (form?.querySelector("[data-task-draft], input[name='title']") as HTMLInputElement | null) ||
+    (document.querySelector("[data-task-draft]") as HTMLInputElement | null);
+  const title = (input?.value || state.tasksDraft || "").trim();
+  if (!title) return;
+  const cwd = toolsCwd();
+  state.tasksBusy = true;
+  try {
+    const out = await createTask({ cwd, title });
+    state.tasks = out.tasks || (out.task ? [out.task, ...state.tasks] : state.tasks);
+    state.tasksDraft = "";
+    if (input) input.value = "";
+    paintTasksList();
+    paintToolsStatus();
+  } catch (e) {
+    toast((e as Error).message || "add task failed", "err");
+  } finally {
+    state.tasksBusy = false;
+  }
+}
+
+async function onTaskToggle(id: string, status: TaskStatus): Promise<void> {
+  const next: TaskStatus = status === "done" ? "todo" : "done";
+  await onTaskUpdate(id, next);
+}
+
+async function onTaskCycle(id: string, status: TaskStatus): Promise<void> {
+  await onTaskUpdate(id, nextTaskStatus(status));
+}
+
+async function onTaskUpdate(id: string, status: TaskStatus): Promise<void> {
+  const cwd = toolsCwd();
+  state.tasksBusy = true;
+  try {
+    const out = await updateTask(id, { cwd, status });
+    if (out.tasks) state.tasks = out.tasks;
+    else {
+      state.tasks = state.tasks.map((t) => (t.id === id ? { ...t, status } : t));
+    }
+    paintTasksList();
+    paintToolsStatus();
+  } catch (e) {
+    toast((e as Error).message || "update task failed", "err");
+  } finally {
+    state.tasksBusy = false;
+  }
+}
+
+async function onTaskDelete(id: string): Promise<void> {
+  const cwd = toolsCwd();
+  state.tasksBusy = true;
+  try {
+    const out = await deleteTask(id, cwd);
+    state.tasks = out.tasks || state.tasks.filter((t) => t.id !== id);
+    paintTasksList();
+    paintToolsStatus();
+  } catch (e) {
+    toast((e as Error).message || "delete task failed", "err");
+  } finally {
+    state.tasksBusy = false;
+  }
+}
+
 async function showRecordingsDrawer(): Promise<void> {
   try {
     const out = await listRecordings({ limit: 40 });
@@ -1109,7 +1343,10 @@ async function bootstrapAuthed(): Promise<void> {
     state.sessions = sessRes.sessions ?? [];
     state.statusText = formatStatus(st as Record<string, unknown>);
     state.statusOk = true;
-    void refreshToolsStatus();
+    // Non-critical: tools status can wait until the browser is idle.
+    scheduleIdle(() => {
+      void refreshToolsStatus();
+    });
     startPolling();
     ensureRouterBound();
   } catch (e) {
@@ -1176,6 +1413,7 @@ async function refreshSessions(): Promise<void> {
     }
     state.statusText = formatStatus(st as Record<string, unknown>);
     state.statusOk = true;
+    // Poll path: only rewrite list/tabs/status when their display sigs change.
     paintChrome();
   } catch (e) {
     const err = e as Error & { status?: number };
@@ -1185,7 +1423,19 @@ async function refreshSessions(): Promise<void> {
     }
     state.statusOk = false;
     state.statusText = err.message || "poll failed";
-    paintChrome();
+    paintStatusChrome();
+  }
+}
+
+/** Schedule non-critical work when the browser is idle (tools status, etc.). */
+function scheduleIdle(fn: () => void, timeout = 2000): void {
+  const w = window as Window & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+  };
+  if (typeof w.requestIdleCallback === "function") {
+    w.requestIdleCallback(fn, { timeout });
+  } else {
+    window.setTimeout(fn, 1);
   }
 }
 
@@ -1767,6 +2017,7 @@ function openPanel(p: Panel): void {
   if (p === "new") navigate({ name: "new" }, { apply: false });
   else if (p === "new-project") navigate({ name: "new-project" }, { apply: false });
   else if (p === "help") navigate({ name: "help" }, { apply: false });
+  else if (p === "changes") navigate({ name: "changes" }, { apply: false });
   else if (p === "tools") {
     if (state.activeId) {
       const s =
@@ -2678,6 +2929,7 @@ async function refreshToolsStatus(): Promise<void> {
       memoryStats(cwd).catch(() => ({ docs: 0, engine: "error" })),
       playwrightStatus().catch(() => null),
       contextStatus(cwd).catch(() => null),
+      loadTasks(cwd),
     ]);
     const st =
       (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } })
@@ -2722,6 +2974,9 @@ function paintToolsStatus(): void {
   setStatusText("map", state.mapStatus);
   setStatusText("mem", state.memStatus);
   setStatusText("pw", state.pwStatus);
+  const open = state.tasks.filter((t) => t.status !== "done").length;
+  setStatusText("tasks", state.tasks.length ? `${open} open · ${state.tasks.length}` : "none");
+  paintTasksList();
   document.querySelectorAll<HTMLElement>("[data-mem-hits]").forEach((el) => {
     el.innerHTML = memHitsHTML();
   });
@@ -3171,6 +3426,7 @@ function panelTitle(p: Panel): string {
   if (p === "new") return "New session";
   if (p === "new-project") return "New project";
   if (p === "tools") return "Quick tools";
+  if (p === "changes") return "Changes";
   if (p === "help") return "Shortcuts";
   return "Panel";
 }
@@ -3179,10 +3435,11 @@ function panelTitle(p: Panel): string {
 function stripModalChrome(full: string): string {
   try {
     const doc = new DOMParser().parseFromString(full, "text/html");
-    const form = doc.querySelector("form");
-    if (form) return form.outerHTML;
+    // Prefer .modal-body first — nested forms (e.g. mem-search in tools) must not win.
     const body = doc.querySelector(".modal-body");
     if (body) return body.outerHTML;
+    const form = doc.querySelector("form.sheet-form, form");
+    if (form) return form.outerHTML;
   } catch {
     /* fall through */
   }
@@ -3193,6 +3450,7 @@ function panelBodyHTML(p: Panel): string {
   if (p === "new") return stripModalChrome(newSessionHTML());
   if (p === "new-project") return stripModalChrome(newProjectHTML());
   if (p === "tools") return stripModalChrome(toolsHTML());
+  if (p === "changes") return stripModalChrome(gitChangesHTML());
   if (p === "help") return stripModalChrome(helpHTML());
   return "";
 }
@@ -3249,11 +3507,13 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
     title: panelTitle(p),
     html: panelBodyHTML(p),
     variant:
-      p === "tools" || p === "new" || p === "new-project"
-        ? "dialog"
-        : p === "help"
-          ? "sheet"
-          : "dialog",
+      p === "changes"
+        ? "content"
+        : p === "help" || p === "tools"
+          ? "tall"
+          : p === "new" || p === "new-project"
+            ? "dialog"
+            : "dialog",
     onClose: (reason) => {
       if (reason === "user") {
         state.panel = null;
@@ -3265,6 +3525,9 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   });
   if (p === "tools") {
     window.setTimeout(() => void refreshToolsStatus(), 60);
+  }
+  if (p === "changes") {
+    // status load kicked from openPanelOnly; keep branch row responsive if re-painted
   }
 }
 
@@ -3450,6 +3713,22 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
       </section>
       <section class="${wrap}">
         <div class="${head}">
+          <${titleOpen}>Tasks</${titleClose}>
+          <span class="tool-status" data-status="tasks" id="tasks-status">${esc(
+            state.tasks.length
+              ? `${state.tasks.filter((t) => t.status !== "done").length} open · ${state.tasks.length}`
+              : "none",
+          )}</span>
+        </div>
+        <p class="tool-desc">Workspace list · <code>.agents/tasks.json</code></p>
+        <div class="tasks-list-wrap" data-tasks-list>${tasksListHTML()}</div>
+        <form class="task-add" data-action-form="task-add">
+          <input name="title" data-task-draft placeholder="New task…" value="${esc(state.tasksDraft)}" autocomplete="off" ${state.tasksBusy ? "disabled" : ""} />
+          <button type="submit" class="primary btn-sm" ${state.tasksBusy ? "disabled" : ""}>Add</button>
+        </form>
+      </section>
+      <section class="${wrap}">
+        <div class="${head}">
           <${titleOpen}>Playwright</${titleClose}>
           <span class="tool-status" data-status="pw" id="pw-status">${esc(state.pwStatus)}</span>
         </div>
@@ -3467,16 +3746,408 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
 function toolsHTML(): string {
   return `
     <div class="modal-body tools-body sheet-form">
-      <div class="btn-row" style="margin-bottom:0.85rem">
+      <div class="btn-row tools-quick">
         <button type="button" class="primary btn-sm" data-action="open-shell">Terminal</button>
         <button type="button" class="ghost btn-sm" data-action="open-remote">Open remote…</button>
+        <button type="button" class="ghost btn-sm" data-action="git-changes">Git changes</button>
       </div>
       ${workspaceToolsBodyHTML()}
-      <p class="form-hint" style="margin-top:0.75rem">
+      <p class="form-hint">
         Accounts, GitHub, SSH →
         <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>
       </p>
     </div>`;
+}
+
+// ── Git Changes panel ────────────────────────────────────────────────────────
+
+function gitStatusLetter(f: GitFileEntry): string {
+  if (f.status && f.status.trim()) {
+    const s = f.status.trim();
+    return (s.length === 1 ? s : s[s.length - 1] || s[0] || "?").toUpperCase();
+  }
+  if (f.xy && f.xy.length >= 1) {
+    const x = f.xy[0] || " ";
+    const y = f.xy[1] || " ";
+    if (y !== " ") return y === "?" ? "?" : y.toUpperCase();
+    if (x !== " ") return x === "?" ? "?" : x.toUpperCase();
+  }
+  return f.staged ? "M" : "?";
+}
+
+function gitFilePlusMinus(f: GitFileEntry): string {
+  const ins = f.insertions;
+  const del = f.deletions;
+  if (ins == null && del == null) return "";
+  const parts: string[] = [];
+  if (ins != null && ins > 0) parts.push(`<span class="git-pm-add">+${ins}</span>`);
+  if (del != null && del > 0) parts.push(`<span class="git-pm-del">−${del}</span>`);
+  return parts.length ? `<span class="git-pm">${parts.join(" ")}</span>` : "";
+}
+
+function gitBranchMetaHTML(): string {
+  const st = state.gitStatus;
+  if (state.gitLoading && !st) {
+    return `<div class="git-branch-row"><span class="tool-status">Loading…</span></div>`;
+  }
+  if (state.gitError && !st) {
+    return `<div class="git-branch-row"><span class="form-error" role="alert">${esc(state.gitError)}</span></div>`;
+  }
+  if (!st) {
+    return `<div class="git-branch-row"><span class="tool-status">—</span></div>`;
+  }
+  if (st.is_repo === false) {
+    return `<div class="git-branch-row"><span class="tool-status">Not a git repo</span></div>`;
+  }
+  const branch = st.branch || st.head || "—";
+  const dirty = st.dirty || (st.files && st.files.length > 0);
+  const badges: string[] = [];
+  if (dirty) badges.push(`<span class="git-badge git-badge-dirty">dirty</span>`);
+  else badges.push(`<span class="git-badge git-badge-clean">clean</span>`);
+  if (typeof st.ahead === "number" && st.ahead > 0) {
+    badges.push(`<span class="git-badge" title="Commits ahead of upstream">↑${st.ahead}</span>`);
+  }
+  if (typeof st.behind === "number" && st.behind > 0) {
+    badges.push(`<span class="git-badge" title="Commits behind upstream">↓${st.behind}</span>`);
+  }
+  const n = st.files?.length ?? 0;
+  return `<div class="git-branch-row">
+    <span class="git-branch" title="${esc(st.upstream || "")}">${iconSvg("git-branch")}<strong>${esc(branch)}</strong></span>
+    ${badges.join("")}
+    <span class="tool-status">${n} file${n === 1 ? "" : "s"}</span>
+  </div>`;
+}
+
+function gitFileListHTML(): string {
+  const files = state.gitStatus?.files ?? [];
+  const allActive = state.gitSelectedPath == null;
+  const head = `<button type="button" class="git-file ${allActive ? "active" : ""}" data-action="git-select-all">
+      <span class="git-file-letter">∗</span>
+      <span class="git-file-path">All changes</span>
+    </button>`;
+  if (!files.length) {
+    return `<div class="git-file-list" data-git-files>
+      ${head}
+      <div class="empty-soft">Working tree clean</div>
+    </div>`;
+  }
+  const rows = files
+    .map((f) => {
+      const path = f.path || "";
+      const letter = gitStatusLetter(f);
+      const active = state.gitSelectedPath === path;
+      const checked =
+        state.gitCheckedPaths.length === 0 || state.gitCheckedPaths.includes(path);
+      const cls = [
+        "git-file",
+        active ? "active" : "",
+        `git-st-${letter === "?" ? "u" : letter.toLowerCase()}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<div class="${cls}" data-git-path="${esc(path)}">
+        <label class="git-file-check" title="Include in commit">
+          <input type="checkbox" data-action-change="git-check" data-path="${esc(path)}" ${checked ? "checked" : ""} />
+        </label>
+        <button type="button" class="git-file-btn" data-action="git-select-file" data-path="${esc(path)}">
+          <span class="git-file-letter" title="Status">${esc(letter)}</span>
+          <span class="git-file-path" title="${esc(path)}">${esc(path)}</span>
+          ${gitFilePlusMinus(f)}
+        </button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="git-file-list" data-git-files>${head}${rows}</div>`;
+}
+
+/** Escape + colorize unified diff lines (textContent-safe via esc). */
+function gitDiffLinesHTML(diff: string): string {
+  if (!diff) {
+    return `<div class="empty-soft">${state.gitDiffLoading ? "Loading diff…" : "No diff"}</div>`;
+  }
+  const lines = diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  // drop trailing empty from final newline
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const body = lines
+    .map((line) => {
+      let cls = "git-diff-line";
+      if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ")) {
+        cls += " git-diff-meta";
+      } else if (line.startsWith("@@")) {
+        cls += " git-diff-hunk";
+      } else if (line.startsWith("+")) {
+        cls += " git-diff-add";
+      } else if (line.startsWith("-")) {
+        cls += " git-diff-del";
+      }
+      return `<span class="${cls}">${esc(line)}\n</span>`;
+    })
+    .join("");
+  return `<pre class="git-diff" data-git-diff aria-label="Diff">${body}</pre>`;
+}
+
+function gitChangesHTML(): string {
+  const busy = state.gitBusy || state.gitLoading;
+  const selLabel = state.gitSelectedPath
+    ? state.gitSelectedPath
+    : "All changes";
+  const checkedN = state.gitCheckedPaths.length;
+  const commitScope =
+    checkedN > 0 ? `${checkedN} selected` : "all dirty files";
+  return `
+    <div class="modal-body git-changes-body sheet-form">
+      <div class="field git-cwd-row">
+        <label for="git-cwd-select">Workspace</label>
+        <div class="git-cwd-controls">
+          <select id="git-cwd-select" data-action-change="git-cwd" ${busy ? "disabled" : ""}>
+            ${workspaceOptionsHTML()}
+          </select>
+          <button type="button" class="ghost btn-sm" data-action="git-refresh" title="Refresh" ${busy ? "disabled" : ""}>Refresh</button>
+        </div>
+      </div>
+      ${gitBranchMetaHTML()}
+      ${state.gitError && state.gitStatus ? `<p class="form-error" role="alert">${esc(state.gitError)}</p>` : ""}
+      <div class="git-split">
+        <div class="git-files-col">
+          <div class="git-col-head">Files</div>
+          ${gitFileListHTML()}
+        </div>
+        <div class="git-diff-col">
+          <div class="git-col-head" title="${esc(selLabel)}">Diff · ${esc(selLabel)}</div>
+          <div class="git-diff-wrap" data-git-diff-wrap>
+            ${state.gitDiffLoading ? `<div class="empty-soft">Loading diff…</div>` : gitDiffLinesHTML(state.gitDiffText)}
+          </div>
+        </div>
+      </div>
+      <details class="details-block git-commit-block" open>
+        <summary>Commit <span class="opt">${esc(commitScope)}</span></summary>
+        <form class="git-commit-form" data-action-form="git-commit">
+          <div class="field">
+            <label for="git-commit-msg">Message</label>
+            <textarea id="git-commit-msg" name="message" rows="2" placeholder="Commit message" required ${state.gitBusy ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
+          </div>
+          <div class="btn-row">
+            <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
+          </div>
+        </form>
+      </details>
+      <details class="details-block git-pr-block">
+        <summary>Create pull request</summary>
+        <form class="git-pr-form" data-action-form="git-pr">
+          <div class="field">
+            <label for="git-pr-title">Title</label>
+            <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+          </div>
+          <div class="field">
+            <label for="git-pr-body">Body <span class="opt">optional</span></label>
+            <textarea id="git-pr-body" name="body" rows="2" placeholder="Description" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="git-pr-base">Base <span class="opt">optional</span></label>
+              <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+            </div>
+            <div class="field" style="display:flex;align-items:flex-end">
+              <label class="check">
+                <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
+                Draft PR
+              </label>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
+          </div>
+          ${
+            state.gitPrUrl
+              ? `<p class="form-hint git-pr-url">PR: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
+              : ""
+          }
+        </form>
+      </details>
+    </div>`;
+}
+
+function syncGitFormFromDOM(): void {
+  const msg = document.getElementById("git-commit-msg") as HTMLTextAreaElement | null;
+  if (msg) state.gitCommitMsg = msg.value;
+  const title = document.getElementById("git-pr-title") as HTMLInputElement | null;
+  if (title) state.gitPrTitle = title.value;
+  const body = document.getElementById("git-pr-body") as HTMLTextAreaElement | null;
+  if (body) state.gitPrBody = body.value;
+  const base = document.getElementById("git-pr-base") as HTMLInputElement | null;
+  if (base) state.gitPrBase = base.value;
+  const draft = document.getElementById("git-pr-draft") as HTMLInputElement | null;
+  if (draft) state.gitPrDraft = draft.checked;
+  const cwdSel = document.getElementById("git-cwd-select") as HTMLSelectElement | null;
+  if (cwdSel?.value) state.formCwd = cwdSel.value;
+}
+
+function gitCwd(): string {
+  const sel = document.getElementById("git-cwd-select") as HTMLSelectElement | null;
+  if (sel?.value) {
+    state.formCwd = sel.value;
+    return sel.value;
+  }
+  return toolsCwd();
+}
+
+async function refreshGitChanges(): Promise<void> {
+  const cwd = gitCwd();
+  state.gitLoading = true;
+  state.gitError = "";
+  if (state.panel === "changes") {
+    // light status update in branch row without full wipe if possible
+    const row = document.querySelector(".vaul-body .git-branch-row");
+    if (row) row.innerHTML = `<span class="tool-status">Loading…</span>`;
+  }
+  try {
+    const st = await gitStatus(cwd);
+    state.gitStatus = st;
+    if (st.error) state.gitError = st.error;
+    // drop checks for paths no longer present
+    const paths = new Set((st.files || []).map((f) => f.path));
+    state.gitCheckedPaths = state.gitCheckedPaths.filter((p) => paths.has(p));
+    if (state.gitSelectedPath && !paths.has(state.gitSelectedPath)) {
+      state.gitSelectedPath = null;
+    }
+  } catch (e) {
+    state.gitStatus = null;
+    state.gitError = (e as Error).message || "git status failed";
+    state.gitDiffText = "";
+  } finally {
+    state.gitLoading = false;
+  }
+  if (state.panel === "changes") {
+    syncGitFormFromDOM();
+    await paintPanel();
+  }
+  await loadGitDiff();
+}
+
+async function loadGitDiff(): Promise<void> {
+  if (state.panel !== "changes") return;
+  const cwd = gitCwd();
+  if (state.gitStatus?.is_repo === false) {
+    state.gitDiffText = "";
+    state.gitDiffLoading = false;
+    paintGitDiffOnly();
+    return;
+  }
+  state.gitDiffLoading = true;
+  paintGitDiffOnly();
+  try {
+    const out = await gitDiff({
+      cwd,
+      path: state.gitSelectedPath || undefined,
+      staged: false,
+    });
+    state.gitDiffText = out.diff || out.patch || "";
+    if (out.error && !state.gitDiffText) {
+      state.gitDiffText = `// ${out.error}`;
+    }
+  } catch (e) {
+    state.gitDiffText = `// ${(e as Error).message || "diff failed"}`;
+  } finally {
+    state.gitDiffLoading = false;
+    paintGitDiffOnly();
+  }
+}
+
+function paintGitDiffOnly(): void {
+  const wrap = document.querySelector<HTMLElement>(".vaul-body [data-git-diff-wrap]");
+  if (!wrap) return;
+  wrap.innerHTML = state.gitDiffLoading
+    ? `<div class="empty-soft">Loading diff…</div>`
+    : gitDiffLinesHTML(state.gitDiffText);
+  const head = document.querySelector(".vaul-body .git-diff-col .git-col-head");
+  if (head) {
+    const label = state.gitSelectedPath || "All changes";
+    head.textContent = `Diff · ${label}`;
+    head.setAttribute("title", label);
+  }
+  // file active states
+  document.querySelectorAll<HTMLElement>(".vaul-body [data-git-path]").forEach((row) => {
+    const path = row.getAttribute("data-git-path") || "";
+    row.classList.toggle("active", state.gitSelectedPath === path);
+  });
+  document.querySelectorAll<HTMLElement>(".vaul-body [data-action='git-select-all']").forEach((btn) => {
+    btn.classList.toggle("active", state.gitSelectedPath == null);
+  });
+}
+
+async function onGitSelectFile(path: string | null): Promise<void> {
+  syncGitFormFromDOM();
+  state.gitSelectedPath = path;
+  await loadGitDiff();
+}
+
+async function onGitCommit(): Promise<void> {
+  syncGitFormFromDOM();
+  const message = state.gitCommitMsg.trim();
+  if (!message) {
+    toast("Commit message required", "err");
+    return;
+  }
+  const cwd = gitCwd();
+  const paths = state.gitCheckedPaths.length ? [...state.gitCheckedPaths] : undefined;
+  const scope = paths
+    ? `${paths.length} file(s)`
+    : `${state.gitStatus?.files?.length ?? 0} change(s)`;
+  if (!confirm(`Commit ${scope} in ${cwd}?\n\n${message}`)) return;
+  state.gitBusy = true;
+  await paintPanel();
+  try {
+    const out = await gitCommit({
+      cwd,
+      message,
+      all: !paths,
+      paths,
+    });
+    const hash = out.short_hash || out.hash || "";
+    toast(hash ? `Committed ${hash}` : "Committed", "ok");
+    state.gitCommitMsg = "";
+    state.gitCheckedPaths = [];
+    state.gitSelectedPath = null;
+    state.gitBusy = false;
+    await refreshGitChanges();
+  } catch (e) {
+    state.gitBusy = false;
+    await paintPanel();
+    toast((e as Error).message || "commit failed", "err", 6000);
+  }
+}
+
+async function onGitCreatePR(): Promise<void> {
+  syncGitFormFromDOM();
+  const title = state.gitPrTitle.trim();
+  if (!title) {
+    toast("PR title required", "err");
+    return;
+  }
+  const cwd = gitCwd();
+  if (!confirm(`Create pull request “${title}” for ${cwd}?`)) return;
+  state.gitBusy = true;
+  state.gitPrUrl = "";
+  await paintPanel();
+  try {
+    const out = await gitPullRequest({
+      cwd,
+      title,
+      body: state.gitPrBody.trim() || undefined,
+      base: state.gitPrBase.trim() || undefined,
+      draft: state.gitPrDraft || undefined,
+    });
+    const url = out.url || "";
+    state.gitPrUrl = url;
+    state.gitBusy = false;
+    await paintPanel();
+    if (url) toast(`PR created`, "ok");
+    else toast(out.ok === false ? out.error || "PR create failed" : "PR created", out.ok === false ? "err" : "ok");
+  } catch (e) {
+    state.gitBusy = false;
+    await paintPanel();
+    toast((e as Error).message || "create PR failed", "err", 6000);
+  }
 }
 
 function helpHTML(): string {
@@ -3537,6 +4208,7 @@ function helpHTML(): string {
           <dl class="keys">
             <div><dt><kbd>t</kbd></dt><dd>Tools</dd></div>
             <div><dt><kbd>⇧</kbd><kbd>t</kbd></dt><dd>Plain shell terminal</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>g</kbd></dt><dd>Git changes</dd></div>
             <div><dt><kbd>,</kbd> <kbd>a</kbd></dt><dd>Settings</dd></div>
             <div><dt><kbd>g</kbd></dt><dd>Settings → GitHub</dd></div>
             <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
@@ -3569,7 +4241,8 @@ function filteredSessions(): Session[] {
   const q = state.filter.trim().toLowerCase();
   if (!q) return state.sessions;
   return state.sessions.filter((s) => {
-    const hay = `${s.name || ""} ${s.agent} ${s.cwd} ${s.id} ${s.state}`.toLowerCase();
+    const hay =
+      `${s.name || ""} ${s.agent} ${s.cwd} ${s.id} ${s.state} ${s.git_branch || ""} ${s.branch || ""}`.toLowerCase();
     return hay.includes(q);
   });
 }
@@ -3582,7 +4255,11 @@ function paint(): void {
     state.shellMounted = false;
     shellBound = false;
     shellEntranceDone = false;
-    lastSessionListSig = "";
+    lastSessionListPaintSig = "";
+    lastTabsPaintSig = "";
+    lastStatusPaintSig = "";
+    lastCrumbPaintSig = "";
+    hideSessionCtx();
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     app.innerHTML = loginHTML();
     bindLogin();
@@ -3593,6 +4270,10 @@ function paint(): void {
     app.innerHTML = shellHTML();
     state.shellMounted = true;
     shellBound = false;
+    lastSessionListPaintSig = sessionListPaintSig();
+    lastTabsPaintSig = tabsPaintSig();
+    lastStatusPaintSig = statusPaintSig();
+    lastCrumbPaintSig = crumbPaintSig();
     bindShell();
     ensureTermArea();
     void paintPanel({ animateIn: false });
@@ -3601,9 +4282,6 @@ function paint(): void {
       shellEntranceDone = true;
       const shell = document.querySelector<HTMLElement>(".shell");
       if (shell) animateShellIn(shell);
-      // first session list cascade
-      lastSessionListSig = "";
-      maybeAnimateSessionList();
     }
     if (!pressMotionBound) {
       pressMotionBound = true;
@@ -3622,22 +4300,89 @@ function paint(): void {
   paintChrome();
 }
 
-function maybeAnimateSessionList(): void {
-  const list = document.getElementById("session-list");
-  if (!list) return;
-  // Signature ignores state (running/exited) so 5s polls don't re-stagger the list
-  const sig = `${state.filter}|${state.sessions.map((s) => s.id).join(",")}`;
-  if (sig === lastSessionListSig) return;
-  lastSessionListSig = sig;
-  animateSessionList(list);
+/**
+ * Display-only signature for the session list.
+ * Includes fields that affect row markup (not relativeTime ages — those may lag until next real change).
+ * Built from the same sorted/filtered view as the HTML to avoid order-only thrash from the API.
+ */
+function sessionListPaintSig(): string {
+  if (state.sessions.length === 0) {
+    return `empty\n${state.filter}`;
+  }
+  const list = filteredSessionsSorted();
+  if (list.length === 0) {
+    return `nomatch\n${state.filter}`;
+  }
+  const rows = list
+    .map((s) => {
+      const active = s.id === state.activeId ? "1" : "0";
+      const cursor = s.id === state.listCursorId ? "1" : "0";
+      // Display fields only: id, state, name, agent, cwd (title + meta + classes)
+      return `${s.id}\0${s.state}\0${s.name || ""}\0${s.agent}\0${s.cwd}\0${active}\0${cursor}`;
+    })
+    .join("\n");
+  return rows;
 }
 
-function paintChrome(): void {
-  if (!state.shellMounted) return;
+function tabsPaintSig(): string {
+  if (state.openTabs.length === 0) return "empty";
+  return state.openTabs
+    .map((t) => {
+      const active = t.id === state.activeId ? "1" : "0";
+      return `${t.id}\0${t.state}\0${t.title}\0${t.agent}\0${t.cwd}\0${active}`;
+    })
+    .join("\n");
+}
+
+function statusPaintSig(): string {
+  const run = state.sessions.filter((s) => s.state === "running").length;
+  return [
+    state.statusOk ? "1" : "0",
+    String(run),
+    String(state.sessions.length),
+    String(state.openTabs.length),
+    state.statusText || "",
+    state.sidebarOpen ? "1" : "0",
+  ].join("\0");
+}
+
+function crumbPaintSig(): string {
+  const tab = state.openTabs.find((t) => t.id === state.activeId);
+  return [
+    state.activeId || "",
+    state.panel || "",
+    tab?.title || "",
+    tab?.cwd || "",
+    tab?.agent || "",
+  ].join("\0");
+}
+
+function paintSessionList(force = false): void {
   const list = document.getElementById("session-list");
-  if (list) list.innerHTML = sessionListHTML();
+  if (!list) return;
+  const sig = sessionListPaintSig();
+  if (!force && sig === lastSessionListPaintSig) return;
+  lastSessionListPaintSig = sig;
+  list.innerHTML = sessionListHTML();
+}
+
+function paintTabs(force = false): void {
   const tabs = document.getElementById("tabs");
-  if (tabs) tabs.innerHTML = tabsHTML();
+  if (!tabs) return;
+  const sig = tabsPaintSig();
+  if (!force && sig === lastTabsPaintSig) return;
+  lastTabsPaintSig = sig;
+  tabs.innerHTML = tabsHTML();
+}
+
+/** Lightweight status bits: sess-count, status-bar, nav labels, sidebar class. */
+function paintStatusChrome(force = false): void {
+  const sig = statusPaintSig();
+  if (!force && sig === lastStatusPaintSig) {
+    // Still allow conn pill updates (separate path) — nothing else.
+    return;
+  }
+  lastStatusPaintSig = sig;
   const status = document.getElementById("status-bar");
   if (status) status.innerHTML = statusHTML();
   const count = document.getElementById("sess-count");
@@ -3645,8 +4390,6 @@ function paintChrome(): void {
     const run = state.sessions.filter((s) => s.state === "running").length;
     count.textContent = `${run}/${state.sessions.length}`;
   }
-  const crumb = document.getElementById("breadcrumb");
-  if (crumb) crumb.outerHTML = breadcrumbHTML();
   const host = document.getElementById("nav-host");
   if (host) {
     host.textContent = (state.statusText || "host").split("·")[0]?.trim() || "host";
@@ -3655,11 +4398,25 @@ function paintChrome(): void {
   if (navStatus) navStatus.textContent = state.statusText || "connected";
   const shell = document.querySelector(".shell");
   shell?.classList.toggle("sidebar-open", state.sidebarOpen);
+}
+
+function paintBreadcrumb(force = false): void {
+  const crumb = document.getElementById("breadcrumb");
+  if (!crumb) return;
+  const sig = crumbPaintSig();
+  if (!force && sig === lastCrumbPaintSig) return;
+  lastCrumbPaintSig = sig;
+  crumb.outerHTML = breadcrumbHTML();
+}
+
+function paintChrome(): void {
+  if (!state.shellMounted) return;
+  paintSessionList();
+  paintTabs();
+  paintStatusChrome();
+  paintBreadcrumb();
   paintConn();
-  void paintToast();
-  bindSessionList();
-  bindTabs();
-  maybeAnimateSessionList();
+  // Do not re-paint toast here — poll/chrome would re-trigger entrance animation.
 }
 
 function loginHTML(): string {
@@ -3708,6 +4465,20 @@ function iconSvg(name: string): string {
       return `<svg ${common}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
     case "more":
       return `<svg ${common}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>`;
+    case "plus":
+      return `<svg ${common}><path d="M5 12h14"/><path d="M12 5v14"/></svg>`;
+    case "folder-git":
+      return `<svg ${common}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><circle cx="12" cy="13" r="2"/><path d="M14 13.5V17"/><path d="M10 13.5V17"/></svg>`;
+    case "git-branch":
+      return `<svg ${common}><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`;
+    case "git":
+      return `<svg ${common}><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/><path d="M18 6v3"/><path d="M18 15v3"/><path d="M6 6v3"/><path d="M6 15v3"/></svg>`;
+    case "external":
+      return `<svg ${common}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
+    case "chevrons-up-down":
+      return `<svg ${common}><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>`;
+    case "trash":
+      return `<svg ${common}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>`;
     default:
       return "";
   }
@@ -3746,68 +4517,50 @@ function shellHTML(): string {
     <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="close-sidebar" hidden></div>
 
     <aside class="sidebar" id="sidebar">
-      <div class="sidebar-header">
-        <div class="brand">
-          <span class="logo-mark sm" aria-hidden="true">a</span>
-          <div class="brand-meta">
-            <span class="brand-name">agents</span>
-            <span class="brand-sub">control plane</span>
-          </div>
-        </div>
-      </div>
+      <div class="sidebar-inner">
+        <header class="sb-head">
+          <a href="/desk" class="sb-brand" data-nav data-route="desk" title="Desk">
+            <span class="sb-brand-mark" aria-hidden="true">a</span>
+            <span class="sb-brand-name">agents</span>
+          </a>
+          <a href="/new" class="sb-cta" data-action="new-session" data-nav id="btn-new" title="New session (n)">
+            ${iconSvg("plus")}<span>New</span><kbd>n</kbd>
+          </a>
+        </header>
 
-      <div class="sidebar-content">
-        <div class="sidebar-group">
-          <div class="sidebar-actions">
-            <a href="/" class="primary sidebar-new" data-action="new-session" data-nav id="btn-new">
-              <span>New session</span>
-              <kbd>n</kbd>
-            </a>
-            <a href="/project/new" class="linkish sidebar-sublink" data-action="new-project" data-nav id="btn-new-project" title="Clone a repo (Shift+n)">
-              New project
-            </a>
-            <div class="sidebar-quick">
-              <button type="button" class="ghost btn-sm" data-action="open-shell" title="Plain shell in workspace">Terminal</button>
-              <button type="button" class="ghost btn-sm" data-action="open-remote" title="Open folder in Cursor / Zed / VS Code">Open remote</button>
-            </div>
-          </div>
-          <div class="sidebar-menu">
-            <a href="/tools" class="sidebar-menu-btn" data-action="tools" data-nav title="Quick tools (t)">
-              ${iconSvg("wrench")}<span>Tools</span><kbd>t</kbd>
-            </a>
-            <a href="/profile" class="sidebar-menu-btn" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">
-              ${iconSvg("settings")}<span>Settings</span><kbd>,</kbd>
-            </a>
-            <a href="/help" class="sidebar-menu-btn" data-action="help" data-nav title="Shortcuts (?)">
-              ${iconSvg("help")}<span>Shortcuts</span><kbd>?</kbd>
-            </a>
-          </div>
-        </div>
+        <nav class="sb-tools" aria-label="Quick actions">
+          <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)">${iconSvg("folder-git")}</a>
+          <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)">${iconSvg("terminal")}</button>
+          <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor">${iconSvg("external")}</button>
+          <span class="sb-tools-sep" aria-hidden="true"></span>
+          <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)">${iconSvg("wrench")}</a>
+          <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)">${iconSvg("git-branch")}</a>
+          <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">${iconSvg("settings")}</a>
+          <a href="/help" class="sb-tool" data-action="help" data-nav title="Shortcuts (?)">${iconSvg("help")}</a>
+        </nav>
 
-        <div class="sidebar-group grow">
-          <div class="sidebar-group-label">Sessions</div>
-          <div class="sidebar-filter">
-            <input id="filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" />
-            <span class="sess-count" id="sess-count" title="running / total">0/0</span>
+        <section class="sb-sessions" aria-label="Sessions">
+          <div class="sb-sessions-head">
+            <span class="sb-sessions-label">Sessions</span>
+            <span class="sb-sessions-count" id="sess-count" title="running / total">0/0</span>
           </div>
-          <div class="session-list" id="session-list">
+          <input id="filter" class="sb-filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" spellcheck="false" />
+          <div class="session-list" id="session-list" role="list">
             ${sessionListHTML()}
           </div>
-        </div>
-      </div>
+        </section>
 
-      <div class="sidebar-footer">
-        <button type="button" class="nav-user" data-action="open-settings" data-tab="about" title="About this host">
-          <span class="nav-user-avatar">a</span>
-          <span class="nav-user-text">
-            <strong id="nav-host">${esc(host)}</strong>
-            <span id="nav-status">${esc(state.statusText || "connected")}</span>
-          </span>
-        </button>
-        <div class="sidebar-foot-actions">
-          <button type="button" class="ghost btn-icon sm" data-action="prune" title="Clear stopped sessions">${iconSvg("terminal")}</button>
-          <button type="button" class="ghost btn-icon sm" data-action="logout" title="Log out">${iconSvg("logout")}</button>
-        </div>
+        <footer class="sb-foot">
+          <button type="button" class="sb-host" data-action="open-settings" data-tab="about" title="About this host">
+            <span class="sb-host-dot" aria-hidden="true"></span>
+            <span class="sb-host-text">
+              <strong id="nav-host">${esc(host)}</strong>
+              <span id="nav-status">${esc(state.statusText || "connected")}</span>
+            </span>
+          </button>
+          <button type="button" class="sb-tool" data-action="prune" title="Clear stopped sessions">${iconSvg("trash")}</button>
+          <button type="button" class="sb-tool" data-action="logout" title="Log out">${iconSvg("logout")}</button>
+        </footer>
       </div>
     </aside>
 
@@ -3820,7 +4573,7 @@ function shellHTML(): string {
           <span class="topbar-sep" aria-hidden="true"></span>
           ${breadcrumbHTML()}
         </div>
-        <div class="tabs" id="tabs">${tabsHTML()}</div>
+        <div class="tabs" id="tabs" role="tablist" aria-label="Open sessions">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
           <button type="button" class="ghost btn-icon sm" data-action="open-palette" title="Command palette (⌘K)" aria-label="Command palette">
@@ -3834,6 +4587,7 @@ function shellHTML(): string {
               <button type="button" data-action="open-shell">Terminal <kbd>⇧t</kbd></button>
               <button type="button" data-action="open-remote">Open remote…</button>
               <button type="button" data-action="tools">Tools <kbd>t</kbd></button>
+              <button type="button" data-action="git-changes">Git changes <kbd>⇧g</kbd></button>
               <button type="button" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
               <button type="button" data-action="help">Shortcuts <kbd>?</kbd></button>
               <button type="button" data-action="toggle-theme">Toggle theme</button>
@@ -3847,62 +4601,122 @@ function shellHTML(): string {
       </div>
       <footer class="status-bar" id="status-bar">${statusHTML()}</footer>
     </main>
+
+    <div id="ctx-menu" class="ctx-menu" hidden role="menu" aria-label="Session actions"></div>
   </div>`;
 }
 
 function sessionListHTML(): string {
-  const list = filteredSessions();
   if (state.sessions.length === 0) {
     return `<div class="empty-list">
-      <p>No sessions yet</p>
-      <button type="button" class="primary btn-sm" data-action="new-session">Create one</button>
+      <p>No sessions</p>
+      <button type="button" class="primary btn-sm" data-action="new-session">New session</button>
     </div>`;
   }
-  if (list.length === 0) {
-    return `<div class="empty-list"><p>No matches for “${esc(state.filter)}”</p></div>`;
+  const sorted = filteredSessionsSorted();
+  if (sorted.length === 0) {
+    return `<div class="empty-list"><p>No matches</p></div>`;
   }
-  // running first, then by created_at desc if present
-  const sorted = [...list].sort((a, b) => {
-    if (a.state === "running" && b.state !== "running") return -1;
-    if (b.state === "running" && a.state !== "running") return 1;
-    const ta = a.created_at ? Date.parse(a.created_at) : 0;
-    const tb = b.created_at ? Date.parse(b.created_at) : 0;
-    return tb - ta;
-  });
   return sorted
     .map((s) => {
-      const active = s.id === state.activeId ? "active" : "";
-      const cursor = s.id === state.listCursorId ? "cursor" : "";
+      const isActive = s.id === state.activeId;
+      const cursor = s.id === state.listCursorId ? " cursor" : "";
       const age = relativeTime(s.created_at);
       const ag = agentClass(s.agent);
       const href = sessionPath(s.cwd, s.id);
-      return `
-      <a class="session-item ${active} ${cursor} ${ag}" href="${esc(href)}" data-open="${esc(s.id)}" data-nav>
-        <div class="session-item-main">
-          <div class="session-top">
-            <span class="session-name">${esc(s.name || shortId(s.id))}</span>
-            <span class="badge ${esc(s.state)}">${esc(s.state)}</span>
-          </div>
-          <div class="session-meta">
-            <span class="agent-chip ${ag}">${agentSwatchHTML(s.agent)}${esc(s.agent)}</span>
-            <span class="cwd-chip" title="${esc(s.cwd)}">${esc(basename(s.cwd))}</span>
-            ${age ? `<span class="age">${esc(age)}</span>` : ""}
-          </div>
-        </div>
-        <details class="menu session-menu">
-          <summary class="ghost btn-icon sm act" title="Session actions" aria-label="Session actions">${iconSvg("more")}</summary>
-          <div class="menu-panel">
-            ${
-              s.state === "running"
-                ? `<button type="button" data-kill="${esc(s.id)}">Stop</button>`
-                : `<button type="button" class="resume-text" data-resume="${esc(s.id)}">Resume</button>`
-            }
-            <button type="button" class="danger-text" data-delete="${esc(s.id)}">Delete</button>
-          </div>
-        </details>
-      </a>`;
+      const label = s.name || shortId(s.id);
+      const live = s.state === "running" ? "live" : "dead";
+      const branch = (s.git_branch || s.branch || "").trim();
+      const metaBits = [s.agent, basename(s.cwd)];
+      if (branch) metaBits.push(branch);
+      if (age) metaBits.push(age);
+      const tipBits = [s.agent, s.cwd];
+      if (branch) tipBits.push(branch);
+      tipBits.push(s.state, "right-click for actions");
+      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav title="${esc(tipBits.join(" · "))}">
+  <span class="session-dot ${ag}" aria-hidden="true"></span>
+  <span class="session-body">
+    <span class="session-name">${esc(label)}</span>
+    <span class="session-meta">${esc(metaBits.join(" · "))}</span>
+  </span>
+  <span class="session-state ${esc(s.state)}" title="${esc(s.state)}"></span>
+  <button type="button" class="session-more" data-ctx="${esc(s.id)}" title="Actions" aria-label="Session actions" tabindex="-1">${iconSvg("more")}</button>
+</a>`;
     })
     .join("");
+}
+
+function hideSessionCtx(): void {
+  ctxSessionId = null;
+  const menu = document.getElementById("ctx-menu");
+  if (!menu) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+
+function showSessionCtx(id: string, x: number, y: number): void {
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  const menu = document.getElementById("ctx-menu");
+  if (!menu) return;
+  ctxSessionId = id;
+  const running = s.state === "running";
+  const label = s.name || shortId(s.id);
+  menu.innerHTML = `
+    <div class="ctx-label" role="presentation">${esc(label)}</div>
+    <button type="button" role="menuitem" data-ctx-act="open" data-ctx-id="${esc(id)}">Open</button>
+    ${
+      running
+        ? `<button type="button" role="menuitem" data-ctx-act="stop" data-ctx-id="${esc(id)}">Stop</button>`
+        : `<button type="button" role="menuitem" data-ctx-act="resume" data-ctx-id="${esc(id)}">Resume</button>`
+    }
+    <button type="button" role="menuitem" data-ctx-act="copy-id" data-ctx-id="${esc(id)}">Copy ID</button>
+    <hr class="ctx-sep" />
+    <button type="button" role="menuitem" class="danger-text" data-ctx-act="delete" data-ctx-id="${esc(id)}">Delete</button>
+  `;
+  menu.hidden = false;
+  // Measure then clamp to viewport
+  const pad = 8;
+  const rect = menu.getBoundingClientRect();
+  const w = rect.width || 180;
+  const h = rect.height || 160;
+  let left = x;
+  let top = y;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (top + h > window.innerHeight - pad) top = window.innerHeight - h - pad;
+  if (left < pad) left = pad;
+  if (top < pad) top = pad;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+async function runSessionCtx(act: string, id: string): Promise<void> {
+  hideSessionCtx();
+  const s = state.sessions.find((x) => x.id === id);
+  switch (act) {
+    case "open":
+      if (s) openTab(s);
+      break;
+    case "stop":
+      await onKillSession(id);
+      break;
+    case "resume":
+      await onResumeSession(id);
+      break;
+    case "delete":
+      await onDeleteSession(id);
+      break;
+    case "copy-id":
+      try {
+        await navigator.clipboard.writeText(id);
+        toast("Session ID copied", "ok", 1400);
+      } catch {
+        toast(id, "info", 4000);
+      }
+      break;
+    default:
+      break;
+  }
 }
 
 function tabsHTML(): string {
@@ -3911,16 +4725,23 @@ function tabsHTML(): string {
   }
   return state.openTabs
     .map((t, i) => {
-      const active = t.id === state.activeId ? "active" : "";
+      const isActive = t.id === state.activeId;
+      const active = isActive ? "active" : "";
       const live = t.state === "running" ? "live" : "dead";
       const ag = agentClass(t.agent);
       const href = sessionPath(t.cwd, t.id);
+      const sess = state.sessions.find((x) => x.id === t.id);
+      const branch = (sess?.git_branch || sess?.branch || "").trim();
+      // Branch only on hover title — keep tab label quiet.
+      const tip = branch
+        ? `${t.agent} · ${branch} · ${t.id}`
+        : `${t.agent} · ${t.id}`;
       return `
-      <a class="tab ${active} ${live} ${ag}" href="${esc(href)}" data-tab="${esc(t.id)}" data-nav title="${esc(t.agent)} · ${esc(t.id)}">
+      <a class="tab ${active} ${live} ${ag}" href="${esc(href)}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab="${esc(t.id)}" data-nav title="${esc(tip)}">
         <span class="tab-dot" title="${esc(t.agent)}"></span>
         <span class="tab-label">${esc(t.title)}</span>
         ${i < 9 ? `<span class="tab-num">${i + 1}</span>` : ""}
-        <button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)">×</button>
+        <button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)" aria-label="Close tab">×</button>
       </a>`;
     })
     .join("");
@@ -4183,6 +5004,10 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       return true;
     }
     if (lower === "g") {
+      if (shift) {
+        openPanel("changes");
+        return true;
+      }
       openSettings("github");
       return true;
     }
@@ -4294,6 +5119,10 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       openSettings("accounts");
       return true;
     case "g":
+      if (shift) {
+        openPanel("changes");
+        return true;
+      }
       openSettings("github");
       return true;
     case "k":
@@ -4546,9 +5375,76 @@ function ensureUIDelegation(): void {
   if (uiDelegated) return;
   uiDelegated = true;
 
+  // Session context menu (right-click)
+  document.addEventListener("contextmenu", (ev) => {
+    const t = ev.target as HTMLElement | null;
+    if (!t) return;
+    if (t.closest("#ctx-menu")) {
+      ev.preventDefault();
+      return;
+    }
+    const row = t.closest<HTMLElement>(".session-item[data-open]");
+    if (!row) {
+      hideSessionCtx();
+      return;
+    }
+    ev.preventDefault();
+    const id = row.getAttribute("data-open");
+    if (id) showSessionCtx(id, ev.clientX, ev.clientY);
+  });
+
+  document.addEventListener(
+    "keydown",
+    (ev) => {
+      if (ev.key === "Escape" && ctxSessionId) {
+        hideSessionCtx();
+      }
+    },
+    true,
+  );
+
   document.addEventListener("click", (ev) => {
     const t = ev.target as HTMLElement | null;
     if (!t) return;
+
+    // Tab close buttons (delegated — survives tabs.innerHTML rewrites)
+    const closeBtn = t.closest<HTMLElement>("[data-close]");
+    if (closeBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = closeBtn.getAttribute("data-close");
+      if (id) closeTab(id);
+      return;
+    }
+
+    // Context menu actions
+    const ctxAct = t.closest<HTMLElement>("[data-ctx-act]");
+    if (ctxAct) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const act = ctxAct.getAttribute("data-ctx-act") || "";
+      const id = ctxAct.getAttribute("data-ctx-id") || ctxSessionId || "";
+      if (act && id) void runSessionCtx(act, id);
+      return;
+    }
+
+    // ⋯ button on session row → open menu at button
+    const moreBtn = t.closest<HTMLElement>("[data-ctx]");
+    if (moreBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = moreBtn.getAttribute("data-ctx");
+      if (id) {
+        const r = moreBtn.getBoundingClientRect();
+        showSessionCtx(id, r.right, r.bottom + 4);
+      }
+      return;
+    }
+
+    // Click outside closes context menu
+    if (ctxSessionId && !t.closest("#ctx-menu")) {
+      hideSessionCtx();
+    }
 
     // In-app <a data-nav> links (session list, breadcrumbs, etc.)
     const navEl = t.closest<HTMLAnchorElement>("a[data-nav]");
@@ -4556,7 +5452,7 @@ function ensureUIDelegation(): void {
       // Don't hijack action buttons / menus inside the link
       if (
         t.closest(
-          "button, summary, details.menu, [data-kill], [data-delete], [data-resume], [data-action]",
+          "button, summary, details.menu, [data-kill], [data-delete], [data-resume], [data-action], [data-ctx], [data-ctx-act], [data-close]",
         )
       ) {
         /* fall through to action handlers */
@@ -4602,6 +5498,26 @@ function ensureUIDelegation(): void {
         if (!state.token) return;
         openPanel("tools");
         break;
+      case "git-changes":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!state.token) return;
+        openPanel("changes");
+        break;
+      case "git-refresh":
+        ev.preventDefault();
+        void refreshGitChanges();
+        break;
+      case "git-select-all":
+        ev.preventDefault();
+        void onGitSelectFile(null);
+        break;
+      case "git-select-file": {
+        ev.preventDefault();
+        const path = actionEl.getAttribute("data-path") || "";
+        void onGitSelectFile(path || null);
+        break;
+      }
       case "open-settings":
         ev.preventDefault();
         ev.stopPropagation();
@@ -4765,6 +5681,26 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         void onPwAction("install");
         break;
+      case "task-toggle": {
+        ev.preventDefault();
+        const id = actionEl.getAttribute("data-id") || "";
+        const st = (actionEl.getAttribute("data-status") || "todo") as TaskStatus;
+        if (id) void onTaskToggle(id, st);
+        break;
+      }
+      case "task-cycle": {
+        ev.preventDefault();
+        const id = actionEl.getAttribute("data-id") || "";
+        const st = (actionEl.getAttribute("data-status") || "todo") as TaskStatus;
+        if (id) void onTaskCycle(id, st);
+        break;
+      }
+      case "task-delete": {
+        ev.preventDefault();
+        const id = actionEl.getAttribute("data-id") || "";
+        if (id) void onTaskDelete(id);
+        break;
+      }
       case "ssh-gen":
         ev.preventDefault();
         void onSSHGenerate();
@@ -4823,6 +5759,15 @@ function ensureUIDelegation(): void {
     } else if (kind === "mem-search") {
       ev.preventDefault();
       void onMemSearch(ev);
+    } else if (kind === "task-add") {
+      ev.preventDefault();
+      void onTaskAdd(ev);
+    } else if (kind === "git-commit") {
+      ev.preventDefault();
+      void onGitCommit();
+    } else if (kind === "git-pr") {
+      ev.preventDefault();
+      void onGitCreatePR();
     }
   });
 
@@ -4833,6 +5778,29 @@ function ensureUIDelegation(): void {
     if (kind === "tools-cwd" && el instanceof HTMLSelectElement) {
       state.formCwd = el.value;
       void refreshToolsStatus();
+    }
+    if (kind === "git-cwd" && el instanceof HTMLSelectElement) {
+      state.formCwd = el.value;
+      state.gitSelectedPath = null;
+      state.gitCheckedPaths = [];
+      state.gitDiffText = "";
+      state.gitPrUrl = "";
+      void refreshGitChanges();
+    }
+    if (kind === "git-check" && el instanceof HTMLInputElement) {
+      const path = el.getAttribute("data-path") || "";
+      if (!path) return;
+      const files = (state.gitStatus?.files || []).map((f) => f.path).filter(Boolean);
+      // empty list means "all selected" — materialize before a deselect
+      let checked =
+        state.gitCheckedPaths.length === 0 ? [...files] : [...state.gitCheckedPaths];
+      if (el.checked) {
+        if (!checked.includes(path)) checked.push(path);
+      } else {
+        checked = checked.filter((p) => p !== path);
+      }
+      // collapse full selection back to "all"
+      state.gitCheckedPaths = checked.length === files.length ? [] : checked;
     }
     if (kind === "sess-agent" && el instanceof HTMLSelectElement) {
       state.formAgent = el.value;
@@ -4859,56 +5827,18 @@ function bindShell(): void {
   const filter = document.getElementById("filter") as HTMLInputElement | null;
   filter?.addEventListener("input", (e) => {
     state.filter = (e.target as HTMLInputElement).value;
-    const list = document.getElementById("session-list");
-    if (list) {
-      list.innerHTML = sessionListHTML();
-      bindSessionList();
-    }
+    if (filterDebounceTimer != null) window.clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = window.setTimeout(() => {
+      filterDebounceTimer = null;
+      // Sig includes filter; no force needed — only rewrites when matches change.
+      paintSessionList();
+    }, 120);
   });
 
-  bindSessionList();
-  bindTabs();
-  window.addEventListener("resize", () => fit());
-}
-
-function bindSessionList(): void {
-  // Session open: <a data-nav href="/project/..."> handled by ensureUIDelegation.
-  // Only wire stop/delete/resume buttons here.
-
-  document.querySelectorAll<HTMLElement>("[data-kill]").forEach((el) => {
-    el.onclick = (ev) => {
-      ev.stopPropagation();
-      const id = el.getAttribute("data-kill");
-      if (id) void onKillSession(id);
-    };
-  });
-
-  document.querySelectorAll<HTMLElement>("[data-delete]").forEach((el) => {
-    el.onclick = (ev) => {
-      ev.stopPropagation();
-      const id = el.getAttribute("data-delete");
-      if (id) void onDeleteSession(id);
-    };
-  });
-
-  document.querySelectorAll<HTMLElement>("[data-resume]").forEach((el) => {
-    el.onclick = (ev) => {
-      ev.stopPropagation();
-      const id = el.getAttribute("data-resume");
-      if (id) void onResumeSession(id);
-    };
-  });
-}
-
-function bindTabs(): void {
-  // Tab switch: <a data-nav> → navigate. Close buttons only.
-  document.querySelectorAll<HTMLElement>("[data-close]").forEach((el) => {
-    el.onclick = (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const id = el.getAttribute("data-close");
-      if (id) closeTab(id);
-    };
+  // Tab close is delegated in ensureUIDelegation (no per-paint rebind).
+  window.addEventListener("resize", () => {
+    fit();
+    hideSessionCtx();
   });
 }
 

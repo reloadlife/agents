@@ -143,9 +143,15 @@ export async function animateToastOut(el: HTMLElement): Promise<void> {
 /**
  * Shell first paint — sidebar + inset card cascade.
  * Only call once on mount (not every chrome paint).
+ * Clears inline opacity/transform after finish so list rewrites never stay at opacity:0.
+ * Does NOT animate session-list rows (large lists + motion is expensive / risk of stuck opacity).
  */
 export function animateShellIn(shell: HTMLElement): void {
   if (prefersReducedMotion()) return;
+  const clearMotion = (el: HTMLElement) => {
+    el.style.opacity = "";
+    el.style.transform = "";
+  };
   const sidebar = shell.querySelector<HTMLElement>(".sidebar");
   const main = shell.querySelector<HTMLElement>(".main");
   if (sidebar) {
@@ -155,7 +161,7 @@ export function animateShellIn(shell: HTMLElement): void {
       sidebar,
       { opacity: [0, 1], x: [-16, 0] },
       { ...springSoft, delay: 0.02 },
-    );
+    ).then(() => clearMotion(sidebar), () => clearMotion(sidebar));
   }
   if (main) {
     main.style.opacity = "0";
@@ -164,9 +170,10 @@ export function animateShellIn(shell: HTMLElement): void {
       main,
       { opacity: [0, 1], y: [12, 0], scale: [0.985, 1] },
       { ...springSoft, delay: 0.06 },
-    );
+    ).then(() => clearMotion(main), () => clearMotion(main));
   }
-  const menuBtns = shell.querySelectorAll<HTMLElement>(".sidebar-menu-btn, .sidebar-new");
+  // Only brand/CTA chrome — never .session-item (list rewrites + stagger is costly).
+  const menuBtns = shell.querySelectorAll<HTMLElement>(".sb-cta, .sb-tool, .sb-brand");
   if (menuBtns.length) {
     for (const b of menuBtns) {
       b.style.opacity = "0";
@@ -175,29 +182,20 @@ export function animateShellIn(shell: HTMLElement): void {
     void animate(
       menuBtns,
       { opacity: [0, 1], y: [6, 0] },
-      { ...springSnappy, delay: stagger(0.035, { startDelay: 0.08 }) },
+      { ...springSnappy, delay: stagger(0.03, { startDelay: 0.06 }) },
+    ).then(
+      () => {
+        for (const b of menuBtns) clearMotion(b);
+      },
+      () => {
+        for (const b of menuBtns) clearMotion(b);
+      },
     );
   }
 }
 
-/** Stagger session list items (call after list HTML rewrite). */
-export function animateSessionList(list: HTMLElement): void {
-  if (prefersReducedMotion()) return;
-  const items = list.querySelectorAll<HTMLElement>(".session-item");
-  if (!items.length) return;
-  // Cap so large lists don't take forever
-  const max = 18;
-  const targets = Array.from(items).slice(0, max);
-  for (const el of targets) {
-    el.style.opacity = "0";
-    el.style.transform = "translateX(-8px)";
-  }
-  void animate(
-    targets,
-    { opacity: [0, 1], x: [-8, 0] },
-    { ...springSnappy, delay: stagger(0.028, { startDelay: 0.02 }) },
-  );
-}
+// Session list rows excluded — press scale on large lists fights scroll/paint.
+const PRESS_SEL = "button.primary, .sb-cta, .sb-tool";
 
 /** Subtle press feedback on interactive chrome (optional). */
 export function bindPressMotion(root: ParentNode = document): void {
@@ -205,9 +203,7 @@ export function bindPressMotion(root: ParentNode = document): void {
   root.addEventListener(
     "pointerdown",
     (ev) => {
-      const t = (ev.target as HTMLElement | null)?.closest?.(
-        "button.primary, button.sidebar-new, .sidebar-menu-btn, .session-item",
-      ) as HTMLElement | null;
+      const t = (ev.target as HTMLElement | null)?.closest?.(PRESS_SEL) as HTMLElement | null;
       if (!t || t.hasAttribute("disabled")) return;
       void animate(t, { scale: 0.97 }, { duration: 0.08 });
     },
@@ -216,9 +212,7 @@ export function bindPressMotion(root: ParentNode = document): void {
   root.addEventListener(
     "pointerup",
     (ev) => {
-      const t = (ev.target as HTMLElement | null)?.closest?.(
-        "button.primary, button.sidebar-new, .sidebar-menu-btn, .session-item",
-      ) as HTMLElement | null;
+      const t = (ev.target as HTMLElement | null)?.closest?.(PRESS_SEL) as HTMLElement | null;
       if (!t) return;
       void animate(t, { scale: 1 }, springSnappy);
     },
@@ -227,9 +221,7 @@ export function bindPressMotion(root: ParentNode = document): void {
   root.addEventListener(
     "pointercancel",
     (ev) => {
-      const t = (ev.target as HTMLElement | null)?.closest?.(
-        "button.primary, button.sidebar-new, .sidebar-menu-btn, .session-item",
-      ) as HTMLElement | null;
+      const t = (ev.target as HTMLElement | null)?.closest?.(PRESS_SEL) as HTMLElement | null;
       if (!t) return;
       void animate(t, { scale: 1 }, { duration: 0.1 });
     },
