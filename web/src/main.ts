@@ -119,6 +119,8 @@ type AppState = {
   settingsAcctId: string;
   settingsAcctLabel: string;
   settingsBusy: boolean;
+  /** keyboard highlight in session list (j/k) */
+  listCursorId: string | null;
 };
 
 const state: AppState = {
@@ -175,6 +177,7 @@ const state: AppState = {
   settingsAcctId: "personal",
   settingsAcctLabel: "",
   settingsBusy: false,
+  listCursorId: null,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -980,13 +983,15 @@ function settingsAboutHTML(): string {
         <span>API: <strong>${state.statusOk ? "ok" : "error"}</strong></span>
       </div>
       <h3>Keyboard</h3>
+      <p class="form-hint" style="margin-bottom:0.75rem">Bare keys when focus is outside the terminal. <kbd>Alt</kbd>+key works while the terminal is focused. Press <kbd>?</kbd> for the full list.</p>
       <dl class="keys">
-        <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
-        <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
-        <div><dt><kbd>t</kbd></dt><dd>Workspace tools (quick)</dd></div>
-        <div><dt><kbd>/</kbd></dt><dd>Filter sessions</dd></div>
-        <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch tab</dd></div>
-        <div><dt><kbd>Esc</kbd></dt><dd>Close settings / modal</dd></div>
+        <div><dt><kbd>n</kbd> / <kbd>Alt</kbd><kbd>n</kbd></dt><dd>New session</dd></div>
+        <div><dt><kbd>,</kbd> / <kbd>Alt</kbd><kbd>,</kbd></dt><dd>Settings</dd></div>
+        <div><dt><kbd>j</kbd><kbd>k</kbd> · <kbd>Enter</kbd></dt><dd>Browse / open sessions</dd></div>
+        <div><dt><kbd>[</kbd><kbd>]</kbd> · <kbd>1</kbd>–<kbd>9</kbd></dt><dd>Cycle / jump tabs</dd></div>
+        <div><dt><kbd>x</kbd></dt><dd>Close tab (detach only)</dd></div>
+        <div><dt><kbd>s</kbd> · <kbd>e</kbd> · <kbd>Shift</kbd><kbd>d</kbd></dt><dd>Stop · Resume · Delete</dd></div>
+        <div><dt><kbd>Esc</kbd></dt><dd>Close overlay / settings</dd></div>
       </dl>
       <h3>Multi-account</h3>
       <p class="form-hint">Save CLI logins with <code>cursor-switch --platform grok save personal</code>, then pick the profile when starting a session (isolated = parallel).</p>
@@ -1961,29 +1966,70 @@ function toolsHTML(): string {
 
 function helpHTML(): string {
   return `
-    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="help-title" data-modal>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="help-title" data-modal>
       <div class="modal-head">
         <div>
           <div class="eyebrow">Reference</div>
-          <h2 id="help-title">Shortcuts</h2>
+          <h2 id="help-title">Keyboard shortcuts</h2>
         </div>
         <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
       </div>
-      <div class="modal-body">
-        <dl class="keys">
-          <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
-          <div><dt><kbd>t</kbd></dt><dd>Quick tools</dd></div>
-          <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
-          <div><dt><kbd>/</kbd></dt><dd>Focus session filter</dd></div>
-          <div><dt><kbd>f</kbd></dt><dd>Fit terminal</dd></div>
-          <div><dt><kbd>?</kbd></dt><dd>This help</dd></div>
-          <div><dt><kbd>Esc</kbd></dt><dd>Close panel / sidebar</dd></div>
-          <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch open tab</dd></div>
-          <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
-        </dl>
-        <p class="form-hint">Shortcuts are ignored while typing in inputs. Closing a tab never kills the agent.</p>
+      <div class="modal-body help-body">
+        <p class="form-hint help-lede">Bare keys work when focus is outside the terminal (sidebar, empty desk). Prefix with <kbd>Alt</kbd> to use the same action while the TTY is focused. Inputs still eat bare keys.</p>
+        <div class="help-grid">
+          <section class="help-section">
+            <h3>Navigate</h3>
+            <dl class="keys">
+              <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
+              <div><dt><kbd>/</kbd></dt><dd>Focus filter</dd></div>
+              <div><dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Move list cursor</dd></div>
+              <div><dt><kbd>Enter</kbd> / <kbd>o</kbd></dt><dd>Open cursor / active</dd></div>
+              <div><dt><kbd>[</kbd> / <kbd>]</kbd></dt><dd>Prev / next tab</dd></div>
+              <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump to tab</dd></div>
+              <div><dt><kbd>0</kbd></dt><dd>Last open tab</dd></div>
+              <div><dt><kbd>\`</kbd></dt><dd>Focus terminal</dd></div>
+              <div><dt><kbd>Esc</kbd></dt><dd>Close overlay → rail</dd></div>
+            </dl>
+          </section>
+          <section class="help-section">
+            <h3>Sessions</h3>
+            <dl class="keys">
+              <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
+              <div><dt><kbd>x</kbd></dt><dd>Close tab (detach only)</dd></div>
+              <div><dt><kbd>Shift</kbd><kbd>x</kbd></dt><dd>Close all tabs</dd></div>
+              <div><dt><kbd>s</kbd></dt><dd>Stop agent (confirm)</dd></div>
+              <div><dt><kbd>e</kbd></dt><dd>Resume agent</dd></div>
+              <div><dt><kbd>Shift</kbd><kbd>d</kbd></dt><dd>Delete session (confirm)</dd></div>
+              <div><dt><kbd>c</kbd></dt><dd>Clear stopped (confirm)</dd></div>
+              <div><dt><kbd>r</kbd></dt><dd>Refresh session list</dd></div>
+            </dl>
+          </section>
+          <section class="help-section">
+            <h3>Panels</h3>
+            <dl class="keys">
+              <div><dt><kbd>t</kbd></dt><dd>Quick tools</dd></div>
+              <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
+              <div><dt><kbd>g</kbd></dt><dd>Settings → GitHub</dd></div>
+              <div><dt><kbd>Shift</kbd><kbd>k</kbd></dt><dd>Settings → SSH keys</dd></div>
+              <div><dt><kbd>a</kbd></dt><dd>Settings → accounts</dd></div>
+              <div><dt><kbd>f</kbd></dt><dd>Fit terminal</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>This help</dd></div>
+            </dl>
+          </section>
+          <section class="help-section">
+            <h3>Over the TTY</h3>
+            <dl class="keys">
+              <div><dt><kbd>Alt</kbd>+ letter</dt><dd>Same as bare key</dd></div>
+              <div><dt><kbd>Alt</kbd><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab</dd></div>
+              <div><dt><kbd>Alt</kbd><kbd>[</kbd> <kbd>]</kbd></dt><dd>Cycle tabs</dd></div>
+              <div><dt><kbd>Alt</kbd><kbd>Enter</kbd></dt><dd>Focus terminal</dd></div>
+              <div><dt><kbd>Alt</kbd><kbd>Shift</kbd><kbd>1</kbd>–<kbd>5</kbd></dt><dd>Settings tabs</dd></div>
+            </dl>
+          </section>
+        </div>
+        <p class="form-hint">Closing a tab never kills the agent — use Stop or Delete for that.</p>
       </div>
     </div>`;
 }
@@ -2128,9 +2174,9 @@ function shellHTML(): string {
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
-          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">New</button>
-          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (,)">Settings</button>
-          <button type="button" class="ghost btn-sm" data-action="tools" title="Quick tools (t)">Tools</button>
+          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n / Alt+n)">New</button>
+          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (, / Alt+,)">Settings</button>
+          <button type="button" class="ghost btn-sm" data-action="tools" title="Quick tools (t / Alt+t)">Tools</button>
           <button type="button" class="ghost btn-sm" data-action="help" title="Shortcuts (?)">?</button>
         </div>
       </header>
@@ -2174,10 +2220,11 @@ function sessionListHTML(): string {
   return sorted
     .map((s) => {
       const active = s.id === state.activeId ? "active" : "";
+      const cursor = s.id === state.listCursorId ? "cursor" : "";
       const age = relativeTime(s.created_at);
       const ag = agentClass(s.agent);
       return `
-      <div class="session-item ${active} ${ag}" data-open="${esc(s.id)}">
+      <div class="session-item ${active} ${cursor} ${ag}" data-open="${esc(s.id)}">
         <div class="session-item-main">
           <div class="session-top">
             <span class="session-name">${esc(s.name || shortId(s.id))}</span>
@@ -2192,10 +2239,10 @@ function sessionListHTML(): string {
         <div class="session-actions">
           ${
             s.state === "running"
-              ? `<button type="button" class="ghost btn-sm act" data-kill="${esc(s.id)}" title="Stop agent">Stop</button>`
-              : `<button type="button" class="ghost btn-sm act resume-text" data-resume="${esc(s.id)}" title="Resume agent">Resume</button>`
+              ? `<button type="button" class="ghost btn-sm act" data-kill="${esc(s.id)}" title="Stop agent (s)">Stop</button>`
+              : `<button type="button" class="ghost btn-sm act resume-text" data-resume="${esc(s.id)}" title="Resume agent (e)">Resume</button>`
           }
-          <button type="button" class="ghost btn-sm act danger-text" data-delete="${esc(s.id)}" title="Delete session">Delete</button>
+          <button type="button" class="ghost btn-sm act danger-text" data-delete="${esc(s.id)}" title="Delete session (Shift+d)">Delete</button>
         </div>
       </div>`;
     })
@@ -2267,6 +2314,336 @@ function isTypingTarget(el: EventTarget | null): boolean {
   return el.isContentEditable;
 }
 
+/** xterm helper textarea — agent should get bare keys; Alt chords still work. */
+function isXtermTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  return (
+    el.classList.contains("xterm-helper-textarea") ||
+    !!el.closest(".xterm") ||
+    !!el.closest(".term-host")
+  );
+}
+
+const SETTINGS_TABS: SettingsTab[] = [
+  "accounts",
+  "github",
+  "ssh",
+  "workspace",
+  "about",
+];
+
+function focusFilter(): void {
+  state.sidebarOpen = true;
+  paintChrome();
+  window.queueMicrotask(() => {
+    (document.getElementById("filter") as HTMLInputElement | null)?.focus();
+  });
+}
+
+function focusTerminal(): void {
+  if (!state.activeId) {
+    toast("No session open", "info", 1600);
+    return;
+  }
+  fit();
+  term?.focus();
+}
+
+function cycleTab(delta: number): void {
+  const tabs = state.openTabs;
+  if (!tabs.length) {
+    toast("No open tabs", "info", 1400);
+    return;
+  }
+  const cur = tabs.findIndex((t) => t.id === state.activeId);
+  const idx =
+    cur < 0
+      ? delta > 0
+        ? 0
+        : tabs.length - 1
+      : (cur + delta + tabs.length) % tabs.length;
+  void activateTab(tabs[idx].id);
+}
+
+function jumpTab(n: number): void {
+  // 1–9 → index 0–8; 0 → last
+  if (n === 0) {
+    const last = state.openTabs[state.openTabs.length - 1];
+    if (last) void activateTab(last.id);
+    return;
+  }
+  const tab = state.openTabs[n - 1];
+  if (tab) void activateTab(tab.id);
+}
+
+function closeAllTabs(): void {
+  if (!state.openTabs.length) return;
+  detachPty();
+  disposeTerminal();
+  attachedId = null;
+  state.openTabs = [];
+  state.activeId = null;
+  state.conn = "idle";
+  paintChrome();
+  ensureTermArea();
+  toast("Closed all tabs (agents still running)", "ok", 2200);
+}
+
+function targetSessionId(): string | null {
+  return state.listCursorId || state.activeId;
+}
+
+function moveListCursor(delta: number): void {
+  const list = filteredSessionsSorted();
+  if (!list.length) {
+    state.listCursorId = null;
+    paintChrome();
+    return;
+  }
+  state.sidebarOpen = true;
+  let idx = list.findIndex((s) => s.id === state.listCursorId);
+  if (idx < 0 && state.activeId) {
+    idx = list.findIndex((s) => s.id === state.activeId);
+  }
+  if (idx < 0) idx = delta > 0 ? -1 : 0;
+  idx = Math.max(0, Math.min(list.length - 1, idx + delta));
+  state.listCursorId = list[idx].id;
+  paintChrome();
+  const el = document.querySelector(
+    `.session-item[data-open="${CSS.escape(state.listCursorId)}"]`,
+  );
+  el?.scrollIntoView({ block: "nearest" });
+}
+
+function filteredSessionsSorted(): Session[] {
+  const list = filteredSessions();
+  return [...list].sort((a, b) => {
+    if (a.state === "running" && b.state !== "running") return -1;
+    if (b.state === "running" && a.state !== "running") return 1;
+    const ta = a.created_at ? Date.parse(a.created_at) : 0;
+    const tb = b.created_at ? Date.parse(b.created_at) : 0;
+    return tb - ta;
+  });
+}
+
+function openCursorOrActive(): void {
+  const id = targetSessionId();
+  if (!id) {
+    toast("No session selected — use j/k or open a tab", "info", 2200);
+    return;
+  }
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  if (s.state === "running") {
+    openTab(s);
+    return;
+  }
+  toast("Not running — press e to resume", "info", 2200);
+}
+
+async function refreshSessionsManual(): Promise<void> {
+  toast("Refreshing…", "info", 1200);
+  await refreshSessions();
+  toast("Sessions refreshed", "ok", 1400);
+}
+
+function openSettingsTabByIndex(i: number): void {
+  const tab = SETTINGS_TABS[i];
+  if (tab) openSettings(tab);
+}
+
+/**
+ * Shared action map. `fromTerm` means Alt-chord over the TTY.
+ * Returns true if handled.
+ */
+function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
+  const key = ev.key;
+  const lower = key.length === 1 ? key.toLowerCase() : key;
+  const shift = ev.shiftKey;
+
+  // Modal open: don't steal bare keys (form focus can be on buttons). Alt still works.
+  if ((state.panel || state.drawer) && !ev.altKey) {
+    if (lower === "?" || (lower === "/" && shift)) {
+      openPanel("help");
+      return true;
+    }
+    return false;
+  }
+
+  // Settings: Alt+Shift+1–5 always; bare 1–5 while Settings is open
+  if (key >= "1" && key <= "5") {
+    if ((ev.altKey && shift) || (state.settingsOpen && !ev.altKey && !shift)) {
+      openSettingsTabByIndex(Number(key) - 1);
+      return true;
+    }
+  }
+
+  // While Settings is open, prefer nav shortcuts; skip session kill/delete/etc on bare keys
+  if (state.settingsOpen && !ev.altKey) {
+    if (lower === "a" || lower === "," || lower === "<") {
+      openSettings("accounts");
+      return true;
+    }
+    if (lower === "g") {
+      openSettings("github");
+      return true;
+    }
+    if (lower === "k") {
+      openSettings("ssh");
+      return true;
+    }
+    if (lower === "t") {
+      openSettings("workspace");
+      return true;
+    }
+    if (lower === "?" || (lower === "/" && shift)) {
+      openPanel("help");
+      return true;
+    }
+    if (lower === "r") {
+      void loadSettingsData().then(() => paintSettings());
+      return true;
+    }
+    // block session ops while reading settings
+    if (
+      ["s", "e", "d", "c", "x", "j", "n", "o", "w", "f", "/", "`"].includes(lower) ||
+      key === "Enter" ||
+      key.startsWith("Arrow")
+    ) {
+      return false;
+    }
+  }
+
+  // Digits: open tabs (0 = last)
+  if (key >= "0" && key <= "9" && !shift) {
+    jumpTab(Number(key));
+    return true;
+  }
+
+  switch (key) {
+    case "ArrowDown":
+      moveListCursor(1);
+      return true;
+    case "ArrowUp":
+      moveListCursor(-1);
+      return true;
+    case "ArrowLeft":
+      cycleTab(-1);
+      return true;
+    case "ArrowRight":
+      cycleTab(1);
+      return true;
+    case "Enter":
+      if (ev.altKey) {
+        focusTerminal();
+        return true;
+      }
+      openCursorOrActive();
+      return true;
+    default:
+      break;
+  }
+
+  switch (lower) {
+    case "n":
+      openPanel("new");
+      return true;
+    case "t":
+      openPanel("tools");
+      return true;
+    case ",":
+    case "<":
+      openSettings("accounts");
+      return true;
+    case "a":
+      openSettings("accounts");
+      return true;
+    case "g":
+      openSettings("github");
+      return true;
+    case "k":
+      if (shift) {
+        openSettings("ssh");
+        return true;
+      }
+      moveListCursor(-1);
+      return true;
+    case "j":
+      moveListCursor(1);
+      return true;
+    case "?":
+      openPanel("help");
+      return true;
+    case "/":
+      if (shift) {
+        openPanel("help");
+        return true;
+      }
+      focusFilter();
+      return true;
+    case "f":
+      if (state.activeId) fit();
+      else toast("No terminal to fit", "info", 1400);
+      return true;
+    case "w":
+      state.sidebarOpen = !state.sidebarOpen;
+      paintChrome();
+      return true;
+    case "o":
+      openCursorOrActive();
+      return true;
+    case "[":
+      cycleTab(-1);
+      return true;
+    case "]":
+      cycleTab(1);
+      return true;
+    case "x":
+      if (shift) {
+        closeAllTabs();
+        return true;
+      }
+      if (state.activeId) {
+        closeTab(state.activeId);
+        toast("Tab closed (agent still running)", "ok", 1600);
+      } else toast("No tab to close", "info", 1400);
+      return true;
+    case "s":
+      {
+        const id = targetSessionId();
+        if (id) void onKillSession(id);
+        else toast("No session to stop", "info", 1400);
+      }
+      return true;
+    case "e":
+      {
+        const id = targetSessionId();
+        if (id) void onResumeSession(id);
+        else toast("No session to resume", "info", 1400);
+      }
+      return true;
+    case "d":
+      if (shift) {
+        const id = targetSessionId();
+        if (id) void onDeleteSession(id);
+        else toast("No session to delete", "info", 1400);
+        return true;
+      }
+      return false;
+    case "c":
+      void onPrune();
+      return true;
+    case "r":
+      void refreshSessionsManual();
+      return true;
+    case "`":
+      focusTerminal();
+      return true;
+    default:
+      return false;
+  }
+}
+
 function bindKeys(): void {
   if (keysBound) return;
   keysBound = true;
@@ -2294,61 +2671,40 @@ function bindKeys(): void {
         state.sidebarOpen = false;
         paintChrome();
         ev.preventDefault();
+        return;
+      }
+      // blur terminal → bare shortcuts work without Alt
+      if (isXtermTarget(ev.target)) {
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        toast("Shortcuts armed — press ? for help", "info", 1800);
+        ev.preventDefault();
       }
       return;
     }
 
-    if (isTypingTarget(ev.target)) return;
-    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const typing = isTypingTarget(ev.target);
+    const inTerm = isXtermTarget(ev.target);
 
-    const k = ev.key;
-    if (k === "n" || k === "N") {
-      ev.preventDefault();
-      openPanel("new");
-      return;
-    }
-    if (k === "t" || k === "T") {
-      ev.preventDefault();
-      openPanel("tools");
-      return;
-    }
-    if (k === "," || k === "<") {
-      ev.preventDefault();
-      openSettings("accounts");
-      return;
-    }
-    if (k === "?" || (k === "/" && ev.shiftKey)) {
-      ev.preventDefault();
-      openPanel("help");
-      return;
-    }
-    if (k === "/") {
-      ev.preventDefault();
-      state.sidebarOpen = true;
-      paintChrome();
-      (document.getElementById("filter") as HTMLInputElement | null)?.focus();
-      return;
-    }
-    if (k === "f" || k === "F") {
-      if (state.activeId) {
+    // Form fields: only Escape (above). Don't steal typing.
+    if (typing && !inTerm) return;
+
+    // Ctrl/Cmd reserved for browser + terminal (copy etc.)
+    if (ev.metaKey || ev.ctrlKey) return;
+
+    // Over TTY: only Alt-chords (bare keys belong to the agent)
+    if (inTerm) {
+      if (!ev.altKey) return;
+      if (handleShortcut(ev, true)) {
         ev.preventDefault();
-        fit();
+        ev.stopPropagation();
       }
       return;
     }
-    if (k === "w" || k === "W") {
+
+    // Outside TTY: Alt optional; bare keys work
+    // When Alt is held, still handle (same map)
+    if (handleShortcut(ev, false)) {
       ev.preventDefault();
-      state.sidebarOpen = !state.sidebarOpen;
-      paintChrome();
-      return;
-    }
-    if (k >= "1" && k <= "9") {
-      const idx = Number(k) - 1;
-      const tab = state.openTabs[idx];
-      if (tab) {
-        ev.preventDefault();
-        void activateTab(tab.id);
-      }
     }
   });
 }

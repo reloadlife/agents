@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-14
+
+### Added
+
+- **Keyboard workflow shortcuts** for the Web UI:
+  - Session list: `j`/`k`, arrows, `Enter`/`o` open, `/` filter
+  - Tabs: `[`/`]`, `1`–`9`, `0` last, `x` close, `Shift+x` close all
+  - Lifecycle: `s` stop, `e` resume, `Shift+d` delete, `c` prune, `r` refresh
+  - Panels: `n` new, `t` tools, `,`/`a` settings, `g` GitHub, `Shift+k` SSH, `?` help
+  - **Alt+** chords work while the terminal is focused; Esc blurs TTY to arm bare keys
+  - Settings: bare `1`–`5` or `Alt+Shift+1`–`5` switch settings tabs
+
 ## [0.4.0] — 2026-07-14
 
 ### Changed
