@@ -5421,3 +5421,103 @@ a.settings-nav-item.settings-nav-item,
     align-self: flex-start;
   }
 }
+
+/* ── markup polish from sidebar/topbar agents ───────────────── */
+.sb-group {
+  flex-shrink: 0;
+  padding: 0 0.125rem;
+}
+.sb-group + .sb-group {
+  margin-top: 0.15rem;
+}
+.sb-group-head {
+  padding: 0.15rem 0.65rem 0.2rem;
+}
+.sb-group-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--sidebar-foreground) / 0.55);
+}
+
+.sb-tool[data-active="true"],
+.sb-cta[data-active="true"],
+a.sb-tool[data-active="true"] {
+  background: hsl(var(--sidebar-accent));
+  color: hsl(var(--sidebar-accent-foreground));
+  font-weight: 560;
+}
+
+.session-meta .session-agent {
+  color: hsl(var(--sidebar-foreground) / 0.75);
+}
+.session-meta .session-cwd {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: hsl(var(--muted-foreground));
+}
+.session-meta .session-branch {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--mono);
+  font-size: 0.65rem;
+}
+.session-meta .session-sep {
+  opacity: 0.45;
+  margin: 0 0.05rem;
+}
+
+.breadcrumb .crumb-sep,
+.breadcrumb .sep-chev,
+.breadcrumb svg.menu-ico {
+  opacity: 0.45;
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+}
+
+.term-empty-card {
+  max-width: 26rem;
+  padding: 1.75rem 1.5rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-sm, 0 1px 2px hsl(0 0% 0% / 0.2));
+  text-align: center;
+}
+.term-empty-mark {
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0 auto 0.85rem;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.term-empty-title {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.term-empty-desc {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.5;
+}
+.term-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-bottom: 0.85rem;
+}
+.term-empty-hint {
+  margin: 0;
+  font-size: 0.7rem;
+  color: hsl(var(--muted-foreground));
+}

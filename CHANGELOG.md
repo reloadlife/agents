@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-07-14
+
+### Changed
+
+- **Full shadcn/ui UX pass** (6 parallel UI agents)
+  - Zinc design tokens, button/input/popover primitives
+  - Sidebar-08 style rail: Create / Workspace groups + dense sessions
+  - Topbar breadcrumbs, session tabs, empty-desk card
+  - Vaul sheets: dialog chrome, descriptions, sticky form actions
+  - Settings page: nav rail + account/GitHub/SSH cards
+  - Palette, context menu, toast, login overlays
+
 ## [0.7.9] — 2026-07-14
 
 ### Added
