@@ -5,6 +5,21 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
 import {
+  cwdFromProjectId,
+  currentRoute,
+  parsePath,
+  projectIdFromCwd,
+  serializeRoute,
+  sessionPath,
+  type ProfileTab,
+  type Route,
+} from "./router";
+
+function parsePathSafe(pathname: string): Route {
+  return parsePath(pathname);
+}
+
+import {
   clearToken,
   cloneWorkspace,
   consumeAuthFromURL,
@@ -35,11 +50,14 @@ import {
   ghSetupGit,
   ghSwitch,
   killSession,
+  addAgentAccount,
   listAgentAccounts,
+  listAllAgentAccounts,
   listAgents,
   listSessions,
   listSSHKeys,
   listWorkspaces,
+  removeAgentAccount,
   saveAgentAccount,
   switchAgentAccount,
   formatPlaywrightStatus,
@@ -86,6 +104,10 @@ async function ensureVaulHost(): Promise<void> {
   const { mountVaulHost } = await import("./vaul-host");
   mountVaulHost();
   vaulReady = true;
+  // Wait for React to commit + subscribeDrawer before first openAppDrawer emit.
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 type OpenTab = {
@@ -96,8 +118,8 @@ type OpenTab = {
   state: string;
 };
 
-type Panel = null | "new" | "tools" | "help";
-type SettingsTab = "accounts" | "github" | "ssh" | "workspace" | "about";
+type Panel = null | "new" | "new-project" | "tools" | "help";
+type SettingsTab = ProfileTab;
 type ConnState = "idle" | "connecting" | "live" | "reconnecting" | "error";
 type ToastKind = "info" | "ok" | "err";
 
@@ -156,6 +178,8 @@ type AppState = {
   settingsTab: SettingsTab;
   settingsPlatform: string;
   settingsPlatforms: AgentPlatformStatus[];
+  settingsAccountsBin: string;
+  settingsAccountsError: string;
   settingsAcctId: string;
   settingsAcctLabel: string;
   settingsBusy: boolean;
@@ -219,6 +243,8 @@ const state: AppState = {
   settingsTab: "accounts",
   settingsPlatform: "grok",
   settingsPlatforms: [],
+  settingsAccountsBin: "",
+  settingsAccountsError: "",
   settingsAcctId: "personal",
   settingsAcctLabel: "",
   settingsBusy: false,
@@ -243,8 +269,298 @@ let uiDelegated = false;
 let shellEntranceDone = false;
 let lastSessionListSig = "";
 let pressMotionBound = false;
+/** True while applying a route → UI actions must not push history again. */
+let applyingRoute = false;
+let routerBound = false;
 
 const app = document.getElementById("app")!;
+
+// ── Client routing ──────────────────────────────────────────────────────────
+
+function routeFromUI(): Route {
+  if (state.settingsOpen) {
+    return { name: "profile", tab: state.settingsTab };
+  }
+  if (state.panel === "tools") {
+    if (state.activeId) {
+      const s =
+        state.sessions.find((x) => x.id === state.activeId) ||
+        state.openTabs.find((x) => x.id === state.activeId);
+      if (s) {
+        return {
+          name: "session",
+          projectId: projectIdFromCwd(s.cwd),
+          sessionId: s.id,
+          tools: true,
+        };
+      }
+    }
+    return { name: "tools" };
+  }
+  if (state.panel === "help") return { name: "help" };
+  if (state.panel === "new-project") return { name: "new-project" };
+  if (state.panel === "new") return { name: "new" };
+  if (state.activeId) {
+    const s =
+      state.sessions.find((x) => x.id === state.activeId) ||
+      state.openTabs.find((x) => x.id === state.activeId);
+    if (s) {
+      return {
+        name: "session",
+        projectId: projectIdFromCwd(s.cwd),
+        sessionId: s.id,
+      };
+    }
+  }
+  return { name: "desk" };
+}
+
+/**
+ * Push/replace the URL and apply the route to UI.
+ * Pass `{ apply: false }` when the UI was already updated (openPanel etc.).
+ */
+function navigate(
+  route: Route,
+  opts?: { replace?: boolean; apply?: boolean },
+): void {
+  const path = serializeRoute(route);
+  const cur = window.location.pathname || "/";
+  const samePath = cur === path || (path === "/" && (cur === "" || cur === "/"));
+  if (!samePath) {
+    if (opts?.replace) {
+      history.replaceState(route, "", path);
+    } else {
+      history.pushState(route, "", path);
+    }
+  } else if (opts?.replace) {
+    history.replaceState(route, "", path);
+  }
+  if (opts?.apply === false || applyingRoute) return;
+  void applyRoute(route, { fromHistory: false });
+}
+
+/** Keep URL in sync with current UI without re-applying. */
+function syncUrlFromUI(opts?: { replace?: boolean }): void {
+  if (applyingRoute) return;
+  const route = routeFromUI();
+  const path = serializeRoute(route);
+  const cur = window.location.pathname || "/";
+  if (cur === path || (path === "/" && (cur === "" || cur === "/"))) return;
+  if (opts?.replace) history.replaceState(route, "", path);
+  else history.pushState(route, "", path);
+}
+
+async function applyRoute(
+  route: Route,
+  opts?: { fromHistory?: boolean },
+): Promise<void> {
+  if (!state.token || !state.shellMounted) {
+    // Remember path; after login bootstrap will re-apply currentRoute()
+    return;
+  }
+  if (applyingRoute) return;
+  applyingRoute = true;
+  try {
+    switch (route.name) {
+      case "new":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "new") openPanelOnly("new");
+        break;
+      case "new-project":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "new-project") openPanelOnly("new-project");
+        break;
+      case "desk":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel) await closePanelOnly();
+        // keep active session if any — desk is "no modal"
+        break;
+      case "tools":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "tools") openPanelOnly("tools");
+        break;
+      case "help":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "help") openPanelOnly("help");
+        break;
+      case "profile":
+        if (state.panel) await closePanelOnly();
+        if (!state.settingsOpen || state.settingsTab !== route.tab) {
+          openSettingsOnly(route.tab);
+        }
+        break;
+      case "session": {
+        if (state.settingsOpen) await closeSettingsOnly();
+        const id = route.sessionId;
+        let sess = state.sessions.find((s) => s.id === id);
+        if (!sess) {
+          // Fresh list — session might exist after resume/create race
+          try {
+            const res = await listSessions();
+            state.sessions = res.sessions ?? [];
+            sess = state.sessions.find((s) => s.id === id);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (!sess) {
+          toast(`Session ${id.slice(0, 12)}… not found`, "err");
+          navigate({ name: "desk" }, { replace: true });
+          break;
+        }
+        // Align form cwd with project from URL when possible
+        const fromUrl = cwdFromProjectId(route.projectId);
+        if (fromUrl && state.workspaces.includes(fromUrl)) {
+          state.formCwd = fromUrl;
+        } else if (sess.cwd) {
+          state.formCwd = sess.cwd;
+        }
+        if (sess.state !== "running") {
+          // Opening a stopped session via deep link → try resume
+          try {
+            sess = await resumeSession(id);
+            await refreshSessions();
+            sess = state.sessions.find((s) => s.id === id) || sess;
+          } catch (e) {
+            toast((e as Error).message || "resume failed", "err");
+          }
+        }
+        openTabOnly(sess);
+        if (route.tools) {
+          if (state.panel !== "tools") openPanelOnly("tools");
+        } else if (state.panel) {
+          await closePanelOnly();
+        }
+        break;
+      }
+    }
+  } finally {
+    applyingRoute = false;
+  }
+  // Ensure URL matches (replace if we redirected)
+  if (opts?.fromHistory) {
+    const want = serializeRoute(route);
+    if ((window.location.pathname || "/") !== want) {
+      history.replaceState(route, "", want);
+    }
+  }
+}
+
+function ensureRouterBound(): void {
+  if (routerBound) return;
+  routerBound = true;
+  window.addEventListener("popstate", () => {
+    const route = currentRoute();
+    void applyRoute(route, { fromHistory: true });
+  });
+}
+
+/** UI-only panel open (no history). */
+function openPanelOnly(p: Panel): void {
+  if (!p) return;
+  state.panel = p;
+  if (p === "new") state.createError = "";
+  if (p === "tools" && state.settingsOpen) {
+    state.settingsOpen = false;
+    document.getElementById("settings-root")?.remove();
+  }
+  if (p === "tools") {
+    const tab = state.openTabs.find((t) => t.id === state.activeId);
+    if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
+      state.formCwd = tab.cwd;
+    }
+  }
+  window.queueMicrotask(async () => {
+    if (state.panel !== p) return;
+    if (p === "new") {
+      await refreshAgentAccountsForForm(state.formAgent);
+    }
+    try {
+      await paintPanel({ animateIn: true });
+    } catch (e) {
+      console.error("paintPanel failed", e);
+      toast((e as Error).message || "failed to open panel", "err", 5000);
+      return;
+    }
+    if (p === "new") {
+      window.requestAnimationFrame(() => {
+        const name = document.getElementById("sess-name") as HTMLInputElement | null;
+        const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
+        (name ?? agent)?.focus();
+      });
+    }
+    if (p === "new-project") {
+      window.requestAnimationFrame(() => {
+        const url = document.getElementById("proj-git-url") as HTMLInputElement | null;
+        url?.focus();
+      });
+    }
+    if (p === "tools") void refreshToolsStatus();
+  });
+}
+
+async function closePanelOnly(): Promise<void> {
+  if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+  state.panel = null;
+  state.createError = "";
+  document.getElementById("panel-overlay")?.remove();
+}
+
+function openSettingsOnly(tab?: SettingsTab): void {
+  if (tab) state.settingsTab = tab;
+  state.settingsOpen = true;
+  state.sidebarOpen = false;
+  if (state.panel) {
+    state.panel = null;
+    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+    document.getElementById("panel-overlay")?.remove();
+  }
+  void loadSettingsData().then(() => paintSettings({ animateIn: true }));
+}
+
+async function closeSettingsOnly(): Promise<void> {
+  const root = document.getElementById("settings-root");
+  if (root) {
+    try {
+      await animateSettingsOut(root);
+    } catch {
+      /* ignore */
+    }
+  }
+  state.settingsOpen = false;
+  document.getElementById("settings-root")?.remove();
+}
+
+function openTabOnly(s: Session): void {
+  if (!state.openTabs.find((t) => t.id === s.id)) {
+    state.openTabs.push({
+      id: s.id,
+      title: tabTitle(s),
+      agent: s.agent,
+      cwd: s.cwd,
+      state: s.state,
+    });
+  }
+  state.sidebarOpen = false;
+  void activateTabOnly(s.id);
+}
+
+async function activateTabOnly(id: string): Promise<void> {
+  if (state.activeId === id && attachedId === id && activePty) {
+    fit();
+    term?.focus();
+    return;
+  }
+  const prev = state.activeId;
+  state.activeId = id;
+  if (prev !== id) {
+    detachPty();
+    attachedId = null;
+  }
+  paintChrome();
+  ensureTermArea();
+  await attachActive();
+}
 
 function applyTheme(): void {
   document.documentElement.dataset.theme = state.theme;
@@ -270,18 +586,45 @@ function closeCommandPalette(): void {
   document.getElementById("command-palette")?.remove();
 }
 
-type PaletteItem = { id: string; label: string; hint?: string; run: () => void };
+type PaletteItem = {
+  id: string;
+  label: string;
+  hint?: string;
+  group: string;
+  run: () => void;
+};
 
 function paletteItems(): PaletteItem[] {
   const q = state.paletteQuery.trim().toLowerCase();
   const items: PaletteItem[] = [
-    { id: "new", label: "New session", hint: "n", run: () => openPanel("new") },
-    { id: "tools", label: "Quick tools", hint: "t", run: () => openPanel("tools") },
-    { id: "settings", label: "Settings", hint: ",", run: () => openSettings("accounts") },
-    { id: "help", label: "Shortcuts", hint: "?", run: () => openPanel("help") },
+    { id: "new", label: "New session", hint: "n", group: "Navigate", run: () => openPanel("new") },
+    {
+      id: "new-project",
+      label: "New project (clone repo)",
+      hint: "⇧n",
+      group: "Navigate",
+      run: () => openPanel("new-project"),
+    },
+    { id: "tools", label: "Quick tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
+    {
+      id: "settings",
+      label: "Settings",
+      hint: ",",
+      group: "Navigate",
+      run: () => openSettings("accounts"),
+    },
+    {
+      id: "accounts",
+      label: "Agent accounts",
+      hint: "a",
+      group: "Navigate",
+      run: () => openSettings("accounts"),
+    },
+    { id: "help", label: "Shortcuts", hint: "?", group: "Navigate", run: () => openPanel("help") },
     {
       id: "ensure",
       label: "Ensure context (active cwd)",
+      group: "Workspace",
       run: () => {
         void onCtxEnsure();
       },
@@ -289,6 +632,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "dashboard",
       label: "Workspace dashboard",
+      group: "Workspace",
       run: () => {
         void showDashboardDrawer();
       },
@@ -296,6 +640,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "templates",
       label: "Start from template…",
+      group: "Workspace",
       run: () => {
         void showTemplatesDrawer();
       },
@@ -303,6 +648,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "history",
       label: "Search history…",
+      group: "Workspace",
       run: () => {
         void showHistorySearch();
       },
@@ -310,6 +656,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "recordings",
       label: "List recordings",
+      group: "Workspace",
       run: () => {
         void showRecordingsDrawer();
       },
@@ -317,6 +664,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "backup",
       label: "Create backup",
+      group: "Host",
       run: () => {
         void createBackup()
           .then((o) => toast(`Backup: ${o.path || "ok"}`, "ok", 5000))
@@ -326,6 +674,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "skills",
       label: "Install skills into cwd",
+      group: "Host",
       run: () => {
         void installSkills(toolsCwd())
           .then((o) => toast(`Skills: ${o.path || "ok"}`, "ok"))
@@ -335,21 +684,67 @@ function paletteItems(): PaletteItem[] {
     {
       id: "notify",
       label: "Test webhook notify",
+      group: "Host",
       run: () => {
         void notifyTest()
           .then(() => toast("Notify test sent", "ok"))
           .catch((e) => toast((e as Error).message, "err"));
       },
     },
-    { id: "theme", label: "Toggle light/dark theme", run: () => toggleTheme() },
-    { id: "refresh", label: "Refresh sessions", run: () => void refreshSessionsManual() },
+    {
+      id: "theme",
+      label: "Toggle light/dark theme",
+      group: "Appearance",
+      run: () => toggleTheme(),
+    },
+    {
+      id: "refresh",
+      label: "Refresh sessions",
+      group: "Sessions",
+      run: () => void refreshSessionsManual(),
+    },
+    {
+      id: "next-tab",
+      label: "Next tab",
+      hint: "l / ]",
+      group: "Sessions",
+      run: () => cycleTab(1),
+    },
+    {
+      id: "prev-tab",
+      label: "Previous tab",
+      hint: "h / [",
+      group: "Sessions",
+      run: () => cycleTab(-1),
+    },
+    {
+      id: "next-session",
+      label: "Next session (open)",
+      hint: "⇧j",
+      group: "Sessions",
+      run: () => stepSessionAndOpen(1),
+    },
+    {
+      id: "prev-session",
+      label: "Previous session (open)",
+      hint: "⇧k",
+      group: "Sessions",
+      run: () => stepSessionAndOpen(-1),
+    },
+    {
+      id: "copy-id",
+      label: "Copy session id",
+      hint: "y",
+      group: "Sessions",
+      run: () => void copyTargetSessionId(),
+    },
   ];
-  // templates as quick starts
   for (const t of state.templates.slice(0, 12)) {
     items.push({
       id: `tpl-${t.id}`,
       label: `Template: ${t.name}`,
       hint: t.agent,
+      group: "Templates",
       run: () => {
         void startTemplate(t.id)
           .then((sess) => {
@@ -367,6 +762,7 @@ function paletteItems(): PaletteItem[] {
   return items.filter(
     (i) =>
       i.label.toLowerCase().includes(q) ||
+      i.group.toLowerCase().includes(q) ||
       (i.hint && i.hint.toLowerCase().includes(q)) ||
       i.id.includes(q),
   );
@@ -388,24 +784,27 @@ function paintCommandPalette(): void {
     });
   }
   const items = paletteItems();
-  root.innerHTML = `
-    <div class="palette-card" role="dialog" aria-label="Command palette">
-      <input id="palette-input" class="palette-input" placeholder="Type a command…" value="${esc(state.paletteQuery)}" autocomplete="off" />
-      <div class="palette-list">
-        ${
-          items.length
-            ? items
-                .map(
-                  (it, i) => `
+  let lastGroup = "";
+  const listHtml = items.length
+    ? items
+        .map((it, i) => {
+          const head =
+            it.group !== lastGroup
+              ? ((lastGroup = it.group),
+                `<div class="palette-group">${esc(it.group)}</div>`)
+              : "";
+          return `${head}
           <button type="button" class="palette-item ${i === 0 ? "active" : ""}" data-palette-id="${esc(it.id)}">
             <span>${esc(it.label)}</span>
             ${it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ""}
-          </button>`,
-                )
-                .join("")
-            : `<div class="palette-empty">No matches</div>`
-        }
-      </div>
+          </button>`;
+        })
+        .join("")
+    : `<div class="palette-empty">No matches</div>`;
+  root.innerHTML = `
+    <div class="palette-card" role="dialog" aria-label="Command palette">
+      <input id="palette-input" class="palette-input" placeholder="Type a command…" value="${esc(state.paletteQuery)}" autocomplete="off" />
+      <div class="palette-list">${listHtml}</div>
       <div class="palette-foot"><span>↑↓</span> move · <span>↵</span> run · <span>esc</span> close</div>
     </div>`;
   const input = document.getElementById("palette-input") as HTMLInputElement | null;
@@ -629,6 +1028,7 @@ async function bootstrapAuthed(): Promise<void> {
     state.statusOk = true;
     void refreshToolsStatus();
     startPolling();
+    ensureRouterBound();
   } catch (e) {
     const err = e as Error & { status?: number };
     if (err.status === 401) {
@@ -645,6 +1045,13 @@ async function bootstrapAuthed(): Promise<void> {
   } finally {
     state.busy = false;
     paint();
+    // Deep-link / default route after shell is mounted
+    if (state.token && state.shellMounted) {
+      const route = currentRoute();
+      // Normalize URL (e.g. /settings → /profile) without stacking history
+      history.replaceState(route, "", serializeRoute(route));
+      void applyRoute(route, { fromHistory: true });
+    }
   }
 }
 
@@ -719,34 +1126,18 @@ function logout(): void {
 }
 
 function openTab(s: Session): void {
-  if (!state.openTabs.find((t) => t.id === s.id)) {
-    state.openTabs.push({
-      id: s.id,
-      title: tabTitle(s),
-      agent: s.agent,
-      cwd: s.cwd,
-      state: s.state,
-    });
-  }
-  state.sidebarOpen = false;
-  void activateTab(s.id);
+  openTabOnly(s);
+  syncUrlFromUI();
 }
 
 async function activateTab(id: string): Promise<void> {
-  if (state.activeId === id && attachedId === id && activePty) {
-    fit();
-    term?.focus();
-    return;
+  await activateTabOnly(id);
+  // Close overlays when switching tabs via UI (keep tools if on tools route for same session)
+  if (state.panel === "new" || state.panel === "help") {
+    await closePanelOnly();
   }
-  const prev = state.activeId;
-  state.activeId = id;
-  if (prev !== id) {
-    detachPty();
-    attachedId = null;
-  }
-  paintChrome();
-  ensureTermArea();
-  await attachActive();
+  if (state.settingsOpen) await closeSettingsOnly();
+  syncUrlFromUI();
 }
 
 function closeTab(id: string): void {
@@ -763,6 +1154,7 @@ function closeTab(id: string): void {
       disposeTerminal();
       ensureTermArea();
     }
+    syncUrlFromUI({ replace: true });
   } else {
     paintChrome();
   }
@@ -829,71 +1221,245 @@ function ensureTerminal(container: HTMLElement): void {
   term.loadAddon(new WebLinksAddon());
   term.open(container);
   term.onData((data) => {
-    activePty?.write(data);
+    // Always binary frames so path-looking text never collides with JSON ctrl msgs.
+    activePty?.write(
+      typeof data === "string" ? new TextEncoder().encode(data) : data,
+    );
   });
-  bindTerminalImagePaste(container);
+  ensureImagePasteBound();
   resizeObserver = new ResizeObserver(() => fit());
   resizeObserver.observe(container);
 }
 
-/** Paste/drop images → save under workspace .agents/pastes/ → type path into PTY. */
-function bindTerminalImagePaste(container: HTMLElement): void {
-  const handleFiles = async (files: FileList | File[] | null | undefined) => {
-    if (!files || !state.activeId) return;
-    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    if (!list.length) return;
-    for (const file of list) {
-      await pasteImageFile(file);
-    }
+/** Document-level once — survives term-host innerHTML rebuilds. */
+let imagePasteBound = false;
+
+function ensureImagePasteBound(): void {
+  if (imagePasteBound) return;
+  imagePasteBound = true;
+
+  // Capture phase so we beat xterm's text-only paste handler.
+  document.addEventListener("paste", onDocumentImagePaste, true);
+  document.addEventListener("dragover", onDocumentImageDragOver, true);
+  document.addEventListener("dragleave", onDocumentImageDragLeave, true);
+  document.addEventListener("drop", onDocumentImageDrop, true);
+}
+
+function termPasteTarget(ev: Event): boolean {
+  const t = ev.target;
+  if (!(t instanceof Node)) return false;
+  if (term?.element?.contains(t)) return true;
+  const host = document.getElementById("term-host");
+  if (host?.contains(t)) return true;
+  // Focused xterm helper textarea (sometimes event target is body on some browsers)
+  const ae = document.activeElement;
+  if (ae && host?.contains(ae)) return true;
+  if (ae && term?.element?.contains(ae)) return true;
+  return false;
+}
+
+function isImageFile(f: File): boolean {
+  if (f.type && f.type.startsWith("image/")) return true;
+  // Some OSes hand over clipboard images with empty MIME
+  return /\.(png|jpe?g|gif|webp|bmp|svg|heic|avif|tiff?)$/i.test(f.name || "");
+}
+
+/** Pull image files from a paste/drop DataTransfer (items + files + html data URLs). */
+function extractImagesFromDataTransfer(dt: DataTransfer | null | undefined): File[] {
+  if (!dt) return [];
+  const out: File[] = [];
+  const seen = new Set<string>();
+
+  const push = (f: File | null | undefined) => {
+    if (!f || !isImageFile(f)) return;
+    const key = `${f.type}|${f.size}|${f.name}|${f.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(f);
   };
 
-  // Capture paste on the terminal (xterm textarea + container)
-  const onPaste = (ev: ClipboardEvent) => {
-    const items = ev.clipboardData?.items;
-    if (!items?.length) return;
-    const images: File[] = [];
-    for (const item of Array.from(items)) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        const f = item.getAsFile();
-        if (f) images.push(f);
+  if (dt.files?.length) {
+    for (const f of Array.from(dt.files)) push(f);
+  }
+  if (dt.items?.length) {
+    for (const item of Array.from(dt.items)) {
+      if (item.kind === "file") {
+        push(item.getAsFile());
       }
     }
-    if (!images.length) return;
-    // Prevent xterm from inserting binary garbage as text
-    ev.preventDefault();
-    ev.stopPropagation();
-    void handleFiles(images);
-  };
+  }
 
-  container.addEventListener("paste", onPaste, true);
-  // xterm creates a hidden textarea — also bind when available
-  window.setTimeout(() => {
-    const ta = container.querySelector("textarea.xterm-helper-textarea");
-    ta?.addEventListener("paste", onPaste as EventListener, true);
-  }, 0);
+  // Copy-from-browser often only has text/html with a data:image URL
+  if (!out.length) {
+    try {
+      const html = dt.getData("text/html") || "";
+      const m = html.match(
+        /src\s*=\s*["'](data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+)["']/i,
+      );
+      if (m?.[1]) {
+        const dataUrl = m[1].replace(/\s+/g, "");
+        const mime =
+          dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);/i)?.[1] || "image/png";
+        const b64 = dataUrl.split(",")[1] || "";
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "png";
+        push(
+          new File([bytes], `clipboard.${ext}`, {
+            type: mime,
+            lastModified: Date.now(),
+          }),
+        );
+      }
+    } catch {
+      /* ignore html parse */
+    }
+  }
 
-  // Drag & drop images onto the terminal
-  const onDragOver = (ev: DragEvent) => {
-    if (!ev.dataTransfer?.types?.includes("Files")) return;
+  return out;
+}
+
+function clipboardTypesHintImage(dt: DataTransfer | null | undefined): boolean {
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  if (types.some((t) => t.startsWith("image/") || t === "Files")) return true;
+  if (dt.items) {
+    for (const item of Array.from(dt.items)) {
+      if (item.type?.startsWith("image/")) return true;
+      if (item.kind === "file") return true;
+    }
+  }
+  return false;
+}
+
+async function readImagesFromClipboardAPI(): Promise<File[]> {
+  // Requires secure context + permission; paste gesture usually grants it.
+  const nav = navigator as Navigator & {
+    clipboard?: Clipboard & {
+      read?: () => Promise<ClipboardItem[]>;
+    };
+  };
+  if (!nav.clipboard?.read) return [];
+  try {
+    const items = await nav.clipboard.read();
+    const files: File[] = [];
+    for (const item of items) {
+      for (const type of item.types) {
+        if (!type.startsWith("image/")) continue;
+        const blob = await item.getType(type);
+        const ext = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+        files.push(
+          new File([blob], `clipboard.${ext}`, {
+            type,
+            lastModified: Date.now(),
+          }),
+        );
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+async function ingestImageFiles(files: File[]): Promise<void> {
+  if (!files.length) return;
+  if (!state.activeId) {
+    toast("Open a session first to paste images", "info");
+    return;
+  }
+  for (const file of files) {
+    await pasteImageFile(file);
+  }
+}
+
+function onDocumentImagePaste(ev: ClipboardEvent): void {
+  if (!state.activeId || !state.token) return;
+  if (!termPasteTarget(ev)) return;
+
+  const dt = ev.clipboardData;
+  const images = extractImagesFromDataTransfer(dt);
+  if (images.length) {
     ev.preventDefault();
     ev.stopPropagation();
-    container.classList.add("term-drop-target");
-  };
-  const onDragLeave = () => container.classList.remove("term-drop-target");
-  const onDrop = (ev: DragEvent) => {
-    container.classList.remove("term-drop-target");
-    if (!ev.dataTransfer?.files?.length) return;
-    const imgs = Array.from(ev.dataTransfer.files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
-    if (!imgs.length) return;
+    ev.stopImmediatePropagation?.();
+    void ingestImageFiles(images);
+    return;
+  }
+
+  // Image-only clipboard: some browsers expose types but empty files until async read.
+  const plain = (dt?.getData("text/plain") || "").trim();
+  if (!plain && clipboardTypesHintImage(dt)) {
     ev.preventDefault();
     ev.stopPropagation();
-    void handleFiles(imgs);
-  };
-  container.addEventListener("dragover", onDragOver);
-  container.addEventListener("dragleave", onDragLeave);
-  container.addEventListener("drop", onDrop);
+    ev.stopImmediatePropagation?.();
+    void (async () => {
+      const asyncImgs = await readImagesFromClipboardAPI();
+      if (asyncImgs.length) {
+        await ingestImageFiles(asyncImgs);
+      } else {
+        toast("Clipboard has an image but the browser blocked access", "err");
+      }
+    })();
+    return;
+  }
+
+  // Last resort: empty text paste (macOS screenshot clipboard, some Wayland paths).
+  // Try async clipboard.read(); only claim the event if an image is found.
+  if (!plain) {
+    void (async () => {
+      const asyncImgs = await readImagesFromClipboardAPI();
+      if (!asyncImgs.length) return;
+      await ingestImageFiles(asyncImgs);
+    })();
+  }
+}
+
+function onDocumentImageDragOver(ev: DragEvent): void {
+  if (!state.activeId) return;
+  const host = document.getElementById("term-host");
+  if (!host) return;
+  const overHost =
+    ev.target instanceof Node &&
+    (host.contains(ev.target) || term?.element?.contains(ev.target));
+  if (!overHost) return;
+  if (!ev.dataTransfer) return;
+  const types = Array.from(ev.dataTransfer.types || []);
+  if (!types.includes("Files") && !types.some((t) => t.startsWith("image/"))) {
+    return;
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  try {
+    ev.dataTransfer.dropEffect = "copy";
+  } catch {
+    /* ignore */
+  }
+  host.classList.add("term-drop-target");
+}
+
+function onDocumentImageDragLeave(ev: DragEvent): void {
+  const host = document.getElementById("term-host");
+  if (!host) return;
+  // Only clear when leaving the host entirely
+  if (ev.target === host || (ev.relatedTarget instanceof Node && !host.contains(ev.relatedTarget))) {
+    host.classList.remove("term-drop-target");
+  }
+}
+
+function onDocumentImageDrop(ev: DragEvent): void {
+  const host = document.getElementById("term-host");
+  host?.classList.remove("term-drop-target");
+  if (!state.activeId) return;
+  if (!termPasteTarget(ev) && !(ev.target instanceof Node && host?.contains(ev.target))) {
+    return;
+  }
+  const images = extractImagesFromDataTransfer(ev.dataTransfer);
+  if (!images.length) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  void ingestImageFiles(images);
 }
 
 function fileToDataURL(file: File): Promise<string> {
@@ -905,37 +1471,71 @@ function fileToDataURL(file: File): Promise<string> {
   });
 }
 
+function shellQuote(path: string): string {
+  if (!/[\s'"\\$`!]/.test(path)) return path;
+  return `'${path.replace(/'/g, `'\\''`)}'`;
+}
+
 async function pasteImageFile(file: File): Promise<void> {
   if (!state.activeId) {
     toast("Open a session first to paste images", "info");
     return;
   }
+  // Prefer live session cwd (relative) so pathallow accepts it
+  const live = state.sessions.find((s) => s.id === state.activeId);
   const tab = state.openTabs.find((t) => t.id === state.activeId);
-  const cwd = tab?.cwd || state.formCwd || state.defaultCwd || ".";
+  const cwd = live?.cwd || tab?.cwd || state.formCwd || state.defaultCwd || ".";
   try {
-    toast(`Uploading image (${Math.round(file.size / 1024)} KB)…`, "info", 8000);
+    const kb = Math.max(1, Math.round(file.size / 1024));
+    toast(`Uploading image (${kb} KB)…`, "info", 8000);
     const dataUrl = await fileToDataURL(file);
+    if (!dataUrl.startsWith("data:image") && !dataUrl.startsWith("data:application/octet")) {
+      // Still try — server normalizes MIME from body.mime
+    }
     const out = await uploadImage({
       cwd,
       session_id: state.activeId,
       mime: file.type || "image/png",
       data: dataUrl,
     });
+    // Prefer absolute path — unambiguous for agent Read tools
     const path = out.paste || out.abs || out.cwd_rel;
     if (!path) {
       toast("Upload succeeded but no path returned", "err");
       return;
     }
-    // Quote path if it contains spaces; agents can Read() the file
-    const token = /[\s'"\\]/.test(path) ? `'${path.replace(/'/g, `'\\''`)}'` : path;
-    // Insert into PTY as if typed (don't send Enter — user may want to edit)
-    activePty?.write(token);
-    // Also ensure term shows it immediately if PTY is laggy
+    const token = shellQuote(path);
+    // Binary frame into PTY (same as typed keys after encode)
+    activePty?.write(new TextEncoder().encode(token));
     term?.focus();
-    toast(`Image saved → ${out.cwd_rel || path}`, "ok", 4000);
+    toast(`Image saved → ${out.cwd_rel || path}`, "ok", 4500);
   } catch (e) {
     toast((e as Error).message || "image paste failed", "err");
   }
+}
+
+/** Hidden file picker fallback when OS clipboard won't hand over images. */
+function openImageFilePicker(): void {
+  if (!state.activeId) {
+    toast("Open a session first to paste images", "info");
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.multiple = true;
+  input.style.display = "none";
+  document.body.appendChild(input);
+  input.addEventListener("change", () => {
+    const files = input.files ? Array.from(input.files).filter(isImageFile) : [];
+    input.remove();
+    if (files.length) void ingestImageFiles(files);
+  });
+  input.click();
+  // Cleanup if user cancels (no change event)
+  window.setTimeout(() => {
+    if (input.isConnected) input.remove();
+  }, 60_000);
 }
 
 function fit(): void {
@@ -1031,11 +1631,18 @@ function ensureTermArea(): void {
     wrap.innerHTML = `
       <div id="term-host" class="term-host"></div>
       <div class="term-toolbar">
-        <button type="button" class="btn-sm" id="btn-refit" title="Refit terminal (f)">Fit</button>
-        <button type="button" class="btn-sm" id="btn-kill" title="Stop agent (keeps list entry)">Stop</button>
-        <button type="button" class="btn-sm danger" id="btn-delete" title="Stop and delete session">Delete</button>
+        <button type="button" class="ghost btn-sm" id="btn-refit" title="Refit terminal (f)">Fit</button>
+        <button type="button" class="ghost btn-sm" id="btn-paste-image" title="Upload image into session">Image</button>
+        <details class="menu term-menu">
+          <summary class="ghost btn-sm" title="Session actions">More</summary>
+          <div class="menu-panel">
+            <button type="button" id="btn-kill">Stop agent</button>
+            <button type="button" class="danger-text" id="btn-delete">Delete session</button>
+          </div>
+        </details>
       </div>`;
     document.getElementById("btn-refit")?.addEventListener("click", () => fit());
+    document.getElementById("btn-paste-image")?.addEventListener("click", () => openImageFilePicker());
     document.getElementById("btn-kill")?.addEventListener("click", () => {
       if (state.activeId) void onKillSession(state.activeId);
     });
@@ -1058,116 +1665,103 @@ function emptyTermHTML(): string {
     <div class="term-empty">
       <div class="term-empty-card">
         <div class="term-empty-mark" aria-hidden="true">a</div>
-        <h2>Pick a session</h2>
-        <p>Open one from the rail, or start fresh. Closing a browser tab only detaches — the agent keeps running.</p>
+        <h2>No session selected</h2>
+        <p>Start a session or open one from the rail. Closing a browser tab only detaches — agents keep running in tmux.</p>
         <div class="term-empty-actions">
           <button type="button" class="primary" data-action="new-session">New session</button>
-          <button type="button" class="ghost" data-action="help">Shortcuts</button>
+          <button type="button" class="ghost" data-action="new-project">New project</button>
         </div>
+        <p class="term-empty-hint">Press <kbd>⌘</kbd><kbd>K</kbd> for commands · <kbd>?</kbd> for shortcuts</p>
       </div>
     </div>`;
 }
 
 function openPanel(p: Panel): void {
-  state.panel = p;
-  if (p === "new") state.createError = "";
-  // Tools/settings share status widgets — don't stack overlays.
-  if (p === "tools" && state.settingsOpen) {
-    state.settingsOpen = false;
-    document.getElementById("settings-root")?.remove();
+  if (!p) return;
+  openPanelOnly(p);
+  // Route for this panel (session-scoped tools when a tab is active)
+  if (p === "new") navigate({ name: "new" }, { apply: false });
+  else if (p === "new-project") navigate({ name: "new-project" }, { apply: false });
+  else if (p === "help") navigate({ name: "help" }, { apply: false });
+  else if (p === "tools") {
+    if (state.activeId) {
+      const s =
+        state.sessions.find((x) => x.id === state.activeId) ||
+        state.openTabs.find((x) => x.id === state.activeId);
+      if (s) {
+        navigate(
+          {
+            name: "session",
+            projectId: projectIdFromCwd(s.cwd),
+            sessionId: s.id,
+            tools: true,
+          },
+          { apply: false },
+        );
+        return;
+      }
+    }
+    navigate({ name: "tools" }, { apply: false });
   }
-  // Prefer active session workspace when opening tools
-  if (p === "tools") {
-    const tab = state.openTabs.find((t) => t.id === state.activeId);
-    if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
-      state.formCwd = tab.cwd;
-    }
-  }
-  // Defer paint past the triggering click so a full-screen overlay is not
-  // immediately hit by the same pointer event (closes as it opens).
-  window.queueMicrotask(async () => {
-    if (state.panel !== p) return;
-    if (p === "new") {
-      await refreshAgentAccountsForForm(state.formAgent);
-    }
-    try {
-      await paintPanel({ animateIn: true });
-    } catch (e) {
-      console.error("paintPanel failed", e);
-      toast((e as Error).message || "failed to open panel", "err", 5000);
-      return;
-    }
-    if (p === "new") {
-      window.requestAnimationFrame(() => {
-        const name = document.getElementById("sess-name") as HTMLInputElement | null;
-        const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
-        (name ?? agent)?.focus();
-      });
-    }
-    if (p === "tools") {
-      void refreshToolsStatus();
-    }
-  });
 }
 
 async function closePanel(): Promise<void> {
-  if (isAppDrawerOpen()) {
-    closeAppDrawer("programmatic");
-  }
-  state.panel = null;
-  state.createError = "";
-  document.getElementById("panel-overlay")?.remove();
+  await closePanelOnly();
   term?.focus();
+  // Drop modal from URL → session or desk (URL only; UI already closed)
+  if (state.activeId) {
+    const s =
+      state.sessions.find((x) => x.id === state.activeId) ||
+      state.openTabs.find((x) => x.id === state.activeId);
+    if (s) {
+      navigate(
+        {
+          name: "session",
+          projectId: projectIdFromCwd(s.cwd),
+          sessionId: s.id,
+        },
+        { replace: true, apply: false },
+      );
+      return;
+    }
+  }
+  navigate({ name: "desk" }, { replace: true, apply: false });
 }
 
 function openSettings(tab?: SettingsTab): void {
-  if (tab) state.settingsTab = tab;
-  state.settingsOpen = true;
-  state.sidebarOpen = false;
-  // Avoid stacked overlays fighting for the same tool controls.
-  if (state.panel) {
-    state.panel = null;
-    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
-    document.getElementById("panel-overlay")?.remove();
-  }
-  void loadSettingsData().then(() => paintSettings({ animateIn: true }));
+  openSettingsOnly(tab);
+  navigate(
+    { name: "profile", tab: tab || state.settingsTab || "accounts" },
+    { apply: false },
+  );
 }
 
 async function closeSettings(): Promise<void> {
-  const root = document.getElementById("settings-root");
-  if (root) {
-    try {
-      await animateSettingsOut(root);
-    } catch {
-      /* ignore */
+  await closeSettingsOnly();
+  term?.focus();
+  if (state.activeId) {
+    const s =
+      state.sessions.find((x) => x.id === state.activeId) ||
+      state.openTabs.find((x) => x.id === state.activeId);
+    if (s) {
+      navigate(
+        {
+          name: "session",
+          projectId: projectIdFromCwd(s.cwd),
+          sessionId: s.id,
+        },
+        { replace: true, apply: false },
+      );
+      return;
     }
   }
-  state.settingsOpen = false;
-  document.getElementById("settings-root")?.remove();
-  term?.focus();
+  navigate({ name: "desk" }, { replace: true, apply: false });
 }
 
 async function loadSettingsData(): Promise<void> {
   const tasks: Promise<void>[] = [];
   if (state.settingsTab === "accounts") {
-    tasks.push(
-      (async () => {
-        try {
-          const out = (await listAgentAccounts()) as {
-            platforms?: AgentPlatformStatus[];
-          };
-          state.settingsPlatforms = out.platforms || [];
-          if (
-            !state.settingsPlatforms.find((p) => p.platform === state.settingsPlatform)
-          ) {
-            state.settingsPlatform = state.settingsPlatforms[0]?.platform || "grok";
-          }
-        } catch (e) {
-          state.settingsPlatforms = [];
-          toast((e as Error).message || "Failed to load accounts", "err");
-        }
-      })(),
-    );
+    tasks.push(refreshSettingsAccounts());
   }
   if (state.settingsTab === "github") {
     tasks.push(refreshGHAccounts());
@@ -1195,6 +1789,9 @@ function paintSettings(opts?: { animateIn?: boolean }): void {
     document.body.appendChild(root);
   }
   root.innerHTML = settingsHTML();
+  // Drop leftover motion inline styles from a previous enter/exit so repaints stay visible.
+  root.style.opacity = "";
+  root.style.transform = "";
   if (opts?.animateIn || wasMissing) {
     void animateSettingsIn(root);
   }
@@ -1209,13 +1806,14 @@ function settingsHTML(): string {
     { id: "about", label: "About", hint: "Host & shortcuts" },
   ];
   const nav = tabs
-    .map(
-      (t) => `
-      <button type="button" class="settings-nav-item ${state.settingsTab === t.id ? "active" : ""}" data-action="settings-tab" data-tab="${t.id}">
+    .map((t) => {
+      const href = t.id === "accounts" ? "/profile" : `/profile/${t.id}`;
+      return `
+      <a href="${href}" class="settings-nav-item ${state.settingsTab === t.id ? "active" : ""}" data-action="settings-tab" data-tab="${t.id}" data-nav>
         <span class="settings-nav-label">${esc(t.label)}</span>
         <span class="settings-nav-hint">${esc(t.hint)}</span>
-      </button>`,
-    )
+      </a>`;
+    })
     .join("");
 
   let body = "";
@@ -1263,80 +1861,190 @@ function settingsHTML(): string {
     </div>`;
 }
 
+async function refreshSettingsAccounts(): Promise<void> {
+  try {
+    const out = await listAllAgentAccounts();
+    state.settingsPlatforms = out.platforms || [];
+    state.settingsAccountsBin = out.bin || "";
+    state.settingsAccountsError = "";
+    if (
+      !state.settingsPlatforms.find((p) => p.platform === state.settingsPlatform)
+    ) {
+      // Prefer a platform that has a live login
+      const withLive =
+        state.settingsPlatforms.find(
+          (p) => p.current && p.current !== "not signed in",
+        ) || state.settingsPlatforms[0];
+      state.settingsPlatform = withLive?.platform || "grok";
+    }
+  } catch (e) {
+    state.settingsPlatforms = [];
+    state.settingsAccountsBin = "";
+    state.settingsAccountsError =
+      (e as Error).message || "Failed to load accounts";
+    toast(state.settingsAccountsError, "err");
+  }
+}
+
+function platformLabel(p: string): string {
+  switch (p) {
+    case "cursor":
+      return "Cursor";
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "grok":
+      return "Grok";
+    case "vscode":
+      return "VS Code / Copilot";
+    default:
+      return p;
+  }
+}
+
+function formatSavedAt(iso?: string): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  try {
+    return new Date(t).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 function settingsAccountsHTML(): string {
+  if (state.settingsAccountsError && !state.settingsPlatforms.length) {
+    return `
+      <div class="settings-empty">
+        <p><strong>Could not load accounts</strong></p>
+        <p class="form-hint">${esc(state.settingsAccountsError)}</p>
+        <p class="form-hint">Install <code>cursor-switch</code> from
+          <code>github.com/reloadlife/cursor-account-switcher</code> on this host.</p>
+        <button type="button" class="primary" data-action="settings-refresh">Retry</button>
+      </div>`;
+  }
   const plats = state.settingsPlatforms;
   if (!plats.length) {
     return `
       <div class="settings-empty">
-        <p><strong>cursor-switch</strong> is required for multi-account profiles.</p>
-        <p class="form-hint">Install from <code>github.com/reloadlife/cursor-account-switcher</code> on this host, then refresh.</p>
+        <p><strong>cursor-switch</strong> found but no platforms returned.</p>
         <button type="button" class="primary" data-action="settings-refresh">Retry</button>
       </div>`;
   }
+
   const platTabs = plats
-    .map(
-      (p) =>
-        `<button type="button" class="chip ${state.settingsPlatform === p.platform ? "active" : ""}" data-action="settings-platform" data-platform="${esc(p.platform)}">${esc(p.platform)}</button>`,
-    )
+    .map((p) => {
+      const liveRaw =
+        p.current && p.current !== "not signed in" ? p.current : "";
+      // Prefer email local-part; fall back to a short id, never a long UUID line.
+      let live = "—";
+      if (liveRaw.includes("@")) {
+        live = liveRaw.split("@")[0] || "—";
+      } else if (liveRaw) {
+        live = liveRaw.length > 14 ? `${liveRaw.slice(0, 8)}…` : liveRaw;
+      }
+      const nSaved = (p.accounts || []).filter((a) => a.saved).length;
+      return `<button type="button" class="chip chip-platform ${state.settingsPlatform === p.platform ? "active" : ""}" data-action="settings-platform" data-platform="${esc(p.platform)}" title="${esc(p.current || "not signed in")}">
+        <span class="chip-name">${esc(platformLabel(p.platform))}</span>
+        <span class="chip-meta">${esc(live)} · ${nSaved} saved</span>
+      </button>`;
+    })
     .join("");
+
   const cur =
     plats.find((p) => p.platform === state.settingsPlatform) || plats[0];
-  const rows = (cur?.accounts || [])
+  const accounts = cur?.accounts || [];
+  const rows = accounts
     .map((a) => {
-      const saved = a.saved
+      const isActive = !!(a.active || (cur.active && cur.active === a.id));
+      const savedBadge = a.saved
         ? `<span class="badge running">saved</span>`
         : `<span class="badge">empty</span>`;
-      const active = a.active ? `<span class="badge running">active</span>` : "";
+      const activeBadge = isActive
+        ? `<span class="badge running">active</span>`
+        : "";
+      const switchBtn = isActive
+        ? `<button type="button" class="primary btn-sm" disabled title="Already active">Active</button>`
+        : `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" ${a.saved ? "" : "disabled"} title="Switch host-wide login to this profile">Switch to</button>`;
       return `
-        <div class="settings-card">
+        <div class="settings-card acct-card ${isActive ? "acct-active" : ""} ${a.saved ? "acct-saved" : "acct-empty"}">
           <div class="settings-card-main">
             <div class="settings-card-title">
               <strong>${esc(a.label || a.id)}</strong>
               <code>${esc(a.id)}</code>
-              ${saved}${active}
+              ${savedBadge}${activeBadge}
             </div>
             <div class="settings-card-meta">
-              ${a.email ? esc(a.email) : "No profile saved yet"}
-              ${a.saved_at ? ` · ${esc(a.saved_at)}` : ""}
+              ${a.email ? `<span class="acct-email">${esc(a.email)}</span>` : `<span class="acct-email muted">No credentials saved</span>`}
+              ${a.saved_at ? ` · saved ${esc(formatSavedAt(a.saved_at))}` : ""}
             </div>
           </div>
           <div class="settings-card-actions">
-            <button type="button" class="ghost btn-sm" data-action="acct-save" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" data-label="${esc(a.label || a.id)}" title="Save current live login as this profile">Save current</button>
-            <button type="button" class="ghost btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" ${a.saved ? "" : "disabled"} title="Switch host-wide login">Global switch</button>
+            ${switchBtn}
+            <details class="menu">
+              <summary class="ghost btn-sm">More</summary>
+              <div class="menu-panel">
+                <button type="button" data-action="acct-save" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" data-label="${esc(a.label || a.id)}">Save current login</button>
+                <button type="button" class="danger-text" data-action="acct-remove" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}">Remove slot</button>
+              </div>
+            </details>
           </div>
         </div>`;
     })
     .join("");
 
+  const live = cur?.current || "—";
+  const activeId = cur?.active || "—";
+
   return `
     <p class="settings-lede">
-      Profiles from <code>cursor-switch</code>. <strong>Isolated</strong> sessions (default in New session) run accounts in parallel via private HOME.
-      <strong>Global switch</strong> changes the host-wide login for that tool.
+      Multi-account profiles via <code>cursor-switch</code>${state.settingsAccountsBin ? ` · <code class="pathish">${esc(state.settingsAccountsBin)}</code>` : ""}.
+      <strong>Switch to</strong> changes the host-wide login.
+      New sessions default to <strong>isolated</strong> mode (private HOME per account — parallel-safe).
     </p>
-    <div class="chip-row">${platTabs}</div>
-    <div class="settings-stat">
-      <span>Live: <strong>${esc(cur?.current || "—")}</strong></span>
-      <span>Active profile: <strong>${esc(cur?.active || "—")}</strong></span>
+    <div class="chip-row platform-chips">${platTabs}</div>
+    <div class="settings-stat acct-live-bar">
+      <span>Platform: <strong>${esc(platformLabel(cur?.platform || ""))}</strong></span>
+      <span>Live login: <strong title="${esc(live)}">${esc(live)}</strong></span>
+      <span>Active profile: <strong>${esc(activeId)}</strong></span>
+      <button type="button" class="ghost btn-sm" data-action="settings-refresh" ${state.settingsBusy ? "disabled" : ""}>Refresh</button>
     </div>
-    <div class="settings-cards">${rows || `<div class="settings-empty">No accounts for ${esc(cur?.platform || "")}</div>`}</div>
+    <div class="settings-cards acct-list">
+      ${rows || `<div class="settings-empty">No account slots for ${esc(cur?.platform || "")}. Add one below.</div>`}
+    </div>
     <div class="settings-form-card">
       <h3>Add account slot</h3>
+      <p class="form-hint" style="margin-top:0">Registers a profile name. Then log into the CLI as that user and click <strong>Save current</strong>.</p>
       <div class="field-grid">
         <div class="field">
           <label for="settings-acct-id">Id</label>
-          <input id="settings-acct-id" value="${esc(state.settingsAcctId)}" placeholder="personal" />
+          <input id="settings-acct-id" value="${esc(state.settingsAcctId)}" placeholder="personal" autocomplete="off" ${state.settingsBusy ? "disabled" : ""} />
         </div>
         <div class="field">
           <label for="settings-acct-label">Label</label>
-          <input id="settings-acct-label" value="${esc(state.settingsAcctLabel)}" placeholder="Personal" />
+          <input id="settings-acct-label" value="${esc(state.settingsAcctLabel)}" placeholder="Personal" autocomplete="off" ${state.settingsBusy ? "disabled" : ""} />
         </div>
       </div>
       <div class="modal-actions" style="justify-content:flex-start">
-        <button type="button" class="primary" data-action="acct-add" ${state.settingsBusy ? "disabled" : ""}>Add</button>
-        <button type="button" class="ghost" data-action="settings-refresh">Refresh</button>
+        <button type="button" class="primary" data-action="acct-add" ${state.settingsBusy ? "disabled" : ""}>${state.settingsBusy ? "…" : "Add account"}</button>
       </div>
-      <p class="form-hint">After adding, log into that CLI on the host, then <strong>Save current</strong>.</p>
-    </div>`;
+    </div>
+    <details class="details-block howto-card">
+      <summary>Workflow tips</summary>
+      <ol class="howto-list">
+        <li>Add a slot (e.g. <code>work</code>).</li>
+        <li>Log into the CLI on the host as that account.</li>
+        <li><strong>Save current</strong> on the slot.</li>
+        <li>Use <strong>Switch to</strong> host-wide, or pick the account when starting a session (isolated = parallel-safe).</li>
+      </ol>
+    </details>`;
 }
 
 function settingsGitHubHTML(): string {
@@ -1375,53 +2083,8 @@ function settingsSSHHTML(): string {
 
 function settingsWorkspaceHTML(): string {
   return `
-    <p class="settings-lede">Context manager packs map + docs + memory so agents orient faster. Session start auto-ensures by default.</p>
-    <div class="field">
-      <label for="tools-cwd-select">Target workspace</label>
-      <select id="tools-cwd-select" data-action-change="tools-cwd">
-        ${workspaceOptionsHTML()}
-      </select>
-    </div>
-    <div class="settings-cards">
-      <div class="settings-card col">
-        <div class="settings-card-title"><strong>Context</strong> <span class="tool-status" data-status="ctx">${esc(state.ctxStatus)}</span></div>
-        <p class="tool-desc">Ensure map · memory · <code>.agents/CONTEXT.md</code> · instructions</p>
-        <div class="btn-row">
-          <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
-          <button type="button" class="ghost btn-sm" data-action="ctx-pack">Show pack</button>
-        </div>
-      </div>
-      <div class="settings-card col">
-        <div class="settings-card-title"><strong>Project map</strong> <span class="tool-status" data-status="map">${esc(state.mapStatus)}</span></div>
-        <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
-        <div class="btn-row">
-          <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
-          <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
-        </div>
-      </div>
-      <div class="settings-card col">
-        <div class="settings-card-title"><strong>Memory</strong> <span class="tool-status" data-status="mem">${esc(state.memStatus)}</span></div>
-        <p class="tool-desc">FTS (and optional vector) index</p>
-        <div class="btn-row">
-          <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
-        </div>
-        <form class="mem-search" data-action-form="mem-search">
-          <input id="mem-query" name="q" data-mem-query placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
-          <button type="submit" class="primary btn-sm">Search</button>
-        </form>
-        <div class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
-      </div>
-      <div class="settings-card col">
-        <div class="settings-card-title"><strong>Playwright</strong> <span class="tool-status" data-status="pw">${esc(state.pwStatus)}</span></div>
-        <p class="tool-desc">Xvfb + docker browser stack</p>
-        <div class="btn-row">
-          <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
-          <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
-          <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
-          <button type="button" class="ghost btn-sm" data-action="pw-install">Install browsers</button>
-        </div>
-      </div>
-    </div>`;
+    <p class="settings-lede">Context pack for faster agent orientation. Ensured automatically on new sessions.</p>
+    ${workspaceToolsBodyHTML({ settings: true })}`;
 }
 
 function settingsAboutHTML(): string {
@@ -1431,98 +2094,135 @@ function settingsAboutHTML(): string {
         <span>Status: <strong>${esc(state.statusText)}</strong></span>
         <span>API: <strong>${state.statusOk ? "ok" : "error"}</strong></span>
       </div>
+      <div class="settings-form-card">
+        <h3>Appearance</h3>
+        <p class="form-hint" style="margin-top:0">Theme applies to this browser only.</p>
+        <button type="button" class="primary btn-sm" data-action="toggle-theme">
+          Switch to ${state.theme === "dark" ? "light" : "dark"} theme
+        </button>
+      </div>
       <h3>Keyboard</h3>
-      <p class="form-hint" style="margin-bottom:0.75rem">Bare keys when focus is outside the terminal. <kbd>Alt</kbd>+key works while the terminal is focused. Press <kbd>?</kbd> for the full list.</p>
+      <p class="form-hint">Bare keys outside the terminal · <kbd>Alt</kbd>+key while focused · <kbd>⌘</kbd><kbd>K</kbd> palette</p>
       <dl class="keys">
-        <div><dt><kbd>n</kbd> / <kbd>Alt</kbd><kbd>n</kbd></dt><dd>New session</dd></div>
-        <div><dt><kbd>,</kbd> / <kbd>Alt</kbd><kbd>,</kbd></dt><dd>Settings</dd></div>
-        <div><dt><kbd>j</kbd><kbd>k</kbd> · <kbd>Enter</kbd></dt><dd>Browse / open sessions</dd></div>
-        <div><dt><kbd>[</kbd><kbd>]</kbd> · <kbd>1</kbd>–<kbd>9</kbd></dt><dd>Cycle / jump tabs</dd></div>
-        <div><dt><kbd>x</kbd></dt><dd>Close tab (detach only)</dd></div>
-        <div><dt><kbd>s</kbd> · <kbd>e</kbd> · <kbd>Shift</kbd><kbd>d</kbd></dt><dd>Stop · Resume · Delete</dd></div>
-        <div><dt><kbd>Esc</kbd></dt><dd>Close overlay / settings</dd></div>
+        <div><dt><kbd>j</kbd><kbd>k</kbd> · <kbd>⇧</kbd><kbd>j</kbd><kbd>k</kbd></dt><dd>List · step+open</dd></div>
+        <div><dt><kbd>h</kbd><kbd>l</kbd> · <kbd>Ctrl</kbd><kbd>Tab</kbd></dt><dd>Prev/next tab</dd></div>
+        <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab</dd></div>
+        <div><dt><kbd>n</kbd> · <kbd>⇧</kbd><kbd>n</kbd></dt><dd>New session / project</dd></div>
+        <div><dt><kbd>y</kbd></dt><dd>Copy session id</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>Full shortcuts</dd></div>
       </dl>
-      <h3>Multi-account</h3>
-      <p class="form-hint">Save CLI logins with <code>cursor-switch --platform grok save personal</code>, then pick the profile when starting a session (isolated = parallel).</p>
+      <p class="form-hint"><button type="button" class="linkish" data-action="help">Open shortcuts sheet</button></p>
       <h3>Security</h3>
       <p class="form-hint">Bearer token is full host control. SSH private keys and GitHub tokens are never returned by the API.</p>
     </div>`;
 }
 
+function patchPlatformStatus(platform: string, st?: AgentPlatformStatus): void {
+  if (!st) return;
+  const i = state.settingsPlatforms.findIndex((p) => p.platform === platform);
+  if (i >= 0) state.settingsPlatforms[i] = st;
+  else state.settingsPlatforms.push(st);
+}
+
 async function onAcctSave(platform: string, id: string, label: string): Promise<void> {
-  try {
-    toast(`Saving ${platform}/${id}…`, "info", 8000);
-    await saveAgentAccount({ platform, id, label: label || undefined });
-    toast(`Saved ${id}`, "ok");
-    await loadSettingsData();
-    paintSettings();
-  } catch (e) {
-    toast((e as Error).message || "save failed", "err");
-  }
-}
-
-async function onAcctSwitch(platform: string, id: string): Promise<void> {
-  if (!confirm(`Switch host-wide ${platform} login to “${id}”?\n\nThis changes the global auth for that tool.`))
-    return;
-  try {
-    await switchAgentAccount({ platform, id });
-    toast(`Switched ${platform} → ${id}`, "ok");
-    await loadSettingsData();
-    paintSettings();
-  } catch (e) {
-    toast((e as Error).message || "switch failed", "err");
-  }
-}
-
-async function onAcctAdd(): Promise<void> {
-  const idEl = document.getElementById("settings-acct-id") as HTMLInputElement | null;
-  const labelEl = document.getElementById("settings-acct-label") as HTMLInputElement | null;
-  const id = (idEl?.value || "").trim().toLowerCase();
-  const label = (labelEl?.value || "").trim() || id;
-  if (!id) {
-    toast("Account id required", "err");
-    return;
-  }
+  if (state.settingsBusy) return;
   state.settingsBusy = true;
   paintSettings();
   try {
-    await requestJSON("/v1/agent-accounts/add", {
-      platform: state.settingsPlatform,
-      id,
-      label,
-    });
-    toast(`Added ${id}`, "ok");
-    state.settingsAcctId = "personal";
-    state.settingsAcctLabel = "";
-    await loadSettingsData();
-    paintSettings();
+    toast(`Saving live ${platform} login → ${id}…`, "info", 12000);
+    const out = await saveAgentAccount({ platform, id, label: label || undefined });
+    patchPlatformStatus(platform, out.status);
+    toast(`Saved ${platform}/${id}`, "ok");
+    await refreshSettingsAccounts();
   } catch (e) {
-    toast((e as Error).message || "add failed", "err");
+    toast((e as Error).message || "save failed", "err", 8000);
   } finally {
     state.settingsBusy = false;
     paintSettings();
   }
 }
 
-async function requestJSON(path: string, body: Record<string, unknown>): Promise<void> {
-  const token = getToken();
-  const res = await fetch(path, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let msg = `${res.status}`;
-    try {
-      const j = (await res.json()) as { error?: string };
-      if (j.error) msg = j.error;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(msg);
+async function onAcctSwitch(platform: string, id: string): Promise<void> {
+  if (state.settingsBusy) return;
+  if (
+    !confirm(
+      `Switch host-wide ${platformLabel(platform)} login to “${id}”?\n\nThis changes the global auth for that tool on the agents host.`,
+    )
+  ) {
+    return;
+  }
+  state.settingsBusy = true;
+  paintSettings();
+  try {
+    toast(`Switching ${platform} → ${id}…`, "info", 15000);
+    const out = await switchAgentAccount({ platform, id });
+    patchPlatformStatus(platform, out.status);
+    toast(`Switched ${platformLabel(platform)} → ${id}`, "ok");
+    await refreshSettingsAccounts();
+  } catch (e) {
+    toast((e as Error).message || "switch failed", "err", 8000);
+  } finally {
+    state.settingsBusy = false;
+    paintSettings();
+  }
+}
+
+async function onAcctAdd(): Promise<void> {
+  if (state.settingsBusy) return;
+  const idEl = document.getElementById("settings-acct-id") as HTMLInputElement | null;
+  const labelEl = document.getElementById("settings-acct-label") as HTMLInputElement | null;
+  const id = (idEl?.value || "").trim().toLowerCase().replace(/\s+/g, "-");
+  const label = (labelEl?.value || "").trim() || id;
+  if (!id) {
+    toast("Account id required", "err");
+    return;
+  }
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+    toast("Id: start with letter/number, use a-z 0-9 _ -", "err");
+    return;
+  }
+  state.settingsBusy = true;
+  paintSettings();
+  try {
+    const out = await addAgentAccount({
+      platform: state.settingsPlatform,
+      id,
+      label,
+    });
+    patchPlatformStatus(state.settingsPlatform, out.status);
+    toast(`Added ${id}`, "ok");
+    state.settingsAcctId = "";
+    state.settingsAcctLabel = "";
+    await refreshSettingsAccounts();
+  } catch (e) {
+    toast((e as Error).message || "add failed", "err", 8000);
+  } finally {
+    state.settingsBusy = false;
+    paintSettings();
+  }
+}
+
+async function onAcctRemove(platform: string, id: string): Promise<void> {
+  if (state.settingsBusy) return;
+  if (
+    !confirm(
+      `Remove “${id}” from ${platformLabel(platform)}?\n\nDeletes the saved profile credentials for this slot.`,
+    )
+  ) {
+    return;
+  }
+  state.settingsBusy = true;
+  paintSettings();
+  try {
+    const out = await removeAgentAccount({ platform, id });
+    patchPlatformStatus(platform, out.status);
+    toast(`Removed ${platform}/${id}`, "ok");
+    await refreshSettingsAccounts();
+  } catch (e) {
+    toast((e as Error).message || "remove failed", "err", 8000);
+  } finally {
+    state.settingsBusy = false;
+    paintSettings();
   }
 }
 
@@ -1615,14 +2315,15 @@ async function refreshAgentAccountsForForm(agent?: string): Promise<void> {
 }
 
 function accountOptionsHTML(): string {
-  const opts = [`<option value="">(default / none)</option>`];
+  const opts = [`<option value="">(host default — no profile)</option>`];
   for (const a of state.agentAccounts) {
-    const label = a.saved
-      ? `${a.label || a.id}${a.email ? " · " + a.email : ""}`
-      : `${a.label || a.id} (not saved)`;
+    const bits = [a.label || a.id];
+    if (a.email) bits.push(a.email);
+    if (a.active) bits.push("active");
+    if (!a.saved) bits.push("not saved");
     const sel = a.id === state.formAccount ? "selected" : "";
     opts.push(
-      `<option value="${esc(a.id)}" ${sel} ${a.saved ? "" : "disabled"}>${esc(label)}</option>`,
+      `<option value="${esc(a.id)}" ${sel} ${a.saved ? "" : "disabled"}>${esc(bits.join(" · "))}</option>`,
     );
   }
   return opts.join("");
@@ -1644,21 +2345,7 @@ async function onCreateSession(ev?: Event): Promise<void> {
   state.createError = "";
   paintPanel();
   try {
-    let cwd = form.cwd || ".";
-    if (form.gitUrl) {
-      toast(form.gitFork ? "Forking & cloning…" : "Cloning project…", "info", 60000);
-      const cloned = await cloneWorkspace({
-        url: form.gitUrl,
-        name: form.gitName || undefined,
-        branch: form.gitBranch || undefined,
-        fork: form.gitFork || undefined,
-        depth: form.gitDepth ? 1 : undefined,
-      });
-      cwd = cloned.cwd;
-      state.formCwd = cwd;
-      await refreshWorkspaceList();
-      toast(`Cloned → ${cwd}`, "ok", 2500);
-    }
+    const cwd = form.cwd || ".";
     const sess = await createSession({
       agent: form.agent,
       cwd,
@@ -1669,14 +2356,10 @@ async function onCreateSession(ev?: Event): Promise<void> {
     });
     state.formName = "";
     state.formPrompt = "";
-    state.formGitUrl = "";
-    state.formGitName = "";
-    state.formGitBranch = "";
-    state.formGitFork = false;
     state.creating = false;
-    closePanel();
+    await closePanelOnly();
     await refreshSessions();
-    openTab(sess);
+    openTab(sess); // sets /project/.../session/...
     const accNote = form.account
       ? ` · account ${form.account} (${form.accountMode || "isolated"})`
       : "";
@@ -1684,6 +2367,89 @@ async function onCreateSession(ev?: Event): Promise<void> {
   } catch (e) {
     state.creating = false;
     const msg = (e as Error).message || "create failed";
+    state.createError = msg;
+    paintPanel();
+    toast(msg, "err", 6000);
+  }
+}
+
+function readProjectForm(): {
+  gitUrl: string;
+  gitName: string;
+  gitBranch: string;
+  gitFork: boolean;
+  gitDepth: boolean;
+  startSession: boolean;
+} {
+  const urlEl = document.getElementById("proj-git-url") as HTMLInputElement | null;
+  const nameEl = document.getElementById("proj-git-name") as HTMLInputElement | null;
+  const branchEl = document.getElementById("proj-git-branch") as HTMLInputElement | null;
+  const forkEl = document.getElementById("proj-git-fork") as HTMLInputElement | null;
+  const depthEl = document.getElementById("proj-git-depth") as HTMLInputElement | null;
+  const startEl = document.getElementById("proj-start-session") as HTMLInputElement | null;
+  const gitUrl = (urlEl?.value ?? state.formGitUrl).trim();
+  const gitName = (nameEl?.value ?? state.formGitName).trim();
+  const gitBranch = (branchEl?.value ?? state.formGitBranch).trim();
+  const gitFork = forkEl ? forkEl.checked : state.formGitFork;
+  const gitDepth = depthEl ? depthEl.checked : state.formGitDepth;
+  const startSession = startEl ? startEl.checked : true;
+  state.formGitUrl = gitUrl;
+  state.formGitName = gitName;
+  state.formGitBranch = gitBranch;
+  state.formGitFork = gitFork;
+  state.formGitDepth = gitDepth;
+  return { gitUrl, gitName, gitBranch, gitFork, gitDepth, startSession };
+}
+
+async function onCreateProject(ev?: Event): Promise<void> {
+  ev?.preventDefault();
+  if (state.creating) {
+    toast("Already cloning…", "info", 1500);
+    return;
+  }
+  const form = readProjectForm();
+  if (!form.gitUrl) {
+    state.createError = "Repo URL or owner/repo is required";
+    paintPanel();
+    return;
+  }
+  state.creating = true;
+  state.createError = "";
+  paintPanel();
+  try {
+    toast(form.gitFork ? "Forking & cloning…" : "Cloning project…", "info", 60000);
+    const cloned = await cloneWorkspace({
+      url: form.gitUrl,
+      name: form.gitName || undefined,
+      branch: form.gitBranch || undefined,
+      fork: form.gitFork || undefined,
+      depth: form.gitDepth ? 1 : undefined,
+    });
+    const cwd = cloned.cwd;
+    state.formCwd = cwd;
+    state.formGitUrl = "";
+    state.formGitName = "";
+    state.formGitBranch = "";
+    state.formGitFork = false;
+    state.creating = false;
+    await refreshWorkspaceList();
+    toast(`Project ready → ${cwd}`, "ok", 3500);
+    if (form.startSession) {
+      // Switch to new-session modal with the new workspace selected
+      openPanelOnly("new");
+      navigate({ name: "new" }, { apply: false, replace: true });
+      window.requestAnimationFrame(() => {
+        const name = document.getElementById("sess-name") as HTMLInputElement | null;
+        name?.focus();
+      });
+    } else {
+      await closePanelOnly();
+      navigate({ name: "desk" }, { replace: true, apply: false });
+      paintChrome();
+    }
+  } catch (e) {
+    state.creating = false;
+    const msg = (e as Error).message || "clone failed";
     state.createError = msg;
     paintPanel();
     toast(msg, "err", 6000);
@@ -2112,11 +2878,12 @@ function sshKeysHTML(): string {
       const fp = k.fingerprint ? esc(k.fingerprint) : "";
       return `<div class="ssh-key-row">
         <div class="ssh-key-main">
-          <div class="ssh-key-name"><code>${esc(k.name)}</code>
+          <div class="ssh-key-name">
+            <code>${esc(k.name)}</code>
             <span class="badge">${esc(k.type || "?")}</span>
             <span class="badge">${esc(kind)}</span>
           </div>
-          ${fp ? `<div class="ssh-key-fp">${fp}</div>` : ""}
+          ${fp ? `<div class="ssh-key-fp" title="${fp}">${fp}</div>` : ""}
           ${k.comment ? `<div class="ssh-key-comment">${esc(k.comment)}</div>` : ""}
         </div>
         <div class="ssh-key-actions">
@@ -2303,6 +3070,7 @@ async function onGHSetupGit(): Promise<void> {
 
 function panelTitle(p: Panel): string {
   if (p === "new") return "New session";
+  if (p === "new-project") return "New project";
   if (p === "tools") return "Quick tools";
   if (p === "help") return "Shortcuts";
   return "Panel";
@@ -2324,6 +3092,7 @@ function stripModalChrome(full: string): string {
 
 function panelBodyHTML(p: Panel): string {
   if (p === "new") return stripModalChrome(newSessionHTML());
+  if (p === "new-project") return stripModalChrome(newProjectHTML());
   if (p === "tools") return stripModalChrome(toolsHTML());
   if (p === "help") return stripModalChrome(helpHTML());
   return "";
@@ -2380,12 +3149,18 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   openAppDrawer({
     title: panelTitle(p),
     html: panelBodyHTML(p),
-    variant: p === "tools" || p === "new" ? "dialog" : p === "help" ? "sheet" : "dialog",
+    variant:
+      p === "tools" || p === "new" || p === "new-project"
+        ? "dialog"
+        : p === "help"
+          ? "sheet"
+          : "dialog",
     onClose: (reason) => {
       if (reason === "user") {
         state.panel = null;
         state.createError = "";
         term?.focus();
+        syncUrlFromUI({ replace: true });
       }
     },
   });
@@ -2426,250 +3201,248 @@ function workspaceOptionsHTML(): string {
 }
 
 function newSessionHTML(): string {
-  return `
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-title" data-modal>
-      <div class="modal-head">
-        <div>
-          <div class="eyebrow">Sessions</div>
-          <h2 id="new-title">New session</h2>
-        </div>
-        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-        </button>
-      </div>
-      <form id="create-form" class="modal-body" data-action-form="create-session">
-        <div class="field-grid">
-          <div class="field">
-            <label for="sess-agent">Agent</label>
-            <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
-              ${agentSwatchHTML(state.formAgent)}
-              <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
-                ${agentOptionsHTML()}
-              </select>
-            </div>
-          </div>
-          <div class="field">
-            <label for="sess-cwd">Workspace</label>
-            <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
-              ${workspaceOptionsHTML()}
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label for="sess-name">Label <span class="opt">optional</span></label>
-          <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
-        </div>
-        ${
-          state.agentAccountPlatform
-            ? `<div class="field">
-          <label for="sess-account">Account <span class="opt">${esc(state.agentAccountPlatform)}</span></label>
+  // Body-only: Vaul owns title/close chrome.
+  const accountBlock = state.agentAccountPlatform
+    ? `<details class="details-block" ${state.formAccount ? "open" : ""}>
+        <summary>Account <span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></summary>
+        <div class="field" style="margin-top:0.65rem">
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
           <div class="check-row" style="margin-top:0.55rem">
-            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — parallel-safe private HOME</label>
-            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch — host-wide login</label>
+            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — private HOME</label>
+            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch</label>
           </div>
-          <p class="form-hint">Manage profiles in Settings, or: <code>cursor-switch --platform ${esc(state.agentAccountPlatform)} save personal</code></p>
-        </div>`
-            : ""
-        }
+          <p class="form-hint">${state.agentAccounts.filter((a) => a.saved).length} saved · <a href="/profile/accounts" data-nav data-action="open-settings" data-tab="accounts" class="linkish">Manage</a></p>
+        </div>
+      </details>`
+    : "";
+  return `
+    <form id="create-form" class="modal-body sheet-form" data-action-form="create-session">
+      <div class="field-grid">
         <div class="field">
-          <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
-          <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
+          <label for="sess-agent">Agent</label>
+          <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
+            ${agentSwatchHTML(state.formAgent)}
+            <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
+              ${agentOptionsHTML()}
+            </select>
+          </div>
         </div>
-
-        <details class="clone-block" ${state.formGitUrl ? "open" : ""}>
-          <summary>Clone project from git</summary>
-          <p class="form-hint" style="margin-top:0.35rem;margin-bottom:0.75rem">Clone or GitHub-fork into the workspace, then start the agent there. Leave empty to use the workspace above.</p>
-          <div class="field">
-            <label for="sess-git-url">Repo URL or owner/repo</label>
-            <input id="sess-git-url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git" autocomplete="off" ${state.creating ? "disabled" : ""} />
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="sess-git-name">Folder <span class="opt">optional</span></label>
-              <input id="sess-git-name" value="${esc(state.formGitName)}" placeholder="repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
-            </div>
-            <div class="field">
-              <label for="sess-git-branch">Branch <span class="opt">optional</span></label>
-              <input id="sess-git-branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
-            </div>
-          </div>
-          <div class="check-row">
-            <label class="check">
-              <input type="checkbox" id="sess-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-              Fork on GitHub first <span class="opt">(needs gh auth)</span>
-            </label>
-            <label class="check">
-              <input type="checkbox" id="sess-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-              Shallow clone
-            </label>
-          </div>
-        </details>
-
-        <p class="form-hint">Runs in server-side tmux. Closing a browser tab detaches only.</p>
-        ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
-        <div class="modal-actions">
-          <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
-          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-            ${state.creating ? (state.formGitUrl ? "Cloning…" : "Starting…") : state.formGitUrl ? "Clone & start" : "Start session"}
-          </button>
+        <div class="field">
+          <label for="sess-cwd">Workspace</label>
+          <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
+            ${workspaceOptionsHTML()}
+          </select>
         </div>
-      </form>
+      </div>
+      <div class="field">
+        <label for="sess-name">Label <span class="opt">optional</span></label>
+        <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
+      </div>
+      ${accountBlock}
+      <div class="field">
+        <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
+        <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
+      </div>
+      <p class="form-hint">Runs in tmux · <a href="/project/new" data-nav data-action="new-project" class="linkish">New project</a> to clone first</p>
+      ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
+      <div class="modal-actions">
+        <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
+        <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
+          ${state.creating ? "Starting…" : "Start session"}
+        </button>
+      </div>
+    </form>`;
+}
+
+function newProjectHTML(): string {
+  return `
+    <form id="project-form" class="modal-body sheet-form" data-action-form="create-project">
+      <div class="field">
+        <label for="proj-git-url">Repo URL or owner/repo</label>
+        <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label for="proj-git-name">Folder <span class="opt">optional</span></label>
+          <input id="proj-git-name" name="name" value="${esc(state.formGitName)}" placeholder="repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
+        </div>
+        <div class="field">
+          <label for="proj-git-branch">Branch <span class="opt">optional</span></label>
+          <input id="proj-git-branch" name="branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
+        </div>
+      </div>
+      <div class="check-row">
+        <label class="check">
+          <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+          Fork on GitHub first
+        </label>
+        <label class="check">
+          <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+          Shallow clone
+        </label>
+        <label class="check">
+          <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
+          Open session after clone
+        </label>
+      </div>
+      <p class="form-hint">Auth via host SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">Settings → GitHub</a></p>
+      ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
+      <div class="modal-actions">
+        <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
+        <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
+          ${state.creating ? "Cloning…" : "Clone project"}
+        </button>
+      </div>
+    </form>`;
+}
+
+function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
+  const settings = !!opts?.settings;
+  const wrap = settings ? "settings-card col" : "tool-block";
+  const head = settings ? "settings-card-title" : "tool-block-head";
+  const titleOpen = settings ? "strong" : "h3";
+  const titleClose = settings ? "strong" : "h3";
+  return `
+    <div class="field">
+      <label for="tools-cwd-select">Target workspace</label>
+      <select id="tools-cwd-select" data-action-change="tools-cwd">
+        ${workspaceOptionsHTML()}
+      </select>
+    </div>
+    <div class="${settings ? "settings-cards" : "tools-stack"}">
+      <section class="${wrap}">
+        <div class="${head}">
+          <${titleOpen}>Context</${titleClose}>
+          <span class="tool-status" data-status="ctx" id="ctx-status">${esc(state.ctxStatus)}</span>
+        </div>
+        <p class="tool-desc">Map + memory pack · auto-ensured on new session</p>
+        <div class="btn-row">
+          <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
+          <button type="button" class="ghost btn-sm" data-action="ctx-pack">Show pack</button>
+        </div>
+      </section>
+      <section class="${wrap}">
+        <div class="${head}">
+          <${titleOpen}>Project map</${titleClose}>
+          <span class="tool-status" data-status="map" id="map-status">${esc(state.mapStatus)}</span>
+        </div>
+        <p class="tool-desc"><code>.agents/PROJECT_MAP.md</code></p>
+        <div class="btn-row">
+          <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
+          <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
+        </div>
+      </section>
+      <section class="${wrap}">
+        <div class="${head}">
+          <${titleOpen}>Memory</${titleClose}>
+          <span class="tool-status" data-status="mem" id="mem-status">${esc(state.memStatus)}</span>
+        </div>
+        <p class="tool-desc">FTS index of map + docs</p>
+        <div class="btn-row">
+          <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
+        </div>
+        <form class="mem-search" data-action-form="mem-search">
+          <input id="mem-query" name="q" data-mem-query placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
+          <button type="submit" class="primary btn-sm">Search</button>
+        </form>
+        <div id="mem-hits" class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
+      </section>
+      <section class="${wrap}">
+        <div class="${head}">
+          <${titleOpen}>Playwright</${titleClose}>
+          <span class="tool-status" data-status="pw" id="pw-status">${esc(state.pwStatus)}</span>
+        </div>
+        <p class="tool-desc">Xvfb + docker browser stack</p>
+        <div class="btn-row">
+          <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-install">Install</button>
+        </div>
+      </section>
     </div>`;
 }
 
 function toolsHTML(): string {
   return `
-    <div class="modal modal-tools" role="dialog" aria-modal="true" aria-labelledby="tools-title" data-modal>
-      <div class="modal-head">
-        <div>
-          <div class="eyebrow">Workspace</div>
-          <h2 id="tools-title">Quick tools</h2>
-        </div>
-        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-        </button>
-      </div>
-      <div class="modal-body tools-body">
-        <div class="field">
-          <label for="tools-cwd-select">Target workspace</label>
-          <select id="tools-cwd-select" data-action-change="tools-cwd">
-            ${workspaceOptionsHTML()}
-          </select>
-          <p class="form-hint">Actions apply to this cwd under workspace_root.</p>
-        </div>
-
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>Context</h3>
-            <span class="tool-status" data-status="ctx" id="ctx-status">${esc(state.ctxStatus)}</span>
-          </div>
-          <p class="tool-desc">Map + memory pack · auto-ensured on new session</p>
-          <div class="btn-row">
-            <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
-            <button type="button" class="ghost btn-sm" data-action="ctx-pack">Show pack</button>
-          </div>
-        </section>
-
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>Project map</h3>
-            <span class="tool-status" data-status="map" id="map-status">${esc(state.mapStatus)}</span>
-          </div>
-          <p class="tool-desc">Writes <code>.agents/PROJECT_MAP.md</code> for agent orientation</p>
-          <div class="btn-row">
-            <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
-            <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
-          </div>
-        </section>
-
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>Memory</h3>
-            <span class="tool-status" data-status="mem" id="mem-status">${esc(state.memStatus)}</span>
-          </div>
-          <p class="tool-desc">FTS index of map + docs (agents: <code>agentsctl memory search</code>)</p>
-          <div class="btn-row">
-            <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
-          </div>
-          <form class="mem-search" data-action-form="mem-search">
-            <input id="mem-query" name="q" data-mem-query placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
-            <button type="submit" class="primary btn-sm">Search</button>
-          </form>
-          <div id="mem-hits" class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
-        </section>
-
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>Playwright</h3>
-            <span class="tool-status" data-status="pw" id="pw-status">${esc(state.pwStatus)}</span>
-          </div>
-          <p class="tool-desc">Xvfb + docker browser stack for headed agent browsers</p>
-          <div class="btn-row">
-            <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
-            <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
-            <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
-            <button type="button" class="ghost btn-sm" data-action="pw-install">Install browsers</button>
-          </div>
-        </section>
-
-        <p class="form-hint" style="margin-top:0.5rem">
-          Accounts, GitHub, and SSH keys live in
-          <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>.
-        </p>
-      </div>
+    <div class="modal-body tools-body sheet-form">
+      ${workspaceToolsBodyHTML()}
+      <p class="form-hint" style="margin-top:0.75rem">
+        Accounts, GitHub, SSH →
+        <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>
+      </p>
     </div>`;
 }
 
 function helpHTML(): string {
   return `
-    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="help-title" data-modal>
-      <div class="modal-head">
-        <div>
-          <div class="eyebrow">Reference</div>
-          <h2 id="help-title">Keyboard shortcuts</h2>
-        </div>
-        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-        </button>
+    <div class="modal-body help-body sheet-form">
+      <p class="form-hint help-lede">
+        Bare keys outside the terminal. Hold <kbd>Alt</kbd> while the TTY is focused.
+        <kbd>Ctrl</kbd><kbd>Tab</kbd> always switches tabs (even over the agent).
+      </p>
+      <div class="help-grid">
+        <section class="help-section">
+          <h3>Sessions (list)</h3>
+          <dl class="keys">
+            <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Move list cursor</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>j</kbd> <kbd>⇧</kbd><kbd>k</kbd></dt><dd>Step list + open</dd></div>
+            <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Same as j/k</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Step list + open</dd></div>
+            <div><dt><kbd>Enter</kbd> <kbd>o</kbd> <kbd>Space</kbd></dt><dd>Open highlighted</dd></div>
+            <div><dt><kbd>/</kbd></dt><dd>Filter sessions</dd></div>
+            <div><dt><kbd>y</kbd></dt><dd>Copy session id</dd></div>
+            <div><dt><kbd>r</kbd></dt><dd>Refresh list</dd></div>
+          </dl>
+        </section>
+        <section class="help-section">
+          <h3>Tabs (open)</h3>
+          <dl class="keys">
+            <div><dt><kbd>h</kbd> <kbd>l</kbd></dt><dd>Prev / next tab</dd></div>
+            <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Prev / next tab</dd></div>
+            <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Prev / next tab</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>Tab</kbd></dt><dd>Next tab (works in TTY)</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>⇧</kbd><kbd>Tab</kbd></dt><dd>Prev tab</dd></div>
+            <div><dt><kbd>1</kbd>–<kbd>9</kbd> <kbd>0</kbd></dt><dd>Jump tab (0 = last)</dd></div>
+            <div><dt><kbd>Ctrl</kbd><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab from TTY</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>h</kbd> <kbd>Home</kbd></dt><dd>First tab</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>l</kbd> <kbd>End</kbd></dt><dd>Last tab</dd></div>
+            <div><dt><kbd>x</kbd></dt><dd>Close tab (detach only)</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>x</kbd></dt><dd>Close all tabs</dd></div>
+          </dl>
+        </section>
+        <section class="help-section">
+          <h3>Actions</h3>
+          <dl class="keys">
+            <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>n</kbd></dt><dd>New project</dd></div>
+            <div><dt><kbd>s</kbd></dt><dd>Stop agent</dd></div>
+            <div><dt><kbd>e</kbd></dt><dd>Resume agent</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>d</kbd></dt><dd>Delete session</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>s</kbd></dt><dd>Settings → SSH</dd></div>
+            <div><dt><kbd>c</kbd></dt><dd>Clear stopped</dd></div>
+            <div><dt><kbd>i</kbd> <kbd>\`</kbd></dt><dd>Focus terminal</dd></div>
+            <div><dt><kbd>u</kbd> <kbd>Esc</kbd></dt><dd>Arm shortcuts / blur TTY</dd></div>
+            <div><dt><kbd>f</kbd></dt><dd>Fit terminal</dd></div>
+            <div><dt><kbd>d</kbd></dt><dd>Desk (no modal)</dd></div>
+          </dl>
+        </section>
+        <section class="help-section">
+          <h3>Panels</h3>
+          <dl class="keys">
+            <div><dt><kbd>t</kbd></dt><dd>Tools</dd></div>
+            <div><dt><kbd>,</kbd> <kbd>a</kbd></dt><dd>Settings</dd></div>
+            <div><dt><kbd>g</kbd></dt><dd>Settings → GitHub</dd></div>
+            <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
+            <div><dt><kbd>p</kbd> <kbd>Ctrl</kbd><kbd>K</kbd></dt><dd>Command palette</dd></div>
+            <div><dt><kbd>?</kbd></dt><dd>This help</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Close overlay</dd></div>
+          </dl>
+        </section>
       </div>
-      <div class="modal-body help-body">
-        <p class="form-hint help-lede">Bare keys work when focus is outside the terminal (sidebar, empty desk). Prefix with <kbd>Alt</kbd> to use the same action while the TTY is focused. Inputs still eat bare keys.</p>
-        <div class="help-grid">
-          <section class="help-section">
-            <h3>Navigate</h3>
-            <dl class="keys">
-              <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
-              <div><dt><kbd>/</kbd></dt><dd>Focus filter</dd></div>
-              <div><dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Move list cursor</dd></div>
-              <div><dt><kbd>Enter</kbd> / <kbd>o</kbd></dt><dd>Open cursor / active</dd></div>
-              <div><dt><kbd>[</kbd> / <kbd>]</kbd></dt><dd>Prev / next tab</dd></div>
-              <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump to tab</dd></div>
-              <div><dt><kbd>0</kbd></dt><dd>Last open tab</dd></div>
-              <div><dt><kbd>\`</kbd></dt><dd>Focus terminal</dd></div>
-              <div><dt><kbd>Esc</kbd></dt><dd>Close overlay → rail</dd></div>
-            </dl>
-          </section>
-          <section class="help-section">
-            <h3>Sessions</h3>
-            <dl class="keys">
-              <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
-              <div><dt><kbd>x</kbd></dt><dd>Close tab (detach only)</dd></div>
-              <div><dt><kbd>Shift</kbd><kbd>x</kbd></dt><dd>Close all tabs</dd></div>
-              <div><dt><kbd>s</kbd></dt><dd>Stop agent (confirm)</dd></div>
-              <div><dt><kbd>e</kbd></dt><dd>Resume agent</dd></div>
-              <div><dt><kbd>Shift</kbd><kbd>d</kbd></dt><dd>Delete session (confirm)</dd></div>
-              <div><dt><kbd>c</kbd></dt><dd>Clear stopped (confirm)</dd></div>
-              <div><dt><kbd>r</kbd></dt><dd>Refresh session list</dd></div>
-            </dl>
-          </section>
-          <section class="help-section">
-            <h3>Panels</h3>
-            <dl class="keys">
-              <div><dt><kbd>t</kbd></dt><dd>Quick tools</dd></div>
-              <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
-              <div><dt><kbd>g</kbd></dt><dd>Settings → GitHub</dd></div>
-              <div><dt><kbd>Shift</kbd><kbd>k</kbd></dt><dd>Settings → SSH keys</dd></div>
-              <div><dt><kbd>a</kbd></dt><dd>Settings → accounts</dd></div>
-              <div><dt><kbd>f</kbd></dt><dd>Fit terminal</dd></div>
-              <div><dt><kbd>?</kbd></dt><dd>This help</dd></div>
-            </dl>
-          </section>
-          <section class="help-section">
-            <h3>Over the TTY</h3>
-            <dl class="keys">
-              <div><dt><kbd>Alt</kbd>+ letter</dt><dd>Same as bare key</dd></div>
-              <div><dt><kbd>Alt</kbd><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab</dd></div>
-              <div><dt><kbd>Alt</kbd><kbd>[</kbd> <kbd>]</kbd></dt><dd>Cycle tabs</dd></div>
-              <div><dt><kbd>Alt</kbd><kbd>Enter</kbd></dt><dd>Focus terminal</dd></div>
-              <div><dt><kbd>Alt</kbd><kbd>Shift</kbd><kbd>1</kbd>–<kbd>5</kbd></dt><dd>Settings tabs</dd></div>
-            </dl>
-          </section>
-        </div>
-        <p class="form-hint">Closing a tab never kills the agent — use Stop or Delete for that.</p>
-      </div>
+      <p class="form-hint">Tab close never kills the agent — use <kbd>s</kbd> Stop or <kbd>⇧</kbd><kbd>d</kbd> Delete.</p>
     </div>`;
 }
 
@@ -2793,20 +3566,20 @@ function loginHTML(): string {
         <span class="logo-mark" aria-hidden="true">a</span>
         <div>
           <h1>agents</h1>
-          <p class="sub">Control plane</p>
+          <p class="sub">Remote TTY control plane</p>
         </div>
       </div>
-      <p class="login-lede">Paste the same bearer token as <code>agentsctl</code> (<code>AGENTSD_TOKEN</code>), or run <code>agentsctl web</code> for auto-login.</p>
       <form id="login-form">
         <div class="field">
           <label for="token">API token</label>
-          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Paste token…" required autofocus />
+          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="AGENTSD_TOKEN" required autofocus />
         </div>
-        <button class="primary" type="submit" style="width:100%">Connect</button>
-        ${state.loginError ? `<p class="error">${esc(state.loginError)}</p>` : ""}
-        ${state.busy ? `<p class="login-busy">Connecting…</p>` : ""}
+        ${state.loginError ? `<p class="error form-error" role="alert">${esc(state.loginError)}</p>` : ""}
+        <button class="primary" type="submit" style="width:100%" ${state.busy ? "disabled" : ""}>
+          ${state.busy ? "Connecting…" : "Connect"}
+        </button>
       </form>
-      <p class="hint">Stored in this browser only. Full host control — treat it like root shell access.</p>
+      <p class="hint">Same bearer as <code>agentsctl</code>. Or run <code>agentsctl web</code> for auto-login. Stored in this browser only.</p>
     </div>
   </div>`;
 }
@@ -2827,6 +3600,10 @@ function iconSvg(name: string): string {
       return `<svg ${common}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>`;
     case "logout":
       return `<svg ${common}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`;
+    case "search":
+      return `<svg ${common}><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
+    case "more":
+      return `<svg ${common}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>`;
     default:
       return "";
   }
@@ -2836,15 +3613,25 @@ function breadcrumbHTML(): string {
   const tab = state.openTabs.find((t) => t.id === state.activeId);
   if (!tab) {
     return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
-      <span>Desk</span>
+      <a href="/desk" data-nav data-route="desk">Desk</a>
       <span class="sep-chev">/</span>
       <strong>Sessions</strong>
     </nav>`;
   }
+  const sessHref = sessionPath(tab.cwd, tab.id);
+  const toolsHref = sessionPath(tab.cwd, tab.id, true);
+  const toolsOpen = state.panel === "tools";
   return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
-    <span>Sessions</span>
+    <a href="/desk" data-nav data-route="desk">Desk</a>
     <span class="sep-chev">/</span>
-    <strong title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(tab.title)}</strong>
+    <a href="${esc(sessHref)}" data-nav title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(basename(tab.cwd))}</a>
+    <span class="sep-chev">/</span>
+    <a href="${esc(sessHref)}" data-nav class="${toolsOpen ? "" : "current"}"><strong title="${esc(tab.id)}">${esc(tab.title)}</strong></a>
+    ${
+      toolsOpen
+        ? `<span class="sep-chev">/</span><a href="${esc(toolsHref)}" data-nav class="current"><strong>Tools</strong></a>`
+        : ""
+    }
   </nav>`;
 }
 
@@ -2867,30 +3654,32 @@ function shellHTML(): string {
 
       <div class="sidebar-content">
         <div class="sidebar-group">
-          <div class="sidebar-group-label">Platform</div>
           <div class="sidebar-actions">
-            <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
-              <span>+ New session</span>
+            <a href="/" class="primary sidebar-new" data-action="new-session" data-nav id="btn-new">
+              <span>New session</span>
               <kbd>n</kbd>
-            </button>
+            </a>
+            <a href="/project/new" class="linkish sidebar-sublink" data-action="new-project" data-nav id="btn-new-project" title="Clone a repo (Shift+n)">
+              New project
+            </a>
           </div>
           <div class="sidebar-menu">
-            <button type="button" class="sidebar-menu-btn" data-action="tools" title="Quick tools (t)">
+            <a href="/tools" class="sidebar-menu-btn" data-action="tools" data-nav title="Quick tools (t)">
               ${iconSvg("wrench")}<span>Tools</span><kbd>t</kbd>
-            </button>
-            <button type="button" class="sidebar-menu-btn" data-action="open-settings" data-tab="accounts" title="Settings (,)">
+            </a>
+            <a href="/profile" class="sidebar-menu-btn" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">
               ${iconSvg("settings")}<span>Settings</span><kbd>,</kbd>
-            </button>
-            <button type="button" class="sidebar-menu-btn" data-action="help" title="Shortcuts (?)">
+            </a>
+            <a href="/help" class="sidebar-menu-btn" data-action="help" data-nav title="Shortcuts (?)">
               ${iconSvg("help")}<span>Shortcuts</span><kbd>?</kbd>
-            </button>
+            </a>
           </div>
         </div>
 
         <div class="sidebar-group grow">
           <div class="sidebar-group-label">Sessions</div>
           <div class="sidebar-filter">
-            <input id="filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" />
+            <input id="filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" />
             <span class="sess-count" id="sess-count" title="running / total">0/0</span>
           </div>
           <div class="session-list" id="session-list">
@@ -2906,11 +3695,10 @@ function shellHTML(): string {
             <strong id="nav-host">${esc(host)}</strong>
             <span id="nav-status">${esc(state.statusText || "connected")}</span>
           </span>
-          ${iconSvg("settings")}
         </button>
         <div class="sidebar-foot-actions">
-          <button type="button" class="ghost btn-sm" data-action="prune" title="Delete all stopped sessions">Clear stopped</button>
-          <button type="button" class="ghost btn-sm" data-action="logout" title="Log out">${iconSvg("logout")} Logout</button>
+          <button type="button" class="ghost btn-icon sm" data-action="prune" title="Clear stopped sessions">${iconSvg("terminal")}</button>
+          <button type="button" class="ghost btn-icon sm" data-action="logout" title="Log out">${iconSvg("logout")}</button>
         </div>
       </div>
     </aside>
@@ -2927,23 +3715,25 @@ function shellHTML(): string {
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
-          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">New</button>
-          <button type="button" class="ghost btn-sm" data-action="tools" title="Tools (t)">Tools</button>
-          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (,)">Settings</button>
+          <button type="button" class="ghost btn-icon sm" data-action="open-palette" title="Command palette (⌘K)" aria-label="Command palette">
+            ${iconSvg("search")}
+          </button>
+          <details class="menu topbar-menu">
+            <summary class="ghost btn-icon sm" title="More" aria-label="More actions">${iconSvg("more")}</summary>
+            <div class="menu-panel">
+              <button type="button" data-action="new-session">New session <kbd>n</kbd></button>
+              <button type="button" data-action="new-project">New project <kbd>⇧n</kbd></button>
+              <button type="button" data-action="tools">Tools <kbd>t</kbd></button>
+              <button type="button" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
+              <button type="button" data-action="help">Shortcuts <kbd>?</kbd></button>
+              <button type="button" data-action="toggle-theme">Toggle theme</button>
+              <button type="button" data-action="prune">Clear stopped</button>
+            </div>
+          </details>
         </div>
       </header>
       <div class="term-wrap">
-        <div class="term-empty">
-          <div class="term-empty-card">
-            <div class="term-empty-mark" aria-hidden="true">a</div>
-            <h2>No session selected</h2>
-            <p>Open a session from the sidebar, or start a new one. Closing a tab detaches only — agents keep running in tmux.</p>
-            <div class="term-empty-actions">
-              <button type="button" class="primary" data-action="new-session">New session</button>
-              <button type="button" class="ghost" data-action="tools">Tools</button>
-            </div>
-          </div>
-        </div>
+        ${emptyTermHTML()}
       </div>
       <footer class="status-bar" id="status-bar">${statusHTML()}</footer>
     </main>
@@ -2975,8 +3765,9 @@ function sessionListHTML(): string {
       const cursor = s.id === state.listCursorId ? "cursor" : "";
       const age = relativeTime(s.created_at);
       const ag = agentClass(s.agent);
+      const href = sessionPath(s.cwd, s.id);
       return `
-      <div class="session-item ${active} ${cursor} ${ag}" data-open="${esc(s.id)}">
+      <a class="session-item ${active} ${cursor} ${ag}" href="${esc(href)}" data-open="${esc(s.id)}" data-nav>
         <div class="session-item-main">
           <div class="session-top">
             <span class="session-name">${esc(s.name || shortId(s.id))}</span>
@@ -2988,15 +3779,18 @@ function sessionListHTML(): string {
             ${age ? `<span class="age">${esc(age)}</span>` : ""}
           </div>
         </div>
-        <div class="session-actions">
-          ${
-            s.state === "running"
-              ? `<button type="button" class="ghost btn-sm act" data-kill="${esc(s.id)}" title="Stop agent (s)">Stop</button>`
-              : `<button type="button" class="ghost btn-sm act resume-text" data-resume="${esc(s.id)}" title="Resume agent (e)">Resume</button>`
-          }
-          <button type="button" class="ghost btn-sm act danger-text" data-delete="${esc(s.id)}" title="Delete session (Shift+d)">Delete</button>
-        </div>
-      </div>`;
+        <details class="menu session-menu">
+          <summary class="ghost btn-icon sm act" title="Session actions" aria-label="Session actions">${iconSvg("more")}</summary>
+          <div class="menu-panel">
+            ${
+              s.state === "running"
+                ? `<button type="button" data-kill="${esc(s.id)}">Stop</button>`
+                : `<button type="button" class="resume-text" data-resume="${esc(s.id)}">Resume</button>`
+            }
+            <button type="button" class="danger-text" data-delete="${esc(s.id)}">Delete</button>
+          </div>
+        </details>
+      </a>`;
     })
     .join("");
 }
@@ -3010,13 +3804,14 @@ function tabsHTML(): string {
       const active = t.id === state.activeId ? "active" : "";
       const live = t.state === "running" ? "live" : "dead";
       const ag = agentClass(t.agent);
+      const href = sessionPath(t.cwd, t.id);
       return `
-      <div class="tab ${active} ${live} ${ag}" data-tab="${esc(t.id)}" title="${esc(t.agent)} · ${esc(t.id)}">
+      <a class="tab ${active} ${live} ${ag}" href="${esc(href)}" data-tab="${esc(t.id)}" data-nav title="${esc(t.agent)} · ${esc(t.id)}">
         <span class="tab-dot" title="${esc(t.agent)}"></span>
         <span class="tab-label">${esc(t.title)}</span>
         ${i < 9 ? `<span class="tab-num">${i + 1}</span>` : ""}
         <button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)">×</button>
-      </div>`;
+      </a>`;
     })
     .join("");
 }
@@ -3027,13 +3822,10 @@ function statusHTML(): string {
   const run = state.sessions.filter((s) => s.state === "running").length;
   return `
     <span class="status-dot ${cls}"></span>
-    <span>${esc(state.statusText)}</span>
-    <span class="sep">·</span>
     <span>${run} live</span>
     <span class="sep">·</span>
     <span>${open} open</span>
-    <span class="sep">·</span>
-    <span class="status-hint">tab close detaches only</span>
+    <span class="status-hint"> · tab close detaches</span>
   `;
 }
 
@@ -3104,7 +3896,7 @@ function focusTerminal(): void {
 function cycleTab(delta: number): void {
   const tabs = state.openTabs;
   if (!tabs.length) {
-    toast("No open tabs", "info", 1400);
+    toast("No open tabs — open a session first", "info", 1600);
     return;
   }
   const cur = tabs.findIndex((t) => t.id === state.activeId);
@@ -3119,6 +3911,10 @@ function cycleTab(delta: number): void {
 
 function jumpTab(n: number): void {
   // 1–9 → index 0–8; 0 → last
+  if (!state.openTabs.length) {
+    toast("No open tabs", "info", 1400);
+    return;
+  }
   if (n === 0) {
     const last = state.openTabs[state.openTabs.length - 1];
     if (last) void activateTab(last.id);
@@ -3126,6 +3922,46 @@ function jumpTab(n: number): void {
   }
   const tab = state.openTabs[n - 1];
   if (tab) void activateTab(tab.id);
+  else toast(`No tab ${n}`, "info", 1200);
+}
+
+function jumpTabEdge(which: "first" | "last"): void {
+  const tabs = state.openTabs;
+  if (!tabs.length) {
+    toast("No open tabs", "info", 1400);
+    return;
+  }
+  const t = which === "first" ? tabs[0] : tabs[tabs.length - 1];
+  void activateTab(t.id);
+}
+
+/** Move list cursor and open (or prompt to resume) — quick session switch. */
+function stepSessionAndOpen(delta: number): void {
+  moveListCursor(delta);
+  const id = state.listCursorId;
+  if (!id) return;
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  if (s.state === "running") {
+    openTab(s);
+    return;
+  }
+  // Open stopped session into a tab so user can resume with e
+  openTab(s);
+}
+
+async function copyTargetSessionId(): Promise<void> {
+  const id = targetSessionId();
+  if (!id) {
+    toast("No session to copy", "info", 1400);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(id);
+    toast(`Copied ${id.slice(0, 12)}…`, "ok", 1600);
+  } catch {
+    toast(id, "info", 6000);
+  }
 }
 
 function closeAllTabs(): void {
@@ -3274,9 +4110,17 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
 
   switch (key) {
     case "ArrowDown":
+      if (shift) {
+        stepSessionAndOpen(1);
+        return true;
+      }
       moveListCursor(1);
       return true;
     case "ArrowUp":
+      if (shift) {
+        stepSessionAndOpen(-1);
+        return true;
+      }
       moveListCursor(-1);
       return true;
     case "ArrowLeft":
@@ -3285,6 +4129,23 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
     case "ArrowRight":
       cycleTab(1);
       return true;
+    case "Home":
+      jumpTabEdge("first");
+      return true;
+    case "End":
+      jumpTabEdge("last");
+      return true;
+    case "PageDown":
+      cycleTab(1);
+      return true;
+    case "PageUp":
+      cycleTab(-1);
+      return true;
+    case " ":
+    case "Spacebar":
+      // Space opens highlighted session (like Enter)
+      openCursorOrActive();
+      return true;
     case "Enter":
       if (ev.altKey) {
         focusTerminal();
@@ -3292,12 +4153,20 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       }
       openCursorOrActive();
       return true;
+    case "Tab":
+      // Bare Tab cycles open tabs when not typing (see bindKeys for Ctrl+Tab)
+      cycleTab(shift ? -1 : 1);
+      return true;
     default:
       break;
   }
 
   switch (lower) {
     case "n":
+      if (shift) {
+        openPanel("new-project");
+        return true;
+      }
       openPanel("new");
       return true;
     case "t":
@@ -3315,13 +4184,33 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       return true;
     case "k":
       if (shift) {
-        openSettings("ssh");
+        // Shift+K: step up list and open
+        stepSessionAndOpen(-1);
         return true;
       }
       moveListCursor(-1);
       return true;
     case "j":
+      if (shift) {
+        // Shift+J: step down list and open
+        stepSessionAndOpen(1);
+        return true;
+      }
       moveListCursor(1);
+      return true;
+    case "h":
+      if (shift) {
+        jumpTabEdge("first");
+        return true;
+      }
+      cycleTab(-1);
+      return true;
+    case "l":
+      if (shift) {
+        jumpTabEdge("last");
+        return true;
+      }
+      cycleTab(1);
       return true;
     case "?":
       openPanel("help");
@@ -3345,9 +4234,17 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       openCursorOrActive();
       return true;
     case "[":
+      if (shift) {
+        jumpTabEdge("first");
+        return true;
+      }
       cycleTab(-1);
       return true;
     case "]":
+      if (shift) {
+        jumpTabEdge("last");
+        return true;
+      }
       cycleTab(1);
       return true;
     case "x":
@@ -3361,6 +4258,10 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       } else toast("No tab to close", "info", 1400);
       return true;
     case "s":
+      if (shift) {
+        openSettings("ssh");
+        return true;
+      }
       {
         const id = targetSessionId();
         if (id) void onKillSession(id);
@@ -3381,9 +4282,17 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
         else toast("No session to delete", "info", 1400);
         return true;
       }
-      return false;
+      // bare d → desk (no modal); keep active session tabs
+      if (state.panel) void closePanel();
+      if (state.settingsOpen) void closeSettingsOnly();
+      navigate({ name: "desk" }, { apply: false });
+      syncUrlFromUI({ replace: true });
+      return true;
     case "c":
       void onPrune();
+      return true;
+    case "y":
+      void copyTargetSessionId();
       return true;
     case "r":
       void refreshSessionsManual();
@@ -3391,8 +4300,14 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
     case "p":
       openCommandPalette();
       return true;
+    case "i":
     case "`":
       focusTerminal();
+      return true;
+    case "u":
+      // "undo" focus — blur term / arm shortcuts
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      toast("Shortcuts armed — j/k sessions · h/l tabs · ?", "info", 2000);
       return true;
     default:
       return false;
@@ -3449,14 +4364,51 @@ function bindKeys(): void {
     if (typing && !inTerm) return;
 
     // Command palette: Ctrl/Cmd+K (and Ctrl/Cmd+P)
-    if ((ev.metaKey || ev.ctrlKey) && (ev.key === "k" || ev.key === "K" || ev.key === "p" || ev.key === "P")) {
+    if (
+      (ev.metaKey || ev.ctrlKey) &&
+      !ev.altKey &&
+      (ev.key === "k" || ev.key === "K" || ev.key === "p" || ev.key === "P")
+    ) {
       ev.preventDefault();
       if (state.commandPalette) closeCommandPalette();
       else openCommandPalette();
       return;
     }
-    // Ctrl/Cmd reserved for browser + terminal (copy etc.)
-    if (ev.metaKey || ev.ctrlKey) return;
+
+    // Tab switching with modifiers — works even over TTY (agent doesn't get these)
+    if (ev.metaKey || ev.ctrlKey) {
+      // Ctrl/Cmd+Tab · Ctrl/Cmd+Shift+Tab
+      if (ev.key === "Tab") {
+        ev.preventDefault();
+        cycleTab(ev.shiftKey ? -1 : 1);
+        return;
+      }
+      // Ctrl/Cmd+PageDown / PageUp
+      if (ev.key === "PageDown") {
+        ev.preventDefault();
+        cycleTab(1);
+        return;
+      }
+      if (ev.key === "PageUp") {
+        ev.preventDefault();
+        cycleTab(-1);
+        return;
+      }
+      // Ctrl/Cmd+1…9 / 0 — jump open tab (browser-style)
+      if (ev.key >= "0" && ev.key <= "9" && !ev.altKey) {
+        ev.preventDefault();
+        jumpTab(Number(ev.key));
+        return;
+      }
+      // Ctrl/Cmd+[ / ] — prev/next tab
+      if (ev.key === "[" || ev.key === "]") {
+        ev.preventDefault();
+        cycleTab(ev.key === "[" ? -1 : 1);
+        return;
+      }
+      // leave other Ctrl/Cmd to browser / xterm (copy, paste, …)
+      return;
+    }
 
     // Over TTY: only Alt-chords (bare keys belong to the agent)
     if (inTerm) {
@@ -3469,7 +4421,6 @@ function bindKeys(): void {
     }
 
     // Outside TTY: Alt optional; bare keys work
-    // When Alt is held, still handle (same map)
     if (handleShortcut(ev, false)) {
       ev.preventDefault();
     }
@@ -3484,6 +4435,33 @@ function ensureUIDelegation(): void {
   document.addEventListener("click", (ev) => {
     const t = ev.target as HTMLElement | null;
     if (!t) return;
+
+    // In-app <a data-nav> links (session list, breadcrumbs, etc.)
+    const navEl = t.closest<HTMLAnchorElement>("a[data-nav]");
+    if (navEl && navEl.href && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey && ev.button === 0) {
+      // Don't hijack action buttons / menus inside the link
+      if (
+        t.closest(
+          "button, summary, details.menu, [data-kill], [data-delete], [data-resume], [data-action]",
+        )
+      ) {
+        /* fall through to action handlers */
+      } else {
+        const url = new URL(navEl.href, window.location.origin);
+        if (url.origin === window.location.origin) {
+          ev.preventDefault();
+          const route = parsePathSafe(url.pathname);
+          navigate(route);
+          return;
+        }
+      }
+    }
+
+    // Session menus live inside <a data-nav> — don't navigate when using the menu
+    if (t.closest("a[data-nav] details.menu")) {
+      ev.preventDefault();
+    }
+
     const actionEl = t.closest<HTMLElement>("[data-action]");
     if (!actionEl) return;
     // don't steal clicks from disabled controls
@@ -3497,6 +4475,12 @@ function ensureUIDelegation(): void {
         ev.stopPropagation();
         if (!state.token) return;
         openPanel("new");
+        break;
+      case "new-project":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!state.token) return;
+        openPanel("new-project");
         break;
       case "tools":
         ev.preventDefault();
@@ -3523,6 +4507,7 @@ function ensureUIDelegation(): void {
           const tab = actionEl.getAttribute("data-tab") as SettingsTab | null;
           if (tab) {
             state.settingsTab = tab;
+            navigate({ name: "profile", tab }, { apply: false });
             void loadSettingsData().then(() => paintSettings());
           }
         }
@@ -3530,6 +4515,15 @@ function ensureUIDelegation(): void {
       case "settings-platform":
         ev.preventDefault();
         state.settingsPlatform = actionEl.getAttribute("data-platform") || "grok";
+        // Persist id/label draft fields
+        {
+          const idEl = document.getElementById("settings-acct-id") as HTMLInputElement | null;
+          const labelEl = document.getElementById(
+            "settings-acct-label",
+          ) as HTMLInputElement | null;
+          if (idEl) state.settingsAcctId = idEl.value;
+          if (labelEl) state.settingsAcctLabel = labelEl.value;
+        }
         paintSettings();
         break;
       case "settings-refresh":
@@ -3549,6 +4543,13 @@ function ensureUIDelegation(): void {
         const platform = actionEl.getAttribute("data-platform") || "";
         const id = actionEl.getAttribute("data-id") || "";
         if (platform && id) void onAcctSwitch(platform, id);
+        break;
+      }
+      case "acct-remove": {
+        ev.preventDefault();
+        const platform = actionEl.getAttribute("data-platform") || "";
+        const id = actionEl.getAttribute("data-id") || "";
+        if (platform && id) void onAcctRemove(platform, id);
         break;
       }
       case "acct-add":
@@ -3590,6 +4591,19 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         state.sidebarOpen = false;
         paintChrome();
+        break;
+      case "open-palette":
+        ev.preventDefault();
+        ev.stopPropagation();
+        // close any open menus
+        document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        openCommandPalette();
+        break;
+      case "toggle-theme":
+        ev.preventDefault();
+        document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        toggleTheme();
+        if (state.settingsOpen && state.settingsTab === "about") paintSettings();
         break;
       case "ctx-ensure":
         ev.preventDefault();
@@ -3679,6 +4693,9 @@ function ensureUIDelegation(): void {
     if (kind === "create-session") {
       ev.preventDefault();
       void onCreateSession(ev);
+    } else if (kind === "create-project") {
+      ev.preventDefault();
+      void onCreateProject(ev);
     } else if (kind === "mem-search") {
       ev.preventDefault();
       void onMemSearch(ev);
@@ -3731,21 +4748,8 @@ function bindShell(): void {
 }
 
 function bindSessionList(): void {
-  document.querySelectorAll<HTMLElement>("[data-open]").forEach((el) => {
-    el.onclick = (ev) => {
-      const t = ev.target as HTMLElement;
-      if (t.closest("[data-kill], [data-delete], [data-resume], [data-copy]")) return;
-      const id = el.getAttribute("data-open");
-      if (!id) return;
-      const s = state.sessions.find((x) => x.id === id);
-      if (!s) return;
-      if (s.state !== "running") {
-        toast("Not running — Resume or Delete", "info", 2200);
-        return;
-      }
-      openTab(s);
-    };
-  });
+  // Session open: <a data-nav href="/project/..."> handled by ensureUIDelegation.
+  // Only wire stop/delete/resume buttons here.
 
   document.querySelectorAll<HTMLElement>("[data-kill]").forEach((el) => {
     el.onclick = (ev) => {
@@ -3773,16 +4777,10 @@ function bindSessionList(): void {
 }
 
 function bindTabs(): void {
-  document.querySelectorAll<HTMLElement>("[data-tab]").forEach((el) => {
-    el.onclick = (ev) => {
-      const t = ev.target as HTMLElement;
-      if (t.closest("[data-close]")) return;
-      const id = el.getAttribute("data-tab");
-      if (id) void activateTab(id);
-    };
-  });
+  // Tab switch: <a data-nav> → navigate. Close buttons only.
   document.querySelectorAll<HTMLElement>("[data-close]").forEach((el) => {
     el.onclick = (ev) => {
+      ev.preventDefault();
       ev.stopPropagation();
       const id = el.getAttribute("data-close");
       if (id) closeTab(id);

@@ -61,7 +61,11 @@ export async function animateModalOut(overlay: HTMLElement): Promise<void> {
 
 /** Full-page settings slide + fade. */
 export async function animateSettingsIn(root: HTMLElement): Promise<void> {
-  if (prefersReducedMotion()) return;
+  if (prefersReducedMotion()) {
+    root.style.opacity = "";
+    root.style.transform = "";
+    return;
+  }
   const nav = root.querySelector<HTMLElement>(".settings-nav");
   const main = root.querySelector<HTMLElement>(".settings-main");
   root.style.opacity = "0";
@@ -73,9 +77,19 @@ export async function animateSettingsIn(root: HTMLElement): Promise<void> {
     main.style.opacity = "0";
     main.style.transform = "translateY(10px) scale(0.985)";
   }
-  void animate(root, { opacity: [0, 1] }, { duration: 0.18, ease: "easeOut" });
+  void animate(root, { opacity: [0, 1] }, { duration: 0.18, ease: "easeOut" }).then(
+    () => {
+      root.style.opacity = "";
+      root.style.transform = "";
+    },
+  );
   if (nav) {
-    void animate(nav, { opacity: [0, 1], x: [-12, 0] }, { ...springSoft, delay: 0.02 });
+    void animate(nav, { opacity: [0, 1], x: [-12, 0] }, { ...springSoft, delay: 0.02 }).then(
+      () => {
+        nav.style.opacity = "";
+        nav.style.transform = "";
+      },
+    );
   }
   if (main) {
     await done(
@@ -85,6 +99,8 @@ export async function animateSettingsIn(root: HTMLElement): Promise<void> {
         { ...springSoft, delay: 0.04 },
       ),
     );
+    main.style.opacity = "";
+    main.style.transform = "";
   }
 }
 

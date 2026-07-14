@@ -171,11 +171,20 @@ export type AgentPlatformStatus = {
   accounts: AgentAccount[];
 };
 
+export type AgentAccountsAll = {
+  platforms: AgentPlatformStatus[];
+  bin?: string;
+};
+
 export function listAgentAccounts(
   platform?: string,
-): Promise<AgentPlatformStatus | { platforms: AgentPlatformStatus[]; bin?: string }> {
+): Promise<AgentPlatformStatus | AgentAccountsAll> {
   const q = platform ? `?platform=${encodeURIComponent(platform)}` : "?platform=all";
   return request(`/v1/agent-accounts${q}`);
+}
+
+export function listAllAgentAccounts(): Promise<AgentAccountsAll> {
+  return request("/v1/agent-accounts?platform=all");
 }
 
 export function saveAgentAccount(body: {
@@ -194,6 +203,27 @@ export function switchAgentAccount(body: {
   id: string;
 }): Promise<{ ok: boolean; status?: AgentPlatformStatus }> {
   return request("/v1/agent-accounts/switch", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function addAgentAccount(body: {
+  platform: string;
+  id: string;
+  label: string;
+}): Promise<{ ok: boolean; status?: AgentPlatformStatus }> {
+  return request("/v1/agent-accounts/add", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function removeAgentAccount(body: {
+  platform: string;
+  id: string;
+}): Promise<{ ok: boolean; status?: AgentPlatformStatus }> {
+  return request("/v1/agent-accounts/remove", {
     method: "POST",
     body: JSON.stringify(body),
   });

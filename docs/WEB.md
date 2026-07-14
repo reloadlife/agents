@@ -5,13 +5,14 @@
 ## What it does
 
 - Log in with the same `AGENTSD_TOKEN` used by `agentsctl`
-- **Sessions-first rail**: filter, open, kill, **resume**, prune, copy id
-- Start sessions via modal (agent / workspace / optional name + seed prompt)
-- **Account profiles** (cursor-switch): pick personal/work/… per agent; isolated = parallel-safe
-- **Clone / fork git** into the workspace from the new-session modal (`owner/repo` or full URL)
-- Multi-tab **xterm.js** over PTY WebSocket (`/v1/sessions/{id}/pty`) with live connection pill
-- **Tools** panel: project map, memory, Playwright, **SSH keys**, **GitHub accounts** (`gh` login/switch/logout; tokens never returned)
-- Keyboard shortcuts (`n` new, `t` tools, `/` filter, `1`–`9` tabs, `?` help, `Esc` close)
+- **Sessions-first rail**: filter, open; Stop/Resume/Delete via row overflow menu
+- Start sessions via Vaul sheet (agent / workspace / optional label + seed prompt; account under progressive disclosure)
+- **New project** sheet: clone or fork into `workspace_root`
+- **Account switcher** (cursor-switch): Settings → Agent accounts
+- Multi-tab **xterm.js** over PTY WebSocket (`/v1/sessions/{id}/pty`) with connection pill
+- **Tools** sheet + Settings → Workspace (shared context/map/memory/playwright)
+- **Command palette** (`⌘K` / Ctrl+K) for navigate · workspace · host · appearance
+- Keyboard: `j/k` list, `⇧j/⇧k` step+open, `h/l` tabs, `Ctrl+Tab` tabs (works in TTY), `1–9` jump tab, `y` copy id, `n`/`⇧n` new, `?` help
 
 ### Background sessions
 
@@ -36,6 +37,24 @@ enabled = true   # set false for API-only
 ```
 
 Open `http://<listen>/` (e.g. `http://127.0.0.1:8787/`).
+
+### Client routes
+
+The SPA uses real paths (History API). Unknown non-asset paths fall back to `index.html`.
+
+| Path | View |
+|------|------|
+| `/` or `/new` | New session modal |
+| `/project/new` · `/projects/new` · `/new/project` | New project (clone/fork) modal |
+| `/desk` | Empty desk (no modal) |
+| `/tools` | Global tools panel |
+| `/help` | Keyboard shortcuts |
+| `/profile` · `/profile/{tab}` | Profile / settings (`accounts`, `github`, `ssh`, `workspace`, `about`) |
+| `/settings` · `/settings/{tab}` | Alias for profile |
+| `/project/{projectId}/session/{sessionId}` | Open session (deep-linkable) |
+| `/project/{projectId}/session/{sessionId}/tools` | Session + tools for that project |
+
+`projectId` is the workspace cwd (`agents`, nested `foo~bar`, `_` for `.`). Session list rows and tabs are real links (middle-click / copy URL works).
 
 ### Open from CLI (auto-login)
 

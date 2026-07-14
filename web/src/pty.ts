@@ -113,8 +113,11 @@ export class PtyClient {
 
   write(data: string | Uint8Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // Terminal I/O uses binary frames; text frames are reserved for JSON control
+    // (resize/ping). Sending strings as text works for most paths but can collide
+    // if payload looks like JSON — always encode user/PTY data as binary.
     if (typeof data === "string") {
-      this.ws.send(data);
+      this.ws.send(new TextEncoder().encode(data));
     } else {
       this.ws.send(data);
     }

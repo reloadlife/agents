@@ -16,28 +16,38 @@ import {
 
 function VaulApp() {
   const [snap, setSnap] = useState<DrawerSnapshot>(() => getDrawerSnapshot());
+  // Retain body through Vaul/Radix close animation (Content unmounts after exit).
+  const [heldHtml, setHeldHtml] = useState(() => {
+    const s = getDrawerSnapshot();
+    return s.open ? s.html : "";
+  });
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const liveHtml = snap.open && snap.html ? snap.html : heldHtml;
 
   useEffect(() => subscribeDrawer(setSnap), []);
 
   useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
     if (snap.open && snap.html) {
-      el.innerHTML = snap.html;
-      const focusable = el.querySelector<HTMLElement>(
-        "input:not([type=hidden]), select, textarea, button.primary, button",
-      );
-      window.requestAnimationFrame(() => focusable?.focus?.());
-    } else if (!snap.open) {
-      // keep content during close animation; clear after a beat
-      window.setTimeout(() => {
-        if (!getDrawerSnapshot().open && bodyRef.current) {
-          bodyRef.current.innerHTML = "";
-        }
+      setHeldHtml(snap.html);
+      return;
+    }
+    if (!snap.open) {
+      const t = window.setTimeout(() => {
+        if (!getDrawerSnapshot().open) setHeldHtml("");
       }, 400);
+      return () => window.clearTimeout(t);
     }
   }, [snap.open, snap.html, snap.revision]);
+
+  useEffect(() => {
+    if (!snap.open || !liveHtml) return;
+    const el = bodyRef.current;
+    if (!el) return;
+    const focusable = el.querySelector<HTMLElement>(
+      "input:not([type=hidden]), select, textarea, button.primary, button",
+    );
+    window.requestAnimationFrame(() => focusable?.focus?.());
+  }, [snap.open, liveHtml, snap.revision]);
 
   return (
     <Drawer.Root
@@ -56,6 +66,8 @@ function VaulApp() {
         <Drawer.Content
           className={`vaul-content vaul-content--${snap.variant || "sheet"}`}
           aria-describedby={undefined}
+          // Keep DOM mounted during open so body HTML is present on first paint.
+          onOpenAutoFocus={(e) => e.preventDefault()}
         >
           <div className="vaul-chrome">
             <Drawer.Handle className="vaul-handle" />
@@ -72,7 +84,13 @@ function VaulApp() {
                 Close
               </button>
             </div>
-            <div ref={bodyRef} className="vaul-body" data-vaul-no-drag="" />
+            <div
+              ref={bodyRef}
+              className="vaul-body"
+              data-vaul-no-drag=""
+              // Presence remounts Content on open — inject in render, not a post-mount effect race.
+              dangerouslySetInnerHTML={{ __html: liveHtml }}
+            />
           </div>
         </Drawer.Content>
       </Drawer.Portal>
