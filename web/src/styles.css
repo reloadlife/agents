@@ -1088,7 +1088,20 @@ kbd {
 }
 
 .modal-tools {
-  width: min(100%, 480px);
+  width: min(100%, 560px);
+  max-height: min(92vh, 820px);
+}
+
+.drawer-overlay {
+  z-index: 1200;
+}
+
+.tool-status {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 @keyframes modal-in {

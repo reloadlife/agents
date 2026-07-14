@@ -1070,8 +1070,8 @@ func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
 		Cwd         string `json:"cwd"`
 		Clear       bool   `json:"clear"`
 		IncludeCode bool   `json:"include_code"`
-		// Also ensure project map exists before index
-		GenerateMap bool `json:"generate_map"`
+		// GenerateMap defaults true when omitted (nil) so Reindex always has a map.
+		GenerateMap *bool `json:"generate_map"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -1082,7 +1082,8 @@ func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if body.GenerateMap {
+	genMap := body.GenerateMap == nil || *body.GenerateMap
+	if genMap {
 		if _, _, err := projmap.GenerateAndWrite(abs, rel); err != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Errorf("map: %w", err))
 			return

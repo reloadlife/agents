@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-07-14
+
+### Fixed
+
+- **Tools panel** map / memory / Playwright actually work in the Web UI:
+  - Playwright status used a non-existent `running` field → always showed "stopped"; now uses `container` / `server_ok` / `message`
+  - Map Show drawer was buried under the tools overlay (z-index); drawer now stacks on top
+  - Status labels use `data-status` so Settings + Tools don't fight over duplicate ids
+  - Map GET 404 is soft-handled (prompt to Generate) instead of a raw throw
+  - Memory Reindex no longer `clear:true` by default (keeps notes); always regenerates map
+  - Tools ↔ Settings no longer stack conflicting overlays; tools prefer active session cwd
+  - Added Playwright **Install browsers** action + live status while actions run
+
 ## [0.5.0] — 2026-07-14
 
 ### Added

@@ -32,9 +32,11 @@ import {
   listWorkspaces,
   saveAgentAccount,
   switchAgentAccount,
+  formatPlaywrightStatus,
   memoryIndex,
   memorySearch,
   memoryStats,
+  playwrightInstall,
   playwrightRestart,
   playwrightStart,
   playwrightStatus,
@@ -666,6 +668,18 @@ function emptyTermHTML(): string {
 function openPanel(p: Panel): void {
   state.panel = p;
   if (p === "new") state.createError = "";
+  // Tools/settings share status widgets — don't stack overlays.
+  if (p === "tools" && state.settingsOpen) {
+    state.settingsOpen = false;
+    document.getElementById("settings-root")?.remove();
+  }
+  // Prefer active session workspace when opening tools
+  if (p === "tools") {
+    const tab = state.openTabs.find((t) => t.id === state.activeId);
+    if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
+      state.formCwd = tab.cwd;
+    }
+  }
   // Defer paint past the triggering click so a full-screen overlay is not
   // immediately hit by the same pointer event (closes as it opens).
   window.queueMicrotask(async () => {
@@ -689,8 +703,6 @@ function openPanel(p: Panel): void {
     }
     if (p === "tools") {
       void refreshToolsStatus();
-      void refreshSSHKeys();
-      void refreshGHAccounts();
     }
   });
 }
@@ -711,6 +723,11 @@ function openSettings(tab?: SettingsTab): void {
   if (tab) state.settingsTab = tab;
   state.settingsOpen = true;
   state.sidebarOpen = false;
+  // Avoid stacked overlays fighting for the same tool controls.
+  if (state.panel) {
+    state.panel = null;
+    document.getElementById("panel-overlay")?.remove();
+  }
   void loadSettingsData().then(() => paintSettings());
 }
 
@@ -949,7 +966,7 @@ function settingsWorkspaceHTML(): string {
     </div>
     <div class="settings-cards">
       <div class="settings-card col">
-        <div class="settings-card-title"><strong>Context</strong> <span class="tool-status" id="ctx-status">${esc(state.ctxStatus)}</span></div>
+        <div class="settings-card-title"><strong>Context</strong> <span class="tool-status" data-status="ctx">${esc(state.ctxStatus)}</span></div>
         <p class="tool-desc">Ensure map · memory · <code>.agents/CONTEXT.md</code> · instructions</p>
         <div class="btn-row">
           <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
@@ -957,7 +974,7 @@ function settingsWorkspaceHTML(): string {
         </div>
       </div>
       <div class="settings-card col">
-        <div class="settings-card-title"><strong>Project map</strong> <span class="tool-status" id="map-status">${esc(state.mapStatus)}</span></div>
+        <div class="settings-card-title"><strong>Project map</strong> <span class="tool-status" data-status="map">${esc(state.mapStatus)}</span></div>
         <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
         <div class="btn-row">
           <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
@@ -965,24 +982,25 @@ function settingsWorkspaceHTML(): string {
         </div>
       </div>
       <div class="settings-card col">
-        <div class="settings-card-title"><strong>Memory</strong> <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span></div>
+        <div class="settings-card-title"><strong>Memory</strong> <span class="tool-status" data-status="mem">${esc(state.memStatus)}</span></div>
         <p class="tool-desc">FTS (and optional vector) index</p>
         <div class="btn-row">
           <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
         </div>
         <form class="mem-search" data-action-form="mem-search">
-          <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
+          <input id="mem-query" name="q" data-mem-query placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
           <button type="submit" class="primary btn-sm">Search</button>
         </form>
-        <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
+        <div class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
       </div>
       <div class="settings-card col">
-        <div class="settings-card-title"><strong>Playwright</strong> <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span></div>
-        <p class="tool-desc">Headed browser stack</p>
+        <div class="settings-card-title"><strong>Playwright</strong> <span class="tool-status" data-status="pw">${esc(state.pwStatus)}</span></div>
+        <p class="tool-desc">Xvfb + docker browser stack</p>
         <div class="btn-row">
           <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
           <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
           <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-install">Install browsers</button>
         </div>
       </div>
     </div>`;
@@ -1337,27 +1355,57 @@ async function onPrune(): Promise<void> {
 }
 
 function toolsCwd(): string {
-  const sel = document.getElementById("tools-cwd-select") as HTMLSelectElement | null;
-  if (sel?.value) {
-    state.formCwd = sel.value;
-    return sel.value;
+  // Prefer the visible tools/settings select (there may be two in rare stacks).
+  const sels = document.querySelectorAll<HTMLSelectElement>(
+    "select[data-action-change='tools-cwd'], #tools-cwd-select",
+  );
+  for (const sel of sels) {
+    if (sel.value && sel.offsetParent !== null) {
+      state.formCwd = sel.value;
+      return sel.value;
+    }
   }
+  for (const sel of sels) {
+    if (sel.value) {
+      state.formCwd = sel.value;
+      return sel.value;
+    }
+  }
+  // Fall back to active session cwd, then form default.
+  const tab = state.openTabs.find((t) => t.id === state.activeId);
+  if (tab?.cwd) return tab.cwd;
   return state.formCwd || state.defaultCwd || ".";
+}
+
+function setStatusText(key: string, text: string): void {
+  document
+    .querySelectorAll<HTMLElement>(`[data-status="${key}"]`)
+    .forEach((el) => {
+      el.textContent = text;
+    });
 }
 
 async function refreshToolsStatus(): Promise<void> {
   const cwd = toolsCwd();
   try {
     const [ms, mem, pw, ctx] = await Promise.all([
-      getMapStatus(cwd).catch((e: Error) => ({ status: { exists: false, reason: e.message } })),
+      getMapStatus(cwd).catch((e: Error) => ({
+        status: { exists: false, reason: e.message },
+      })),
       memoryStats(cwd).catch(() => ({ docs: 0, engine: "error" })),
       playwrightStatus().catch(() => null),
       contextStatus(cwd).catch(() => null),
     ]);
-    const st = (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } }).status ?? {};
-    if (!st.exists) state.mapStatus = st.reason ? `error · ${st.reason}` : "no map";
-    else if (st.stale) state.mapStatus = `stale · ${st.reason || "outdated"}`;
-    else state.mapStatus = "fresh";
+    const st =
+      (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } })
+        .status ?? {};
+    if (!st.exists) {
+      state.mapStatus = st.reason ? `missing · ${st.reason}` : "no map — generate";
+    } else if (st.stale) {
+      state.mapStatus = `stale · ${st.reason || "outdated"}`;
+    } else {
+      state.mapStatus = "fresh";
+    }
     const eng = (mem as { engine?: string }).engine || "fts";
     const docs = (mem as { docs?: number }).docs ?? 0;
     state.memStatus = `${docs} docs · ${eng}`;
@@ -1369,24 +1417,44 @@ async function refreshToolsStatus(): Promise<void> {
       const bits: string[] = [];
       bits.push(ctx.ready ? "ready" : "needs ensure");
       if (ctx.has_context) bits.push("CONTEXT.md");
-      bits.push(`${ctx.memory_docs ?? 0} mem`);
+      bits.push(`${ctx.memory_docs ?? docs} mem`);
       state.ctxStatus = bits.join(" · ");
     } else {
       state.ctxStatus = "unavailable";
     }
-    if (pw) {
-      state.pwStatus = pw.running ? `running${pw.display ? ` · ${pw.display}` : ""}` : "stopped";
-    } else {
-      state.pwStatus = "unavailable";
-    }
-    paintTools();
-    if (state.settingsOpen && state.settingsTab === "workspace") paintSettings();
+    state.pwStatus = formatPlaywrightStatus(pw);
+    paintToolsStatus();
   } catch (e) {
     state.mapStatus = "error";
     state.memStatus = (e as Error).message || "failed";
     state.ctxStatus = "error";
-    paintTools();
+    state.pwStatus = "error";
+    paintToolsStatus();
   }
+}
+
+/** Patch status labels + mem hits without wiping the open modal. */
+function paintToolsStatus(): void {
+  setStatusText("ctx", state.ctxStatus);
+  setStatusText("map", state.mapStatus);
+  setStatusText("mem", state.memStatus);
+  setStatusText("pw", state.pwStatus);
+  document.querySelectorAll<HTMLElement>("[data-mem-hits]").forEach((el) => {
+    el.innerHTML = memHitsHTML();
+  });
+  // Legacy ids (older embeds / partial markup)
+  const legacy: Array<[string, string]> = [
+    ["ctx-status", state.ctxStatus],
+    ["map-status", state.mapStatus],
+    ["mem-status", state.memStatus],
+    ["pw-status", state.pwStatus],
+  ];
+  for (const [id, text] of legacy) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+  const hits = document.getElementById("mem-hits");
+  if (hits) hits.innerHTML = memHitsHTML();
 }
 
 async function onCtxEnsure(): Promise<void> {
@@ -1434,25 +1502,32 @@ async function onCtxPack(): Promise<void> {
 }
 
 async function onMapGenerate(): Promise<void> {
+  const cwd = toolsCwd();
   try {
-    toast("Generating map…", "info", 6000);
-    const out = await generateMap(toolsCwd());
-    toast(`Map written · ${out.map_path || out.cwd}`, "ok");
+    state.mapStatus = "generating…";
+    paintToolsStatus();
+    toast(`Generating map for ${cwd}…`, "info", 8000);
+    const out = await generateMap(cwd);
+    toast(`Map written · ${out.map_path || out.cwd || cwd}`, "ok");
     await refreshToolsStatus();
   } catch (e) {
+    state.mapStatus = "error";
+    paintToolsStatus();
     toast((e as Error).message || "map generate failed", "err");
   }
 }
 
 async function onMapShow(): Promise<void> {
+  const cwd = toolsCwd();
   try {
-    const out = await getMap(toolsCwd());
+    toast(`Loading map · ${cwd}…`, "info", 4000);
+    const out = await getMap(cwd);
     if (out.error || !out.markdown) {
-      toast(out.error || "No map — generate first", "err");
+      toast(out.error || "No map — click Generate first", "err", 4000);
       return;
     }
     state.drawer = {
-      title: `Project map · ${out.cwd}`,
+      title: `Project map · ${out.cwd || cwd}`,
       body: out.markdown,
     };
     paintDrawer();
@@ -1462,103 +1537,137 @@ async function onMapShow(): Promise<void> {
 }
 
 async function onMemIndex(): Promise<void> {
+  const cwd = toolsCwd();
   try {
-    toast("Indexing…", "info", 12000);
+    state.memStatus = "indexing…";
+    paintToolsStatus();
+    toast(`Indexing memory · ${cwd}…`, "info", 15000);
+    // clear:false keeps durable notes; still regenerate map for fresh FTS entry
     const out = await memoryIndex({
-      cwd: toolsCwd(),
-      clear: true,
+      cwd,
+      clear: false,
       generate_map: true,
     });
-    toast(`Indexed ${out.indexed} docs (total ${out.docs_total})`, "ok");
+    toast(`Indexed ${out.indexed ?? 0} docs (total ${out.docs_total ?? "?"})`, "ok");
     await refreshToolsStatus();
   } catch (e) {
+    state.memStatus = "error";
+    paintToolsStatus();
     toast((e as Error).message || "index failed", "err");
   }
 }
 
 async function onMemSearch(ev?: Event): Promise<void> {
   ev?.preventDefault();
-  const input = document.getElementById("mem-query") as HTMLInputElement | null;
-  const q = (input?.value ?? state.memQuery).trim();
+  const inputs = document.querySelectorAll<HTMLInputElement>(
+    "#mem-query, input[name='q'][data-mem-query], [data-mem-query]",
+  );
+  let q = state.memQuery;
+  for (const input of inputs) {
+    if (input.value.trim()) {
+      q = input.value.trim();
+      break;
+    }
+  }
+  // Also check the focused input / form
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement && active.value.trim()) {
+    q = active.value.trim();
+  }
+  const single = document.getElementById("mem-query") as HTMLInputElement | null;
+  if (single?.value.trim()) q = single.value.trim();
   state.memQuery = q;
   if (!q) {
     toast("Enter a search query", "info");
     return;
   }
+  const cwd = toolsCwd();
   try {
-    toast("Searching…", "info", 4000);
+    toast(`Searching “${q}” in ${cwd}…`, "info", 5000);
     const out = await memorySearch({
-      cwd: toolsCwd(),
+      cwd,
       query: q,
-      limit: 10,
+      limit: 12,
       mode: "auto",
     });
     state.memHits = out.hits ?? [];
-    paintTools();
-    if (state.memHits.length === 0) toast("No memory hits", "info");
-    else toast(`${state.memHits.length} hit(s)`, "ok", 1500);
+    paintToolsStatus();
+    if (state.memHits.length === 0) {
+      toast("No memory hits — try Reindex, or a broader query", "info", 4000);
+    } else {
+      toast(`${state.memHits.length} hit(s)`, "ok", 1500);
+    }
   } catch (e) {
     toast((e as Error).message || "search failed", "err");
   }
 }
 
-async function onPwAction(action: "start" | "stop" | "restart"): Promise<void> {
+async function onPwAction(action: "start" | "stop" | "restart" | "install"): Promise<void> {
   try {
-    toast(`${action}ing playwright…`, "info");
-    const fn =
-      action === "start"
-        ? playwrightStart
-        : action === "stop"
-          ? playwrightStop
-          : playwrightRestart;
-    const out = await fn();
-    if (out.ok === false) {
-      toast(out.error || `${action} failed`, "err");
+    state.pwStatus = `${action}…`;
+    paintToolsStatus();
+    toast(`Playwright ${action}…`, "info", 20000);
+    if (action === "install") {
+      const out = await playwrightInstall();
+      if (out.ok === false) {
+        toast(out.error || "install failed", "err", 8000);
+      } else {
+        toast("Browsers install finished", "ok");
+      }
     } else {
-      toast(`Playwright ${action}ed`, "ok");
+      const fn =
+        action === "start"
+          ? playwrightStart
+          : action === "stop"
+            ? playwrightStop
+            : playwrightRestart;
+      const out = await fn();
+      if (out.ok === false) {
+        toast(out.error || `${action} failed`, "err", 8000);
+        if (out.status) state.pwStatus = formatPlaywrightStatus(out.status);
+        paintToolsStatus();
+      } else {
+        toast(`Playwright ${action} ok`, "ok");
+        if (out.status) state.pwStatus = formatPlaywrightStatus(out.status);
+        paintToolsStatus();
+      }
     }
     await refreshToolsStatus();
   } catch (e) {
-    toast((e as Error).message || `${action} failed`, "err");
+    state.pwStatus = "error";
+    paintToolsStatus();
+    toast((e as Error).message || `${action} failed`, "err", 8000);
   }
 }
 
+/** @deprecated use paintToolsStatus — kept for SSH/GH settings patches */
 function paintTools(): void {
-  if (state.panel !== "tools") return;
-  const ctxEl = document.getElementById("ctx-status");
-  if (ctxEl) ctxEl.textContent = state.ctxStatus;
-  const mapEl = document.getElementById("map-status");
-  if (mapEl) mapEl.textContent = state.mapStatus;
-  const memEl = document.getElementById("mem-status");
-  if (memEl) memEl.textContent = state.memStatus;
-  const pwEl = document.getElementById("pw-status");
-  if (pwEl) pwEl.textContent = state.pwStatus;
-  const hits = document.getElementById("mem-hits");
-  if (hits) hits.innerHTML = memHitsHTML();
-  const sshDir = document.getElementById("ssh-dir");
-  if (sshDir) sshDir.textContent = state.sshDir || "—";
-  const sshList = document.getElementById("ssh-key-list");
-  if (sshList) sshList.innerHTML = sshKeysHTML();
-  const genBtn = document.querySelector(
-    '[data-action="ssh-gen"]',
-  ) as HTMLButtonElement | null;
-  if (genBtn) {
-    genBtn.disabled = state.sshBusy;
-    genBtn.textContent = state.sshBusy ? "…" : "Generate";
+  paintToolsStatus();
+  if (state.settingsOpen && (state.settingsTab === "ssh" || state.settingsTab === "github" || state.settingsTab === "workspace")) {
+    // re-render only lists that live in settings cards
+    const sshDir = document.getElementById("ssh-dir");
+    if (sshDir) sshDir.textContent = state.sshDir || "—";
+    const sshList = document.getElementById("ssh-key-list");
+    if (sshList) sshList.innerHTML = sshKeysHTML();
+    const genBtn = document.querySelector(
+      '[data-action="ssh-gen"]',
+    ) as HTMLButtonElement | null;
+    if (genBtn) {
+      genBtn.disabled = state.sshBusy;
+      genBtn.textContent = state.sshBusy ? "…" : "Generate";
+    }
+    const ghList = document.getElementById("gh-account-list");
+    if (ghList) ghList.innerHTML = ghAccountsHTML();
+    const ghActive = document.getElementById("gh-active");
+    if (ghActive) ghActive.textContent = state.ghStatus?.active || "—";
+    const ghLoginBtn = document.querySelector(
+      '[data-action="gh-login"]',
+    ) as HTMLButtonElement | null;
+    if (ghLoginBtn) {
+      ghLoginBtn.disabled = state.ghBusy;
+      ghLoginBtn.textContent = state.ghBusy ? "…" : "Login";
+    }
   }
-  const ghList = document.getElementById("gh-account-list");
-  if (ghList) ghList.innerHTML = ghAccountsHTML();
-  const ghActive = document.getElementById("gh-active");
-  if (ghActive) ghActive.textContent = state.ghStatus?.active || "—";
-  const ghLoginBtn = document.querySelector(
-    '[data-action="gh-login"]',
-  ) as HTMLButtonElement | null;
-  if (ghLoginBtn) {
-    ghLoginBtn.disabled = state.ghBusy;
-    ghLoginBtn.textContent = state.ghBusy ? "…" : "Login";
-  }
-  // keep settings page live if open
-  if (state.settingsOpen) paintSettings();
 }
 
 async function refreshSSHKeys(): Promise<void> {
@@ -1783,8 +1892,7 @@ function paintDrawer(): void {
   if (!el) {
     el = document.createElement("div");
     el.id = "drawer";
-    el.className = "overlay";
-    el.style.zIndex = "1000";
+    el.className = "overlay drawer-overlay";
     document.body.appendChild(el);
     el.addEventListener("mousedown", (ev) => {
       if (ev.target === el) {
@@ -1793,8 +1901,11 @@ function paintDrawer(): void {
       }
     });
   }
+  // Always re-append so drawer stacks above tools panel (same z-index class otherwise loses)
+  document.body.appendChild(el);
   el.hidden = false;
   el.style.display = "grid";
+  el.style.zIndex = "1200";
   el.innerHTML = `
     <div class="modal modal-wide" role="dialog" aria-modal="true" data-modal>
       <div class="modal-head">
@@ -1984,12 +2095,13 @@ function toolsHTML(): string {
           <select id="tools-cwd-select" data-action-change="tools-cwd">
             ${workspaceOptionsHTML()}
           </select>
+          <p class="form-hint">Actions apply to this cwd under workspace_root.</p>
         </div>
 
         <section class="tool-block">
           <div class="tool-block-head">
             <h3>Context</h3>
-            <span class="tool-status" id="ctx-status">${esc(state.ctxStatus)}</span>
+            <span class="tool-status" data-status="ctx" id="ctx-status">${esc(state.ctxStatus)}</span>
           </div>
           <p class="tool-desc">Map + memory pack · auto-ensured on new session</p>
           <div class="btn-row">
@@ -2001,9 +2113,9 @@ function toolsHTML(): string {
         <section class="tool-block">
           <div class="tool-block-head">
             <h3>Project map</h3>
-            <span class="tool-status" id="map-status">${esc(state.mapStatus)}</span>
+            <span class="tool-status" data-status="map" id="map-status">${esc(state.mapStatus)}</span>
           </div>
-          <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
+          <p class="tool-desc">Writes <code>.agents/PROJECT_MAP.md</code> for agent orientation</p>
           <div class="btn-row">
             <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
             <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
@@ -2013,29 +2125,30 @@ function toolsHTML(): string {
         <section class="tool-block">
           <div class="tool-block-head">
             <h3>Memory</h3>
-            <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span>
+            <span class="tool-status" data-status="mem" id="mem-status">${esc(state.memStatus)}</span>
           </div>
-          <p class="tool-desc">Full-text index for retrieval</p>
+          <p class="tool-desc">FTS index of map + docs (agents: <code>agentsctl memory search</code>)</p>
           <div class="btn-row">
             <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
           </div>
           <form class="mem-search" data-action-form="mem-search">
-            <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
+            <input id="mem-query" name="q" data-mem-query placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
             <button type="submit" class="primary btn-sm">Search</button>
           </form>
-          <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
+          <div id="mem-hits" class="mem-hits" data-mem-hits>${memHitsHTML()}</div>
         </section>
 
         <section class="tool-block">
           <div class="tool-block-head">
             <h3>Playwright</h3>
-            <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span>
+            <span class="tool-status" data-status="pw" id="pw-status">${esc(state.pwStatus)}</span>
           </div>
-          <p class="tool-desc">Headed browser stack</p>
+          <p class="tool-desc">Xvfb + docker browser stack for headed agent browsers</p>
           <div class="btn-row">
             <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
             <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
             <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
+            <button type="button" class="ghost btn-sm" data-action="pw-install">Install browsers</button>
           </div>
         </section>
 
@@ -2937,6 +3050,10 @@ function ensureUIDelegation(): void {
       case "pw-restart":
         ev.preventDefault();
         void onPwAction("restart");
+        break;
+      case "pw-install":
+        ev.preventDefault();
+        void onPwAction("install");
         break;
       case "ssh-gen":
         ev.preventDefault();

@@ -200,11 +200,37 @@ export function pruneSessions(maxAge?: string): Promise<{ removed: number }> {
   });
 }
 
+/** Matches internal/playwrightctl.Status JSON. */
 export type PlaywrightStatus = {
-  running?: boolean;
   display?: string;
-  [key: string]: unknown;
+  display_ok?: string;
+  xvfb?: string;
+  container?: string; // running|exited|missing|unknown
+  container_name?: string;
+  server?: string;
+  server_ok?: string; // open|closed|unset
+  browsers_path?: string;
+  browsers_ok?: boolean;
+  compose_file?: string;
+  message?: string;
 };
+
+export function formatPlaywrightStatus(pw: PlaywrightStatus | null | undefined): string {
+  if (!pw) return "unavailable";
+  const up =
+    pw.container === "running" ||
+    pw.server_ok === "open" ||
+    pw.display_ok === "active";
+  if (up) {
+    const bits = ["running"];
+    if (pw.display) bits.push(pw.display);
+    if (pw.server_ok) bits.push(`srv ${pw.server_ok}`);
+    if (pw.browsers_ok) bits.push("browsers");
+    return bits.join(" · ");
+  }
+  if (pw.message) return pw.message;
+  return `down · xvfb ${pw.xvfb || "?"} · ctr ${pw.container || "?"}`;
+}
 
 export function playwrightStatus(): Promise<PlaywrightStatus> {
   return request("/v1/playwright");
@@ -220,6 +246,10 @@ export function playwrightStop(): Promise<{ ok: boolean; error?: string; status?
 
 export function playwrightRestart(): Promise<{ ok: boolean; error?: string; status?: PlaywrightStatus }> {
   return request("/v1/playwright/restart", { method: "POST", body: "{}" });
+}
+
+export function playwrightInstall(): Promise<{ ok: boolean; error?: string; output?: string; status?: PlaywrightStatus }> {
+  return request("/v1/playwright/install", { method: "POST", body: "{}" });
 }
 
 export function listAgents(): Promise<{
@@ -394,7 +424,44 @@ export function generateMap(cwd: string): Promise<{
 export function getMap(
   cwd: string,
 ): Promise<{ cwd: string; markdown?: string; status?: MapStatus; error?: string }> {
-  return request(`/v1/maps?cwd=${encodeURIComponent(cwd)}`);
+  // 404 is a normal "no map yet" state — don't throw so the UI can prompt Generate.
+  return requestAllow404(`/v1/maps?cwd=${encodeURIComponent(cwd)}`);
+}
+
+async function requestAllow404<T extends { error?: string }>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const token = getToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const res = await fetch(path, { ...init, headers });
+  if (res.status === 401) {
+    const err = new Error("unauthorized");
+    (err as Error & { status: number }).status = 401;
+    throw err;
+  }
+  let body: T = {} as T;
+  try {
+    body = (await res.json()) as T;
+  } catch {
+    /* empty */
+  }
+  if (res.status === 404) {
+    return {
+      ...body,
+      error: body.error || "not found",
+    };
+  }
+  if (!res.ok) {
+    const err = new Error(body.error || `${res.status} ${res.statusText}`);
+    (err as Error & { status: number }).status = res.status;
+    throw err;
+  }
+  return body;
 }
 
 export function getMapStatus(
