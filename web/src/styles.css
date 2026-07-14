@@ -2141,17 +2141,17 @@ kbd {
   }
 }
 
-/* —— Vaul (mobile bottom drawers) —— */
+/* —— Vaul (shadcn Drawer) — all popups, all viewports —— */
 #vaul-host {
-  /* portal target; content lives in body via Radix portal */
+  /* portal target; content lives via Radix portal */
 }
 
 .vaul-overlay {
   position: fixed;
   inset: 0;
   z-index: 1100;
-  background: hsl(0 0% 0% / 0.55);
-  backdrop-filter: blur(4px);
+  background: hsl(0 0% 0% / 0.6);
+  backdrop-filter: blur(6px);
 }
 
 .vaul-content {
@@ -2169,16 +2169,17 @@ kbd {
   border-bottom: none;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.5);
 }
 
 .vaul-content--sheet {
   max-height: 78dvh;
 }
 
-.vaul-content--tall {
+.vaul-content--tall,
+.vaul-content--dialog {
   max-height: 92dvh;
-  min-height: 55dvh;
+  min-height: 42dvh;
 }
 
 .vaul-content--content {
@@ -2200,6 +2201,7 @@ kbd {
   border-radius: 999px;
   background: hsl(var(--muted-foreground) / 0.35);
   flex-shrink: 0;
+  cursor: grab;
 }
 
 .vaul-header {
@@ -2207,14 +2209,14 @@ kbd {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.55rem 1rem 0.65rem;
+  padding: 0.55rem 1.1rem 0.7rem;
   border-bottom: 1px solid hsl(var(--border));
   flex-shrink: 0;
 }
 
 .vaul-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   overflow: hidden;
@@ -2230,7 +2232,7 @@ kbd {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0.85rem 1rem 1.25rem;
+  padding: 1rem 1.15rem 1.35rem;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -2248,16 +2250,53 @@ kbd {
   margin-bottom: 0;
 }
 
-/* Scale background (Vaul shouldScaleBackground) looks best with a fixed shell */
+.vaul-body .field-grid {
+  gap: 0.65rem;
+}
+
+/* Scale background (Vaul shouldScaleBackground) */
 [data-vaul-drawer-wrapper] {
   min-height: 100%;
 }
 
+/* Desktop: floating sheet (shadcn drawer dialog look) */
 @media (min-width: 841px) {
-  /* Vaul host unused on desktop; keep portal inert if somehow open */
   .vaul-content {
-    max-width: 32rem;
-    margin: 0 auto;
+    left: 50%;
+    right: auto;
+    bottom: 1.5rem;
+    width: min(36rem, calc(100vw - 2.5rem));
+    max-width: 36rem;
+    margin-left: calc(min(36rem, calc(100vw - 2.5rem)) / -2);
+    border-radius: var(--radius-lg);
+    border-bottom: 1px solid hsl(var(--border));
+    box-shadow: var(--shadow);
+  }
+
+  .vaul-content--dialog,
+  .vaul-content--tall {
+    width: min(40rem, calc(100vw - 2.5rem));
+    max-width: 40rem;
+    margin-left: calc(min(40rem, calc(100vw - 2.5rem)) / -2);
+    max-height: min(88vh, 820px);
+    min-height: 0;
+  }
+
+  .vaul-content--content {
+    width: min(42rem, calc(100vw - 2.5rem));
+    max-width: 42rem;
+    margin-left: calc(min(42rem, calc(100vw - 2.5rem)) / -2);
+    max-height: min(86vh, 780px);
+  }
+
+  .vaul-content--sheet {
+    width: min(28rem, calc(100vw - 2.5rem));
+    max-width: 28rem;
+    margin-left: calc(min(28rem, calc(100vw - 2.5rem)) / -2);
+  }
+
+  .vaul-body {
+    padding: 1.15rem 1.25rem 1.5rem;
   }
 }
 

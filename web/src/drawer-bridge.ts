@@ -1,8 +1,9 @@
 /**
- * Bridge between vanilla agents UI and the React+Vaul drawer host.
+ * Bridge between vanilla agents UI and the React+Vaul host.
+ * All popups (panels + content) go through Vaul on every viewport.
  */
 
-export type DrawerVariant = "sheet" | "tall" | "content";
+export type DrawerVariant = "sheet" | "tall" | "content" | "dialog";
 
 export type DrawerSnapshot = {
   open: boolean;
@@ -56,7 +57,12 @@ export function isMobileViewport(): boolean {
   }
 }
 
+/** @deprecated use openAppDrawer — kept as alias */
 export function openMobileDrawer(opts: OpenDrawerOptions): void {
+  openAppDrawer(opts);
+}
+
+export function openAppDrawer(opts: OpenDrawerOptions): void {
   onCloseCb = opts.onClose ?? null;
   snapshot = {
     open: true,
@@ -68,14 +74,18 @@ export function openMobileDrawer(opts: OpenDrawerOptions): void {
   emit();
 }
 
+/** @deprecated use closeAppDrawer */
 export function closeMobileDrawer(reason: "user" | "programmatic" = "programmatic"): void {
+  closeAppDrawer(reason);
+}
+
+export function closeAppDrawer(reason: "user" | "programmatic" = "programmatic"): void {
   if (!snapshot.open) return;
   const cb = onCloseCb;
   onCloseCb = null;
   snapshot = {
     ...snapshot,
     open: false,
-    // keep last title/html until next open so close animation isn't empty
     revision: snapshot.revision + 1,
   };
   emit();
@@ -86,6 +96,11 @@ export function closeMobileDrawer(reason: "user" | "programmatic" = "programmati
   }
 }
 
+/** @deprecated use isAppDrawerOpen */
 export function isMobileDrawerOpen(): boolean {
+  return isAppDrawerOpen();
+}
+
+export function isAppDrawerOpen(): boolean {
   return snapshot.open;
 }

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] — 2026-07-14
+
+### Changed
+
+- **All popups use Vaul (shadcn Drawer) on desktop and mobile**
+  - New session, Tools, Help, map/pack content sheets
+  - Desktop: floating centered bottom sheet (dialog variants)
+  - Mobile: full-width bottom sheet with drag handle + swipe dismiss
+  - Removed legacy custom modal overlays for panels/drawers
+  - Background scale + blur overlay
+
 ## [0.6.2] — 2026-07-14
 
 ### Added

@@ -54,15 +54,12 @@ import {
   type SSHKey,
 } from "./api";
 import {
-  closeMobileDrawer,
-  isMobileDrawerOpen,
-  isMobileViewport,
-  openMobileDrawer,
+  closeAppDrawer,
+  isAppDrawerOpen,
+  openAppDrawer,
 } from "./drawer-bridge";
 import {
   animateLoginIn,
-  animateModalIn,
-  animateModalOut,
   animateSessionList,
   animateSettingsIn,
   animateSettingsOut,
@@ -742,25 +739,12 @@ function openPanel(p: Panel): void {
 }
 
 async function closePanel(): Promise<void> {
-  if (isMobileDrawerOpen()) {
-    closeMobileDrawer("programmatic");
-  }
-  const el = document.getElementById("panel-overlay") as HTMLDivElement | null;
-  if (el) {
-    try {
-      await animateModalOut(el);
-    } catch {
-      /* ignore */
-    }
+  if (isAppDrawerOpen()) {
+    closeAppDrawer("programmatic");
   }
   state.panel = null;
   state.createError = "";
-  try {
-    await paintPanel({ animateIn: false });
-  } catch (e) {
-    console.error("closePanel paint failed", e);
-    document.getElementById("panel-overlay")?.remove();
-  }
+  document.getElementById("panel-overlay")?.remove();
   term?.focus();
 }
 
@@ -771,6 +755,7 @@ function openSettings(tab?: SettingsTab): void {
   // Avoid stacked overlays fighting for the same tool controls.
   if (state.panel) {
     state.panel = null;
+    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
   }
   void loadSettingsData().then(() => paintSettings({ animateIn: true }));
@@ -1973,133 +1958,67 @@ function panelBodyHTML(p: Panel): string {
 }
 
 async function paintDrawer(): Promise<void> {
-  let el = document.getElementById("drawer") as HTMLDivElement | null;
+  // Legacy desktop overlay cleanup
+  document.getElementById("drawer")?.remove();
+
   if (!state.drawer) {
-    // Close mobile content drawer only when no panel owns the Vaul host
-    if (isMobileViewport() && isMobileDrawerOpen() && !state.panel) {
-      closeMobileDrawer("programmatic");
-    }
-    if (el) {
-      try {
-        await animateModalOut(el);
-      } catch {
-        /* ignore */
-      }
-      el.remove();
+    // Close Vaul only when no panel owns it
+    if (isAppDrawerOpen() && !state.panel) {
+      closeAppDrawer("programmatic");
     }
     return;
   }
 
-  // Mobile: Vaul bottom sheet
-  if (isMobileViewport()) {
-    el?.remove();
-    await ensureVaulHost();
-    openMobileDrawer({
-      title: state.drawer.title,
-      html: `<pre class="drawer-body">${esc(state.drawer.body)}</pre>`,
-      variant: "content",
-      onClose: (reason) => {
-        if (reason === "user") {
-          state.drawer = null;
-        }
-      },
-    });
-    return;
+  // Content (map / pack) always uses Vaul — desktop + mobile
+  if (state.panel) {
+    // Prefer content over panel if both requested
+    state.panel = null;
   }
-
-  // Desktop: centered modal overlay
-  if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
-  const wasMissing = !el;
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "drawer";
-    el.className = "overlay drawer-overlay";
-    document.body.appendChild(el);
-    el.addEventListener("mousedown", (ev) => {
-      if (ev.target === el) {
+  await ensureVaulHost();
+  openAppDrawer({
+    title: state.drawer.title,
+    html: `<pre class="drawer-body">${esc(state.drawer.body)}</pre>`,
+    variant: "content",
+    onClose: (reason) => {
+      if (reason === "user") {
         state.drawer = null;
-        void paintDrawer();
+        term?.focus();
       }
-    });
-  }
-  document.body.appendChild(el);
-  el.hidden = false;
-  el.style.display = "grid";
-  el.style.zIndex = "1200";
-  el.innerHTML = `
-    <div class="modal modal-wide" role="dialog" aria-modal="true" data-modal>
-      <div class="modal-head">
-        <strong>${esc(state.drawer.title)}</strong>
-        <button type="button" class="ghost btn-sm" data-action="close-drawer">Close</button>
-      </div>
-      <pre class="drawer-body">${esc(state.drawer.body)}</pre>
-    </div>`;
-  if (wasMissing) void animateModalIn(el);
+    },
+  });
 }
 
-async function paintPanel(opts?: { animateIn?: boolean }): Promise<void> {
-  let el = document.getElementById("panel-overlay") as HTMLDivElement | null;
-  if (!state.panel) {
-    el?.remove();
-    return;
-  }
+async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
+  // Legacy desktop overlay cleanup
+  document.getElementById("panel-overlay")?.remove();
 
-  // Mobile: Vaul bottom sheet for New / Tools / Help
-  if (isMobileViewport()) {
-    el?.remove();
-    const p = state.panel;
-    await ensureVaulHost();
-    openMobileDrawer({
-      title: panelTitle(p),
-      html: panelBodyHTML(p),
-      variant: p === "tools" || p === "new" ? "tall" : "sheet",
-      onClose: (reason) => {
-        if (reason === "user") {
-          state.panel = null;
-          state.createError = "";
-          term?.focus();
-        }
-      },
-    });
-    if (p === "tools") {
-      // Vaul injects body HTML after React commit — delay status paint
-      window.setTimeout(() => void refreshToolsStatus(), 60);
+  if (!state.panel) {
+    if (isAppDrawerOpen() && !state.drawer) {
+      closeAppDrawer("programmatic");
     }
     return;
   }
 
-  if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
-
-  const wasMissing = !el;
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "panel-overlay";
-    el.className = "overlay";
-    el.setAttribute("role", "presentation");
-    el.addEventListener("mousedown", (ev) => {
-      if (ev.target === el) {
-        ev.preventDefault();
-        void closePanel();
-      }
-    });
-    document.body.appendChild(el);
+  // Panels always use Vaul (shadcn drawer / dialog sheet) — desktop + mobile
+  if (state.drawer) {
+    state.drawer = null;
   }
-  el.hidden = false;
-  el.style.display = "grid";
-  el.style.visibility = "visible";
-  el.style.zIndex = "1000";
-
-  let html = "";
-  if (state.panel === "new") html = newSessionHTML();
-  else if (state.panel === "tools") html = toolsHTML();
-  else if (state.panel === "help") html = helpHTML();
-  else html = `<div class="modal" data-modal><div class="modal-body">Unknown panel</div></div>`;
-  el.innerHTML = html;
-
-  if (opts?.animateIn || wasMissing) {
-    await animateModalIn(el);
-  } else {
-    el.style.opacity = "1";
+  const p = state.panel;
+  await ensureVaulHost();
+  openAppDrawer({
+    title: panelTitle(p),
+    html: panelBodyHTML(p),
+    variant: p === "tools" || p === "new" ? "dialog" : p === "help" ? "sheet" : "dialog",
+    onClose: (reason) => {
+      if (reason === "user") {
+        state.panel = null;
+        state.createError = "";
+        term?.focus();
+      }
+    },
+  });
+  if (p === "tools") {
+    window.setTimeout(() => void refreshToolsStatus(), 60);
   }
 }
 
@@ -2414,7 +2333,7 @@ function paint(): void {
     shellBound = false;
     shellEntranceDone = false;
     lastSessionListSig = "";
-    if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
+    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     app.innerHTML = loginHTML();
     bindLogin();
     animateLoginIn(app);
@@ -3256,7 +3175,7 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         ev.stopPropagation();
         state.drawer = null;
-        if (isMobileDrawerOpen()) closeMobileDrawer("programmatic");
+        if (isAppDrawerOpen()) closeAppDrawer("programmatic");
         void paintDrawer();
         break;
       case "prune":

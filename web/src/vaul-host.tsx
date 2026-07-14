@@ -1,18 +1,17 @@
 /**
- * React island: Vaul bottom-sheet host for mobile drawers/panels.
- * Vanilla main.ts drives open/close via the drawer-bridge.
+ * React island: Vaul drawer host for all app popups (desktop + mobile).
+ * Vanilla main.ts drives open/close via drawer-bridge.
  */
 import { useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Drawer } from "vaul";
-// vaul package.json exports block subpath "style.css" — load via relative path
 import "../node_modules/vaul/style.css";
 
 import {
   getDrawerSnapshot,
   subscribeDrawer,
   type DrawerSnapshot,
-  closeMobileDrawer,
+  closeAppDrawer,
 } from "./drawer-bridge";
 
 function VaulApp() {
@@ -26,13 +25,17 @@ function VaulApp() {
     if (!el) return;
     if (snap.open && snap.html) {
       el.innerHTML = snap.html;
-      // Focus first focusable control for a11y / tools forms
       const focusable = el.querySelector<HTMLElement>(
-        "input, select, textarea, button.primary, button",
+        "input:not([type=hidden]), select, textarea, button.primary, button",
       );
       window.requestAnimationFrame(() => focusable?.focus?.());
-    } else {
-      el.innerHTML = "";
+    } else if (!snap.open) {
+      // keep content during close animation; clear after a beat
+      window.setTimeout(() => {
+        if (!getDrawerSnapshot().open && bodyRef.current) {
+          bodyRef.current.innerHTML = "";
+        }
+      }, 400);
     }
   }, [snap.open, snap.html, snap.revision]);
 
@@ -40,7 +43,7 @@ function VaulApp() {
     <Drawer.Root
       open={snap.open}
       onOpenChange={(open) => {
-        if (!open) closeMobileDrawer("user");
+        if (!open) closeAppDrawer("user");
       }}
       shouldScaleBackground
       setBackgroundColorOnScale
@@ -57,21 +60,19 @@ function VaulApp() {
           <div className="vaul-chrome">
             <Drawer.Handle className="vaul-handle" />
             <div className="vaul-header">
-              <Drawer.Title className="vaul-title">{snap.title || "Drawer"}</Drawer.Title>
+              <Drawer.Title className="vaul-title">
+                {snap.title || "Dialog"}
+              </Drawer.Title>
               <button
                 type="button"
                 className="ghost btn-sm vaul-close"
-                onClick={() => closeMobileDrawer("user")}
+                onClick={() => closeAppDrawer("user")}
                 aria-label="Close"
               >
                 Close
               </button>
             </div>
-            <div
-              ref={bodyRef}
-              className="vaul-body"
-              data-vaul-no-drag=""
-            />
+            <div ref={bodyRef} className="vaul-body" data-vaul-no-drag="" />
           </div>
         </Drawer.Content>
       </Drawer.Portal>
@@ -81,7 +82,7 @@ function VaulApp() {
 
 let root: Root | null = null;
 
-/** Mount once on boot (idempotent). */
+/** Mount once (idempotent). */
 export function mountVaulHost(): void {
   let host = document.getElementById("vaul-host");
   if (!host) {
