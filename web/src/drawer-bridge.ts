@@ -8,7 +8,6 @@ export type DrawerVariant = "sheet" | "tall" | "content" | "dialog";
 export type DrawerSnapshot = {
   open: boolean;
   title: string;
-  description: string;
   html: string;
   variant: DrawerVariant;
   revision: number;
@@ -16,8 +15,6 @@ export type DrawerSnapshot = {
 
 export type OpenDrawerOptions = {
   title: string;
-  /** Optional visible subtitle under the title (shadcn DialogDescription). */
-  description?: string;
   html: string;
   variant?: DrawerVariant;
   /** Called when the drawer fully closes (user dismiss or programmatic). */
@@ -27,9 +24,8 @@ export type OpenDrawerOptions = {
 let snapshot: DrawerSnapshot = {
   open: false,
   title: "",
-  description: "",
   html: "",
-  variant: "sheet",
+  variant: "dialog",
   revision: 0,
 };
 
@@ -71,9 +67,8 @@ export function openAppDrawer(opts: OpenDrawerOptions): void {
   snapshot = {
     open: true,
     title: opts.title,
-    description: opts.description?.trim() || "",
     html: opts.html,
-    variant: opts.variant || "sheet",
+    variant: opts.variant || "dialog",
     revision: snapshot.revision + 1,
   };
   emit();

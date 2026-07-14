@@ -3520,17 +3520,7 @@ function panelTitle(p: Panel): string {
   return "Panel";
 }
 
-/** Optional DialogDescription under Vaul title (shadcn-style). */
-function panelDescription(p: Panel): string {
-  if (p === "new") return "Pick an agent and workspace. Runs in tmux and survives browser disconnects.";
-  if (p === "new-project") return "Clone or fork into the host workspace root.";
-  if (p === "tools") return "Workspace utilities for the selected cwd.";
-  if (p === "changes") return "Status, diff, commit, and pull requests.";
-  if (p === "help") return "Bare keys outside the terminal. Hold Alt while the TTY is focused.";
-  return "";
-}
-
-/** Strip modal shell so Vaul can render the body under its handle/title. */
+/** Strip modal shell so Vaul can render the body under its title. */
 function stripModalChrome(full: string): string {
   try {
     const doc = new DOMParser().parseFromString(full, "text/html");
@@ -3604,16 +3594,9 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   await ensureVaulHost();
   openAppDrawer({
     title: panelTitle(p),
-    description: panelDescription(p),
     html: panelBodyHTML(p),
-    variant:
-      p === "changes"
-        ? "content"
-        : p === "help" || p === "tools"
-          ? "tall"
-          : p === "new" || p === "new-project"
-            ? "dialog"
-            : "dialog",
+    // dialog = compact forms; tall = tools/help/changes (scrollable, not stretched)
+    variant: p === "new" || p === "new-project" ? "dialog" : "tall",
     onClose: (reason) => {
       if (reason === "user") {
         state.panel = null;
@@ -3626,9 +3609,6 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   });
   if (p === "tools") {
     window.setTimeout(() => void refreshToolsStatus(), 60);
-  }
-  if (p === "changes") {
-    // status load kicked from openPanelOnly; keep branch row responsive if re-painted
   }
 }
 
@@ -3664,20 +3644,18 @@ function workspaceOptionsHTML(): string {
 }
 
 function newSessionHTML(): string {
-  // Body-only: Vaul owns title / description / close chrome.
+  // Body only — Vaul owns title + ✕
   const accountBlock = state.agentAccountPlatform
-    ? `<details class="details-block field-disclosure" ${state.formAccount ? "open" : ""}>
+    ? `<details class="details-block" ${state.formAccount ? "open" : ""}>
         <summary>Account <span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></summary>
-        <div class="field field--nested">
-          <label for="sess-account">Profile</label>
+        <div class="field" style="margin-top:0.5rem">
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
-          <div class="check-row check-row--tight">
-            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — private HOME</label>
-            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch</label>
+          <div class="check-row" style="margin-top:0.45rem">
+            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated</label>
+            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global</label>
           </div>
-          <p class="form-hint">${state.agentAccounts.filter((a) => a.saved).length} saved · <a href="/profile/accounts" data-nav data-action="open-settings" data-tab="accounts" class="linkish">Manage accounts</a></p>
         </div>
       </details>`
     : "";
@@ -3704,24 +3682,20 @@ function newSessionHTML(): string {
         <label for="sess-name">Label <span class="opt">optional</span></label>
         <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
       </div>
-      <div class="field field--check">
-        <label class="check check--block" title="Isolated git worktree under .agents/worktrees — safe parallel agents">
+      <div class="check-row" style="margin-bottom:0.75rem">
+        <label class="check" title="Isolated git worktree for parallel agents">
           <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
-          <span class="check-text">
-            <span class="check-title">Isolated worktree</span>
-            <span class="form-hint">Git only · creates a branch under <code>.agents/worktrees</code> for parallel agents</span>
-          </span>
+          Isolated worktree
         </label>
       </div>
       ${accountBlock}
       <div class="field">
         <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
-        <textarea id="sess-prompt" name="prompt" rows="3" placeholder="First message typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
+        <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
       </div>
-      <p class="form-hint">Need a repo first? <a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a></p>
+      <p class="form-hint"><a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a> first if needed</p>
       ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
       <div class="modal-actions">
-        <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
         <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
           ${state.creating ? "Starting…" : "Start session"}
         </button>
@@ -3735,7 +3709,6 @@ function newProjectHTML(): string {
       <div class="field">
         <label for="proj-git-url">Repo URL or owner/repo</label>
         <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
-        <p class="form-hint">HTTPS, SSH, or short <code>owner/repo</code></p>
       </div>
       <div class="field-grid">
         <div class="field">
@@ -3747,27 +3720,23 @@ function newProjectHTML(): string {
           <input id="proj-git-branch" name="branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
         </div>
       </div>
-      <div class="field field--checks">
-        <span class="field-label">Options</span>
-        <div class="check-row">
-          <label class="check">
-            <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-            Fork on GitHub first
-          </label>
-          <label class="check">
-            <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-            Shallow clone
-          </label>
-          <label class="check">
-            <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
-            Open session after clone
-          </label>
-        </div>
+      <div class="check-row" style="margin-bottom:0.75rem">
+        <label class="check">
+          <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+          Fork on GitHub first
+        </label>
+        <label class="check">
+          <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+          Shallow clone
+        </label>
+        <label class="check">
+          <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
+          Open session after clone
+        </label>
       </div>
-      <p class="form-hint">Auth via host SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">Settings → GitHub</a></p>
+      <p class="form-hint">Auth via SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">GitHub settings</a></p>
       ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
       <div class="modal-actions">
-        <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
         <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
           ${state.creating ? "Cloning…" : "Clone project"}
         </button>
