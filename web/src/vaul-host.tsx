@@ -106,6 +106,9 @@ function VaulApp() {
             <Drawer.Handle className="vaul-handle" />
             <div className="vaul-header">
               <div className="vaul-header-text">
+                <p className="vaul-eyebrow" aria-hidden="true">
+                  agents
+                </p>
                 <Drawer.Title className="vaul-title">
                   {snap.title || "Dialog"}
                 </Drawer.Title>
@@ -115,7 +118,7 @@ function VaulApp() {
               </div>
               <button
                 type="button"
-                className="vaul-close"
+                className="vaul-close ghost btn-icon sm"
                 onClick={() => closeAppDrawer("user")}
                 aria-label="Close"
                 title="Close (Esc)"

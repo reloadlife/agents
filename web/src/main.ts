@@ -900,10 +900,13 @@ function paintCommandPalette(): void {
         .join("")
     : `<div class="palette-empty">No matches</div>`;
   root.innerHTML = `
-    <div class="palette-card" role="dialog" aria-label="Command palette">
-      <input id="palette-input" class="palette-input" placeholder="Type a command…" value="${esc(state.paletteQuery)}" autocomplete="off" />
+    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div class="palette-input-row">
+        ${iconSvg("search")}
+        <input id="palette-input" class="palette-input" placeholder="Search commands, sessions, settings…" value="${esc(state.paletteQuery)}" autocomplete="off" />
+      </div>
       <div class="palette-list">${listHtml}</div>
-      <div class="palette-foot"><span>↑↓</span> move · <span>↵</span> run · <span>esc</span> close</div>
+      <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> run · <kbd>esc</kbd> close</div>
     </div>`;
   const input = document.getElementById("palette-input") as HTMLInputElement | null;
   input?.addEventListener("input", () => {
@@ -1998,14 +2001,16 @@ function emptyTermHTML(): string {
     <div class="term-empty">
       <div class="term-empty-card">
         <div class="term-empty-mark" aria-hidden="true">a</div>
-        <h2>No session selected</h2>
-        <p>Start a session or open one from the rail. Closing a browser tab only detaches — agents keep running in tmux.</p>
+        <h2>Ready when you are</h2>
+        <p>Open a session from the sidebar, or start a new agent. Closing this tab only detaches — agents keep running in tmux.</p>
         <div class="term-empty-actions">
-          <button type="button" class="primary" data-action="new-session">New session</button>
-          <button type="button" class="ghost" data-action="open-shell">Terminal</button>
-          <button type="button" class="ghost" data-action="open-remote">Open remote</button>
+          <button type="button" class="primary" data-action="new-session">${iconSvg("plus")} New session</button>
+          <button type="button" class="ghost" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
+          <button type="button" class="ghost" data-action="open-remote">${iconSvg("external")} Open remote</button>
         </div>
-        <p class="term-empty-hint">Press <kbd>⌘</kbd><kbd>K</kbd> for commands · <kbd>?</kbd> for shortcuts</p>
+        <p class="term-empty-hint">
+          <kbd>n</kbd> new · <kbd>⌘</kbd><kbd>K</kbd> commands · <kbd>?</kbd> shortcuts
+        </p>
       </div>
     </div>`;
 }
@@ -2170,11 +2175,12 @@ function settingsHTML(): string {
       break;
   }
 
+  const tabMeta = tabs.find((t) => t.id === state.settingsTab);
   return `
     <div class="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-sidebar="08">
       <aside class="settings-nav">
         <div class="settings-nav-head">
-          <div class="eyebrow">Configuration</div>
+          <div class="eyebrow">Host</div>
           <h1 id="settings-title">Settings</h1>
         </div>
         <nav class="settings-nav-list">${nav}</nav>
@@ -2182,10 +2188,9 @@ function settingsHTML(): string {
       </aside>
       <section class="settings-main">
         <header class="settings-main-head">
-          <div class="topbar-lead" style="gap:0.55rem">
-            <span class="eyebrow" style="margin:0">Host</span>
-            <span class="topbar-sep" aria-hidden="true"></span>
-            <h2 style="margin:0">${esc(tabs.find((t) => t.id === state.settingsTab)?.label || "Settings")}</h2>
+          <div class="settings-main-titles">
+            <h2>${esc(tabMeta?.label || "Settings")}</h2>
+            ${tabMeta?.hint ? `<p class="settings-main-hint">${esc(tabMeta.hint)}</p>` : ""}
           </div>
           <button type="button" class="ghost btn-icon sm" data-action="close-settings" title="Close (Esc)" aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
@@ -3574,6 +3579,7 @@ function newSessionHTML(): string {
     ? `<details class="details-block" ${state.formAccount ? "open" : ""}>
         <summary>Account <span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></summary>
         <div class="field" style="margin-top:0.65rem">
+          <label for="sess-account" class="sr-only">Account profile</label>
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
@@ -3581,12 +3587,13 @@ function newSessionHTML(): string {
             <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — private HOME</label>
             <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch</label>
           </div>
-          <p class="form-hint">${state.agentAccounts.filter((a) => a.saved).length} saved · <a href="/profile/accounts" data-nav data-action="open-settings" data-tab="accounts" class="linkish">Manage</a></p>
+          <p class="form-hint">${state.agentAccounts.filter((a) => a.saved).length} saved · <a href="/profile/accounts" data-nav data-action="open-settings" data-tab="accounts" class="linkish">Manage accounts</a></p>
         </div>
       </details>`
     : "";
   return `
     <form id="create-form" class="modal-body sheet-form" data-action-form="create-session">
+      <p class="form-hint sheet-lede">Pick an agent and workspace. The session runs in tmux and survives browser disconnects.</p>
       <div class="field-grid">
         <div class="field">
           <label for="sess-agent">Agent</label>
@@ -3617,9 +3624,9 @@ function newSessionHTML(): string {
       ${accountBlock}
       <div class="field">
         <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
-        <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
+        <textarea id="sess-prompt" name="prompt" rows="3" placeholder="First message typed into the TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
       </div>
-      <p class="form-hint">Runs in tmux · <a href="/project/new" data-nav data-action="new-project" class="linkish">New project</a> to clone first</p>
+      <p class="form-hint">Need a repo first? <a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a></p>
       ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
       <div class="modal-actions">
         <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
@@ -3633,6 +3640,7 @@ function newSessionHTML(): string {
 function newProjectHTML(): string {
   return `
     <form id="project-form" class="modal-body sheet-form" data-action-form="create-project">
+      <p class="form-hint sheet-lede">Clone or fork into the host workspace root, then open a session on the new folder.</p>
       <div class="field">
         <label for="proj-git-url">Repo URL or owner/repo</label>
         <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
@@ -3758,15 +3766,16 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
 function toolsHTML(): string {
   return `
     <div class="modal-body tools-body sheet-form">
+      <p class="form-hint sheet-lede">Workspace utilities for the selected cwd. Accounts &amp; host keys live in Settings.</p>
       <div class="btn-row tools-quick">
-        <button type="button" class="primary btn-sm" data-action="open-shell">Terminal</button>
-        <button type="button" class="ghost btn-sm" data-action="open-remote">Open remote…</button>
-        <button type="button" class="ghost btn-sm" data-action="git-changes">Git changes</button>
+        <button type="button" class="primary btn-sm" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
+        <button type="button" class="ghost btn-sm" data-action="open-remote">${iconSvg("external")} Open remote</button>
+        <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Git changes</button>
       </div>
       ${workspaceToolsBodyHTML()}
       <p class="form-hint">
         Accounts, GitHub, SSH →
-        <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>
+        <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Open settings</button>
       </p>
     </div>`;
 }
@@ -4439,20 +4448,22 @@ function loginHTML(): string {
         <span class="logo-mark" aria-hidden="true">a</span>
         <div>
           <h1>agents</h1>
-          <p class="sub">Remote TTY control plane</p>
+          <p class="sub">Session control plane</p>
         </div>
       </div>
+      <p class="login-lede">Sign in with your host API token to open agent TTYs, workspaces, and tools.</p>
       <form id="login-form">
         <div class="field">
           <label for="token">API token</label>
           <input id="token" name="token" type="password" autocomplete="current-password" placeholder="AGENTSD_TOKEN" required autofocus />
         </div>
         ${state.loginError ? `<p class="error form-error" role="alert">${esc(state.loginError)}</p>` : ""}
+        ${state.busy ? `<p class="login-busy" aria-live="polite">Connecting to host…</p>` : ""}
         <button class="primary" type="submit" style="width:100%" ${state.busy ? "disabled" : ""}>
           ${state.busy ? "Connecting…" : "Connect"}
         </button>
       </form>
-      <p class="hint">Same bearer as <code>agentsctl</code>. Or run <code>agentsctl web</code> for auto-login. Stored in this browser only.</p>
+      <p class="hint">Same bearer as <code>agentsctl</code>. Run <code>agentsctl web</code> for one-click login. Token stays in this browser only.</p>
     </div>
   </div>`;
 }
@@ -4536,19 +4547,17 @@ function shellHTML(): string {
             <span class="sb-brand-name">agents</span>
           </a>
           <a href="/new" class="sb-cta" data-action="new-session" data-nav id="btn-new" title="New session (n)">
-            ${iconSvg("plus")}<span>New</span><kbd>n</kbd>
+            ${iconSvg("plus")}<span>New</span>
           </a>
         </header>
 
-        <nav class="sb-tools" aria-label="Quick actions">
-          <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)">${iconSvg("folder-git")}</a>
-          <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)">${iconSvg("terminal")}</button>
-          <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor">${iconSvg("external")}</button>
-          <span class="sb-tools-sep" aria-hidden="true"></span>
-          <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)">${iconSvg("wrench")}</a>
-          <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)">${iconSvg("git-branch")}</a>
-          <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">${iconSvg("settings")}</a>
-          <a href="/help" class="sb-tool" data-action="help" data-nav title="Shortcuts (?)">${iconSvg("help")}</a>
+        <nav class="sb-tools" aria-label="Workspace">
+          <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)">${iconSvg("folder-git")}<span class="sb-tool-label">Project</span></a>
+          <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)">${iconSvg("terminal")}<span class="sb-tool-label">Shell</span></button>
+          <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor">${iconSvg("external")}<span class="sb-tool-label">Remote</span></button>
+          <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)">${iconSvg("wrench")}<span class="sb-tool-label">Tools</span></a>
+          <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)">${iconSvg("git-branch")}<span class="sb-tool-label">Git</span></a>
+          <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)">${iconSvg("settings")}<span class="sb-tool-label">Settings</span></a>
         </nav>
 
         <section class="sb-sessions" aria-label="Sessions">
@@ -4556,22 +4565,29 @@ function shellHTML(): string {
             <span class="sb-sessions-label">Sessions</span>
             <span class="sb-sessions-count" id="sess-count" title="running / total">0/0</span>
           </div>
-          <input id="filter" class="sb-filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" spellcheck="false" />
+          <div class="sb-filter-wrap">
+            <span class="sb-filter-ico" aria-hidden="true">${iconSvg("search")}</span>
+            <input id="filter" class="sb-filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" spellcheck="false" />
+          </div>
           <div class="session-list" id="session-list" role="list">
             ${sessionListHTML()}
           </div>
         </section>
 
         <footer class="sb-foot">
-          <button type="button" class="sb-host" data-action="open-settings" data-tab="about" title="About this host">
+          <button type="button" class="sb-host" data-action="open-settings" data-tab="about" title="Host status &amp; settings">
             <span class="sb-host-dot" aria-hidden="true"></span>
             <span class="sb-host-text">
               <strong id="nav-host">${esc(host)}</strong>
               <span id="nav-status">${esc(state.statusText || "connected")}</span>
             </span>
+            ${iconSvg("chevrons-up-down")}
           </button>
-          <button type="button" class="sb-tool" data-action="prune" title="Clear stopped sessions">${iconSvg("trash")}</button>
-          <button type="button" class="sb-tool" data-action="logout" title="Log out">${iconSvg("logout")}</button>
+          <div class="sb-foot-actions">
+            <button type="button" class="sb-tool" data-action="help" title="Shortcuts (?)">${iconSvg("help")}</button>
+            <button type="button" class="sb-tool" data-action="prune" title="Clear stopped sessions">${iconSvg("trash")}</button>
+            <button type="button" class="sb-tool" data-action="logout" title="Log out">${iconSvg("logout")}</button>
+          </div>
         </footer>
       </div>
     </aside>
@@ -4621,13 +4637,17 @@ function shellHTML(): string {
 function sessionListHTML(): string {
   if (state.sessions.length === 0) {
     return `<div class="empty-list">
-      <p>No sessions</p>
-      <button type="button" class="primary btn-sm" data-action="new-session">New session</button>
+      <p class="empty-list-title">No sessions yet</p>
+      <p class="empty-list-hint">Start an agent in a workspace. It keeps running after you leave.</p>
+      <button type="button" class="primary btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>
     </div>`;
   }
   const sorted = filteredSessionsSorted();
   if (sorted.length === 0) {
-    return `<div class="empty-list"><p>No matches</p></div>`;
+    return `<div class="empty-list">
+      <p class="empty-list-title">No matches</p>
+      <p class="empty-list-hint">Try another filter, or clear the search.</p>
+    </div>`;
   }
   return sorted
     .map((s) => {
@@ -4645,13 +4665,15 @@ function sessionListHTML(): string {
       const tipBits = [s.agent, s.cwd];
       if (branch) tipBits.push(branch);
       tipBits.push(s.state, "right-click for actions");
+      const stateLabel =
+        s.state === "running" ? "Live" : s.state === "exited" ? "Exited" : s.state;
       return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav title="${esc(tipBits.join(" · "))}">
   <span class="session-dot ${ag}" aria-hidden="true"></span>
   <span class="session-body">
     <span class="session-name">${esc(label)}</span>
     <span class="session-meta">${esc(metaBits.join(" · "))}</span>
   </span>
-  <span class="session-state ${esc(s.state)}" title="${esc(s.state)}"></span>
+  <span class="session-state ${esc(s.state)}" title="${esc(s.state)}">${esc(stateLabel)}</span>
   <button type="button" class="session-more" data-ctx="${esc(s.id)}" title="Actions" aria-label="Session actions" tabindex="-1">${iconSvg("more")}</button>
 </a>`;
     })
@@ -4733,7 +4755,7 @@ async function runSessionCtx(act: string, id: string): Promise<void> {
 
 function tabsHTML(): string {
   if (state.openTabs.length === 0) {
-    return `<div class="tabs-empty">No tabs open</div>`;
+    return `<div class="tabs-empty">Select a session to attach</div>`;
   }
   return state.openTabs
     .map((t, i) => {
@@ -4765,10 +4787,10 @@ function statusHTML(): string {
   const run = state.sessions.filter((s) => s.state === "running").length;
   return `
     <span class="status-dot ${cls}"></span>
-    <span>${run} live</span>
+    <span><strong>${run}</strong> live</span>
     <span class="sep">·</span>
-    <span>${open} open</span>
-    <span class="status-hint"> · tab close detaches</span>
+    <span><strong>${open}</strong> open</span>
+    <span class="status-hint"> · close tab detaches · <kbd>s</kbd> stops</span>
   `;
 }
 
