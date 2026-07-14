@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-14
+
+### Changed
+
+- **Web UI overhaul** — shadcn-style dark zinc design system:
+  - Inter + JetBrains Mono, zinc HSL tokens, white primary buttons
+  - Cleaner cards, dialogs, badges, session rail, and settings layout
+  - Terminal palette aligned with zinc dark
+  - Same features; visual language only (vanilla TS, not React rewrite)
+
 ## [0.3.7] — 2026-07-14
 
 ### Added

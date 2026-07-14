@@ -490,27 +490,27 @@ function ensureTerminal(container: HTMLElement): void {
     scrollback: 50000,
     convertEol: true,
     theme: {
-      background: "#0c0a08",
-      foreground: "#e8e2d6",
-      cursor: "#c9a66b",
-      cursorAccent: "#0c0a08",
-      selectionBackground: "#3a3228",
-      black: "#0c0a08",
-      red: "#c47862",
-      green: "#7f9a72",
-      yellow: "#c9a66b",
-      blue: "#8a9bb5",
-      magenta: "#b794f6",
-      cyan: "#7a9aaa",
-      white: "#e8e2d6",
-      brightBlack: "#6e665c",
-      brightRed: "#d49484",
-      brightGreen: "#96b08f",
-      brightYellow: "#d4b54a",
-      brightBlue: "#a0b0c8",
-      brightMagenta: "#c0a4cc",
-      brightCyan: "#95b4c0",
-      brightWhite: "#f5f0e8",
+      background: "#09090b",
+      foreground: "#fafafa",
+      cursor: "#fafafa",
+      cursorAccent: "#09090b",
+      selectionBackground: "#27272a",
+      black: "#09090b",
+      red: "#f87171",
+      green: "#4ade80",
+      yellow: "#fbbf24",
+      blue: "#60a5fa",
+      magenta: "#c084fc",
+      cyan: "#22d3ee",
+      white: "#e4e4e7",
+      brightBlack: "#71717a",
+      brightRed: "#fca5a5",
+      brightGreen: "#86efac",
+      brightYellow: "#fde68a",
+      brightBlue: "#93c5fd",
+      brightMagenta: "#d8b4fe",
+      brightCyan: "#67e8f9",
+      brightWhite: "#fafafa",
     },
     allowProposedApi: true,
   });
@@ -764,9 +764,9 @@ function paintSettings(): void {
 function settingsHTML(): string {
   const tabs: { id: SettingsTab; label: string; hint: string }[] = [
     { id: "accounts", label: "Agent accounts", hint: "Cursor · Claude · Grok · Codex" },
-    { id: "github", label: "GitHub (gh)", hint: "CLI logins on this host" },
+    { id: "github", label: "GitHub", hint: "gh CLI logins" },
     { id: "ssh", label: "SSH keys", hint: "Host identities" },
-    { id: "workspace", label: "Workspace tools", hint: "Map · memory · browser" },
+    { id: "workspace", label: "Workspace", hint: "Map · memory · browser" },
     { id: "about", label: "About", hint: "Host & shortcuts" },
   ];
   const nav = tabs
@@ -802,16 +802,18 @@ function settingsHTML(): string {
     <div class="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <aside class="settings-nav">
         <div class="settings-nav-head">
-          <div class="eyebrow">Host</div>
+          <div class="eyebrow">Configuration</div>
           <h1 id="settings-title">Settings</h1>
         </div>
         <nav class="settings-nav-list">${nav}</nav>
-        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to desk</button>
+        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to sessions</button>
       </aside>
       <section class="settings-main">
         <header class="settings-main-head">
           <h2>${esc(tabs.find((t) => t.id === state.settingsTab)?.label || "Settings")}</h2>
-          <button type="button" class="ghost btn-sm" data-action="close-settings" title="Close (Esc)">✕</button>
+          <button type="button" class="ghost btn-icon sm" data-action="close-settings" title="Close (Esc)" aria-label="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
         </header>
         <div class="settings-body">${body}</div>
       </section>
@@ -1798,10 +1800,12 @@ function newSessionHTML(): string {
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="new-title" data-modal>
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Launch</div>
+          <div class="eyebrow">Sessions</div>
           <h2 id="new-title">New session</h2>
         </div>
-        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
+        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
       <form id="create-form" class="modal-body" data-action-form="create-session">
         <div class="field-grid">
@@ -1822,21 +1826,21 @@ function newSessionHTML(): string {
           </div>
         </div>
         <div class="field">
-          <label for="sess-name">Session label <span class="opt">optional</span></label>
+          <label for="sess-name">Label <span class="opt">optional</span></label>
           <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
         </div>
         ${
           state.agentAccountPlatform
             ? `<div class="field">
-          <label for="sess-account">Account profile <span class="opt">${esc(state.agentAccountPlatform)}</span></label>
+          <label for="sess-account">Account <span class="opt">${esc(state.agentAccountPlatform)}</span></label>
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
-          <div class="check-row" style="margin-top:0.45rem">
-            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated (parallel-safe)</label>
-            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch (host-wide)</label>
+          <div class="check-row" style="margin-top:0.55rem">
+            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated — parallel-safe private HOME</label>
+            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global switch — host-wide login</label>
           </div>
-          <p class="form-hint" style="margin:0.4rem 0 0">Save profiles: <code>cursor-switch --platform ${esc(state.agentAccountPlatform)} save personal</code></p>
+          <p class="form-hint">Manage profiles in Settings, or: <code>cursor-switch --platform ${esc(state.agentAccountPlatform)} save personal</code></p>
         </div>`
             : ""
         }
@@ -1846,26 +1850,26 @@ function newSessionHTML(): string {
         </div>
 
         <details class="clone-block" ${state.formGitUrl ? "open" : ""}>
-          <summary>New project from git</summary>
-          <p class="form-hint" style="margin-top:0.5rem">Clone (or GitHub-fork) into the workspace, then start the agent there. Leave empty to use the workspace above.</p>
+          <summary>Clone project from git</summary>
+          <p class="form-hint" style="margin-top:0.35rem;margin-bottom:0.75rem">Clone or GitHub-fork into the workspace, then start the agent there. Leave empty to use the workspace above.</p>
           <div class="field">
-            <label for="sess-git-url">Repo URL or <code>owner/repo</code></label>
-            <input id="sess-git-url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git  or  org/app" autocomplete="off" ${state.creating ? "disabled" : ""} />
+            <label for="sess-git-url">Repo URL or owner/repo</label>
+            <input id="sess-git-url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git" autocomplete="off" ${state.creating ? "disabled" : ""} />
           </div>
           <div class="field-grid">
             <div class="field">
-              <label for="sess-git-name">Folder name <span class="opt">optional</span></label>
-              <input id="sess-git-name" value="${esc(state.formGitName)}" placeholder="defaults to repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
+              <label for="sess-git-name">Folder <span class="opt">optional</span></label>
+              <input id="sess-git-name" value="${esc(state.formGitName)}" placeholder="repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
             </div>
             <div class="field">
               <label for="sess-git-branch">Branch <span class="opt">optional</span></label>
-              <input id="sess-git-branch" value="${esc(state.formGitBranch)}" placeholder="default branch" autocomplete="off" ${state.creating ? "disabled" : ""} />
+              <input id="sess-git-branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
             </div>
           </div>
           <div class="check-row">
             <label class="check">
               <input type="checkbox" id="sess-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-              Fork on GitHub first <span class="opt">(requires <code>gh</code> auth)</span>
+              Fork on GitHub first <span class="opt">(needs gh auth)</span>
             </label>
             <label class="check">
               <input type="checkbox" id="sess-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
@@ -1874,12 +1878,12 @@ function newSessionHTML(): string {
           </div>
         </details>
 
-        <p class="form-hint">Runs in server-side tmux. Closing a browser tab detaches only — Stop/Delete from the rail.</p>
+        <p class="form-hint">Runs in server-side tmux. Closing a browser tab detaches only.</p>
         ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
         <div class="modal-actions">
           <button type="button" class="ghost" data-action="close-panel" ${state.creating ? "disabled" : ""}>Cancel</button>
           <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-            ${state.creating ? (state.formGitUrl ? "Cloning & starting…" : "Starting…") : state.formGitUrl ? "Clone & start" : "Start session"}
+            ${state.creating ? (state.formGitUrl ? "Cloning…" : "Starting…") : state.formGitUrl ? "Clone & start" : "Start session"}
           </button>
         </div>
       </form>
@@ -1892,9 +1896,11 @@ function toolsHTML(): string {
       <div class="modal-head">
         <div>
           <div class="eyebrow">Workspace</div>
-          <h2 id="tools-title">Map · memory · browser</h2>
+          <h2 id="tools-title">Quick tools</h2>
         </div>
-        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
+        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
       <div class="modal-body tools-body">
         <div class="field">
@@ -1911,8 +1917,8 @@ function toolsHTML(): string {
           </div>
           <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
           <div class="btn-row">
-            <button type="button" data-action="map-gen">Generate</button>
-            <button type="button" data-action="map-show">Show</button>
+            <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
+            <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
           </div>
         </section>
 
@@ -1921,13 +1927,13 @@ function toolsHTML(): string {
             <h3>Memory</h3>
             <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span>
           </div>
-          <p class="tool-desc">Full-text (and optional vector) index for retrieval</p>
+          <p class="tool-desc">Full-text index for retrieval</p>
           <div class="btn-row">
-            <button type="button" data-action="mem-index">Reindex</button>
+            <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
           </div>
           <form class="mem-search" data-action-form="mem-search">
             <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
-            <button type="submit" class="primary">Search</button>
+            <button type="submit" class="primary btn-sm">Search</button>
           </form>
           <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
         </section>
@@ -1937,16 +1943,16 @@ function toolsHTML(): string {
             <h3>Playwright</h3>
             <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span>
           </div>
-          <p class="tool-desc">Headed browser stack for agents</p>
+          <p class="tool-desc">Headed browser stack</p>
           <div class="btn-row">
-            <button type="button" data-action="pw-start">Start</button>
-            <button type="button" data-action="pw-stop">Stop</button>
-            <button type="button" data-action="pw-restart">Restart</button>
+            <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
+            <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
+            <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
           </div>
         </section>
 
-        <p class="form-hint" style="margin-top:1rem">
-          Manage GitHub logins, SSH keys, and multi-account agent profiles in
+        <p class="form-hint" style="margin-top:0.5rem">
+          Accounts, GitHub, and SSH keys live in
           <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>.
         </p>
       </div>
@@ -1958,10 +1964,12 @@ function helpHTML(): string {
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="help-title" data-modal>
       <div class="modal-head">
         <div>
-          <div class="eyebrow">Keyboard</div>
+          <div class="eyebrow">Reference</div>
           <h2 id="help-title">Shortcuts</h2>
         </div>
-        <button type="button" class="ghost btn-sm" data-action="close-panel" title="Close (Esc)">✕</button>
+        <button type="button" class="ghost btn-icon sm" data-action="close-panel" title="Close (Esc)" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
       <div class="modal-body">
         <dl class="keys">
@@ -1975,7 +1983,7 @@ function helpHTML(): string {
           <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch open tab</dd></div>
           <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
         </dl>
-        <p class="form-hint">Shortcuts ignore events when typing in inputs. Closing a tab never kills the agent.</p>
+        <p class="form-hint">Shortcuts are ignored while typing in inputs. Closing a tab never kills the agent.</p>
       </div>
     </div>`;
 }
@@ -2057,20 +2065,20 @@ function loginHTML(): string {
         <span class="logo-mark" aria-hidden="true">a</span>
         <div>
           <h1>agents</h1>
-          <p class="sub">Remote agent desk</p>
+          <p class="sub">Host control plane</p>
         </div>
       </div>
-      <p class="login-lede">Same bearer token as <code>agentsctl</code> — paste <code>AGENTSD_TOKEN</code> to connect.</p>
+      <p class="login-lede">Paste the same bearer token as <code>agentsctl</code> (<code>AGENTSD_TOKEN</code>) to connect to this host.</p>
       <form id="login-form">
         <div class="field">
-          <label for="token">Token</label>
-          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Paste token" required autofocus />
+          <label for="token">API token</label>
+          <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Paste token…" required autofocus />
         </div>
         <button class="primary" type="submit" style="width:100%">Connect</button>
         ${state.loginError ? `<p class="error">${esc(state.loginError)}</p>` : ""}
         ${state.busy ? `<p class="login-busy">Connecting…</p>` : ""}
       </form>
-      <p class="hint">Stored in this browser only. Treat it like shell access to every agent tool on the host.</p>
+      <p class="hint">Stored in this browser only. Full host control — treat it like root shell access.</p>
     </div>
   </div>`;
 }
@@ -2085,18 +2093,20 @@ function shellHTML(): string {
           <span class="logo-mark sm" aria-hidden="true">a</span>
           <span class="brand-name">agents</span>
         </div>
-        <button type="button" class="ghost btn-icon" data-action="logout" title="Log out">⎋</button>
+        <button type="button" class="ghost btn-icon" data-action="logout" title="Log out" aria-label="Log out">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
       </div>
 
       <div class="sidebar-actions">
         <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
-          <span>New session</span>
+          <span>+ New session</span>
           <kbd>n</kbd>
         </button>
       </div>
 
       <div class="sidebar-filter">
-        <input id="filter" type="search" placeholder="Filter…" value="${esc(state.filter)}" autocomplete="off" />
+        <input id="filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" />
         <span class="sess-count" id="sess-count" title="running / total">0/0</span>
       </div>
 
@@ -2112,7 +2122,9 @@ function shellHTML(): string {
 
     <main class="main">
       <header class="topbar">
-        <button type="button" class="ghost btn-icon mobile-only" data-action="toggle-sidebar" title="Sessions (w)" aria-label="Toggle sessions">☰</button>
+        <button type="button" class="ghost btn-icon mobile-only" data-action="toggle-sidebar" title="Sessions (w)" aria-label="Toggle sessions">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+        </button>
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
@@ -2126,8 +2138,12 @@ function shellHTML(): string {
         <div class="term-empty">
           <div class="term-empty-card">
             <div class="term-empty-mark" aria-hidden="true">a</div>
-            <h2>Pick a session</h2>
-            <p>Open one from the rail, or start fresh. Detach anytime — agents keep running in tmux.</p>
+            <h2>No session selected</h2>
+            <p>Open a session from the sidebar, or start a new one. Closing a tab detaches only — agents keep running in tmux.</p>
+            <div class="term-empty-actions">
+              <button type="button" class="primary" data-action="new-session">New session</button>
+              <button type="button" class="ghost" data-action="open-settings" data-tab="accounts">Settings</button>
+            </div>
           </div>
         </div>
       </div>
@@ -2141,7 +2157,7 @@ function sessionListHTML(): string {
   if (state.sessions.length === 0) {
     return `<div class="empty-list">
       <p>No sessions yet</p>
-      <button type="button" class="primary btn-sm" data-action="new-session">New session</button>
+      <button type="button" class="primary btn-sm" data-action="new-session">Create one</button>
     </div>`;
   }
   if (list.length === 0) {
