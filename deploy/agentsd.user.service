@@ -33,6 +33,9 @@ WorkingDirectory=%h/.local/share/agents
 ExecStart=%h/.local/bin/agentsd serve --config %h/.config/agentsd/config.toml
 Restart=on-failure
 RestartSec=3
+# Only signal agentsd itself. Default control-group would kill the tmux server
+# (and every agent) that was started while agentsd ran in this cgroup.
+KillMode=process
 NoNewPrivileges=true
 
 [Install]

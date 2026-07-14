@@ -19,6 +19,13 @@ jobs:
           go-version: "1.22.x"
           cache: true
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build embedded web UI
+        run: make web
+
       - name: Build multi-arch
         run: |
           set -euo pipefail

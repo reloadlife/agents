@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,9 +15,13 @@ import (
 	"github.com/reloadlife/agents/internal/auth"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/job"
+	"github.com/reloadlife/agents/internal/memory"
+	"github.com/reloadlife/agents/internal/pathallow"
 	"github.com/reloadlife/agents/internal/playwrightctl"
+	"github.com/reloadlife/agents/internal/projmap"
 	"github.com/reloadlife/agents/internal/session"
 	"github.com/reloadlife/agents/internal/status"
+	"github.com/reloadlife/agents/internal/webui"
 	"github.com/reloadlife/agents/internal/workspaces"
 )
 
@@ -23,15 +29,16 @@ type Server struct {
 	cfg  *config.Config
 	mgr  *job.Manager
 	sess *session.Manager
+	mem  *memory.Store
 	pw   *playwrightctl.Manager
 	log  *slog.Logger
 }
 
-func New(cfg *config.Config, mgr *job.Manager, sess *session.Manager, log *slog.Logger) *Server {
+func New(cfg *config.Config, mgr *job.Manager, sess *session.Manager, mem *memory.Store, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, mgr: mgr, sess: sess, pw: playwrightctl.New(cfg), log: log}
+	return &Server{cfg: cfg, mgr: mgr, sess: sess, mem: mem, pw: playwrightctl.New(cfg), log: log}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -54,9 +61,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/kill", s.handleKillSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/resume", s.handleResumeSession)
 	mux.HandleFunc("POST /v1/sessions/prune", s.handlePruneSessions)
+	mux.HandleFunc("GET /v1/sessions/{id}/history", s.handleSessionHistory)
 	// Full remote PTY (tmux attach) over WebSocket — no SSH required
 	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.handleSessionPTY)
+
+	// Project maps (durable orientation files under <cwd>/.agents/)
+	mux.HandleFunc("POST /v1/maps", s.handleGenerateMap)
+	mux.HandleFunc("GET /v1/maps", s.handleGetMap)
+	mux.HandleFunc("GET /v1/maps/status", s.handleMapStatus)
+
+	// Workspace memory (FTS) — agents query via CLI/API
+	mux.HandleFunc("POST /v1/memory/index", s.handleMemoryIndex)
+	mux.HandleFunc("POST /v1/memory/search", s.handleMemorySearch)
+	mux.HandleFunc("GET /v1/memory/stats", s.handleMemoryStats)
 
 	// Print/API jobs (secondary — uses credits; explicit only)
 	mux.HandleFunc("POST /v1/jobs", s.handleCreateJob)
@@ -66,6 +85,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/jobs/{id}/events", s.handleEvents)
 	mux.HandleFunc("POST /v1/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /v1/jobs/{id}/confirm", s.handleConfirm)
+
+	// Embedded browser UI (static SPA). More-specific /v1 routes take precedence.
+	if s.cfg.WebEnabled() {
+		mux.Handle("/", webui.Handler())
+	}
+
 	return auth.Middleware(s.cfg.Token, withLogging(s.log, mux))
 }
 
@@ -268,6 +293,53 @@ func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
+func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
+	if s.sess == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
+		return
+	}
+	sess, err := s.sess.Resume(r.PathValue("id"))
+	if err != nil {
+		// not found vs config/cwd failures
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleSessionHistory(w http.ResponseWriter, r *http.Request) {
+	if s.sess == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
+		return
+	}
+	data, source, err := s.sess.History(r.PathValue("id"))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	// Plain terminal dump (may include ANSI). Optional JSON via ?format=json
+	if r.URL.Query().Get("format") == "json" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"source": source,
+			"bytes":  len(data),
+			"text":   string(data),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Agents-History-Source", source)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (s *Server) handleSessionPTY(w http.ResponseWriter, r *http.Request) {
 	if s.sess == nil {
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
@@ -432,6 +504,234 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) resolveMapCwd(rel string) (abs string, relOut string, err error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		if s.cfg.DefaultCwd != "" {
+			rel = s.cfg.DefaultCwd
+		} else {
+			rel = "."
+		}
+	}
+	abs, err = pathallow.Resolve(s.cfg.WorkspaceRoot, rel, s.cfg.Allow.Paths)
+	if err != nil {
+		return "", "", err
+	}
+	return abs, rel, nil
+}
+
+func (s *Server) handleGenerateMap(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd string `json:"cwd"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	m, metaPath, err := projmap.GenerateAndWrite(abs, rel)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"cwd":       rel,
+		"cwd_abs":   abs,
+		"map_path":  filepath.Join(abs, projmap.DirName, projmap.MapMarkdown),
+		"meta_path": metaPath,
+		"map":       m,
+		"status":    projmap.ReadStatus(abs),
+	})
+}
+
+func (s *Server) handleGetMap(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "markdown"
+	}
+	st := projmap.ReadStatus(abs)
+	if !st.Exists {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":  "no project map — run agentsctl map generate",
+			"status": st,
+			"cwd":    rel,
+		})
+		return
+	}
+	switch format {
+	case "status":
+		writeJSON(w, http.StatusOK, map[string]any{"cwd": rel, "cwd_abs": abs, "status": st})
+	case "json":
+		// re-read structured file
+		b, err := os.ReadFile(filepath.Join(abs, projmap.DirName, projmap.MapJSON))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(b)
+	default:
+		md, err := projmap.ReadMarkdown(abs)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		if r.URL.Query().Get("raw") == "1" {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(md))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"cwd":      rel,
+			"cwd_abs":  abs,
+			"status":   st,
+			"markdown": md,
+		})
+	}
+}
+
+func (s *Server) handleMapStatus(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":     rel,
+		"cwd_abs": abs,
+		"status":  projmap.ReadStatus(abs),
+	})
+}
+
+func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("memory disabled"))
+		return
+	}
+	var body struct {
+		Cwd         string `json:"cwd"`
+		Clear       bool   `json:"clear"`
+		IncludeCode bool   `json:"include_code"`
+		// Also ensure project map exists before index
+		GenerateMap bool `json:"generate_map"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.GenerateMap {
+		if _, _, err := projmap.GenerateAndWrite(abs, rel); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("map: %w", err))
+			return
+		}
+	}
+	n, err := s.mem.IndexWorkspace(rel, abs, memory.IndexOptions{
+		Clear:       body.Clear,
+		IncludeCode: body.IncludeCode,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	count, _ := s.mem.Stats(rel)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"cwd":       rel,
+		"indexed":   n,
+		"docs_total": count,
+	})
+}
+
+func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("memory disabled"))
+		return
+	}
+	var body struct {
+		Cwd   string `json:"cwd"`
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+		Mode  string `json:"mode"` // auto|fts|vector
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	_, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	mode := memory.SearchMode(body.Mode)
+	if mode == "" {
+		mode = memory.SearchAuto
+	}
+	hits, err := s.mem.SearchMode(rel, body.Query, body.Limit, mode)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":    rel,
+		"query":  body.Query,
+		"mode":   mode,
+		"hits":   hits,
+		"vector": s.mem.EmbedderConfigured(),
+	})
+}
+
+func (s *Server) handleMemoryStats(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("memory disabled"))
+		return
+	}
+	cwd := r.URL.Query().Get("cwd")
+	ws := ""
+	if cwd != "" {
+		_, rel, err := s.resolveMapCwd(cwd)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		ws = rel
+	}
+	count, err := s.mem.Stats(ws)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	withEmb, _ := s.mem.VectorStats(ws)
+	engine := "sqlite-fts5"
+	if s.mem.EmbedderConfigured() {
+		engine = "sqlite-fts5+vector"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":            ws,
+		"docs":           count,
+		"docs_embedded":  withEmb,
+		"dir":            s.cfg.MemoryDir(),
+		"engine":         engine,
+		"embed_model":    s.mem.EmbedModel(),
+		"vector_enabled": s.mem.EmbedderConfigured(),
+	})
 }
 
 func writeSSE(w http.ResponseWriter, event string, v any) {

@@ -4,13 +4,14 @@ Thanks for considering a contribution.
 
 ## Development
 
-**Requirements:** Go 1.22+, `tmux` (for integration tests).
+**Requirements:** Go 1.22+, `tmux` (for integration tests). **Optional for UI work:** bun or npm (`make web`).
 
 ```bash
 git clone https://github.com/reloadlife/agents.git
 cd agents
 make test
 make test-integration   # needs tmux
+make web                # only when changing web/ (committed dist is enough for Go-only)
 make build
 ```
 
@@ -22,6 +23,7 @@ export AGENTSD_TOKEN=dev-token
 # other terminal
 ./bin/agentsctl --url http://127.0.0.1:8787 --token dev-token status
 ./bin/agentsctl --token dev-token agents
+# browser: http://127.0.0.1:8787/  (paste token)
 ```
 
 ## Code style
@@ -45,7 +47,9 @@ By contributing, you agree that your contributions are licensed under the
 
 ## Feature ideas that fit
 
-- Better multi-agent picker UX
+- Project maps (`.agents/PROJECT_MAP.md` + skill)
+- Embedded vector memory / RAG
+- Web UI polish (map/memory panels)
 - Homebrew packaging
 - Optional mTLS / Tailscale identity auth
 - Structured metrics / Prometheus

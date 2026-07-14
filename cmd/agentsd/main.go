@@ -14,6 +14,8 @@ import (
 	"github.com/reloadlife/agents/internal/api"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/job"
+	"github.com/reloadlife/agents/internal/memory"
+	"github.com/reloadlife/agents/internal/selfupdate"
 	"github.com/reloadlife/agents/internal/session"
 )
 
@@ -31,6 +33,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		os.Exit(cmdServe(os.Args[2:]))
+	case "update":
+		os.Exit(cmdUpdate(os.Args[2:]))
 	case "version", "-version", "--version":
 		fmt.Printf("agentsd %s commit=%s date=%s\n", version, commit, date)
 	case "help", "-h", "--help":
@@ -47,6 +51,7 @@ func usage() {
 
 Usage:
   agentsd serve --config PATH
+  agentsd update [--check] [--force] [--version TAG] [--all]
   agentsd version
 
 Env:
@@ -54,6 +59,29 @@ Env:
 
 Docs: https://github.com/reloadlife/agents
 `)
+}
+
+func cmdUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only check for a newer release")
+	force := fs.Bool("force", false, "reinstall even if already on latest")
+	all := fs.Bool("all", false, "also update agentsctl if installed next to this binary")
+	ver := fs.String("version", "", "install a specific tag (e.g. v0.2.2); default latest")
+	_ = fs.Parse(args)
+
+	_, err := selfupdate.Run(selfupdate.Options{
+		Current:   version,
+		Binary:    "agentsd",
+		All:       *all,
+		Version:   *ver,
+		CheckOnly: *check,
+		Force:     *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func cmdServe(args []string) int {
@@ -85,7 +113,23 @@ func cmdServe(args []string) int {
 		return 1
 	}
 
-	srv := api.New(cfg, mgr, sess, log)
+	var mem *memory.Store
+	if cfg.MemoryEnabled() {
+		emb := memory.NewHTTPEmbedder(cfg.Memory.EmbedURL, cfg.Memory.EmbedModel, cfg.EmbedAPIKey())
+		mem, err = memory.OpenWith(cfg.MemoryDir(), memory.OpenOptions{Embedder: emb})
+		if err != nil {
+			log.Error("memory", "err", err)
+			return 1
+		}
+		defer mem.Close()
+		if emb != nil {
+			log.Info("memory embeddings enabled", "model", cfg.Memory.EmbedModel, "url", cfg.Memory.EmbedURL)
+		} else {
+			log.Info("memory FTS only (set memory.embed_url + embed_model for vectors)")
+		}
+	}
+
+	srv := api.New(cfg, mgr, sess, mem, log)
 	httpSrv := &http.Server{
 		Addr:    cfg.Listen,
 		Handler: srv.Handler(),

@@ -103,7 +103,7 @@ func TestIntegration_MockSession(t *testing.T) {
 		t.Fatalf("session manager: %v", err)
 	}
 
-	srv := api.New(cfg, mgr, sess, log)
+	srv := api.New(cfg, mgr, sess, nil, log)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -192,5 +192,50 @@ func TestIntegration_MockSession(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode >= 300 {
 		t.Fatalf("kill %d: %s", res.StatusCode, b)
+	}
+	if err := exec.Command("tmux", "has-session", "-t", created.Tmux).Run(); err == nil {
+		t.Fatalf("tmux session still alive after kill")
+	}
+
+	// resume restarts tmux under same id
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/v1/sessions/"+created.ID+"/resume", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	auth(req)
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode >= 300 {
+		t.Fatalf("resume %d: %s", res.StatusCode, b)
+	}
+	var resumed struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+		Tmux  string `json:"tmux"`
+	}
+	if err := json.Unmarshal(b, &resumed); err != nil {
+		t.Fatal(err)
+	}
+	if resumed.ID != created.ID || resumed.State != "running" {
+		t.Fatalf("unexpected resume: %+v", resumed)
+	}
+	if err := exec.Command("tmux", "has-session", "-t", resumed.Tmux).Run(); err != nil {
+		t.Fatalf("tmux after resume: %v", err)
+	}
+
+	// resume while live is idempotent
+	req, _ = http.NewRequest(http.MethodPost, ts.URL+"/v1/sessions/"+created.ID+"/resume", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	auth(req)
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode >= 300 {
+		t.Fatalf("resume-live %d: %s", res.StatusCode, b)
 	}
 }

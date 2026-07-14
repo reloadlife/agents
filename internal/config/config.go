@@ -23,6 +23,8 @@ type Config struct {
 	Caps              CapsConfig             `toml:"caps"`
 	Status            StatusConfig           `toml:"status"`
 	Sessions          SessionsConfig         `toml:"sessions"`
+	Web               WebConfig              `toml:"web"`
+	Memory            MemoryConfig           `toml:"memory"`
 	// DefaultCwd used when client sends empty / "." and "." is not allowlisted.
 	DefaultCwd string `toml:"default_cwd"`
 
@@ -30,6 +32,60 @@ type Config struct {
 	DefaultTimeoutDur time.Duration `toml:"-"`
 	MaxTimeoutDur     time.Duration `toml:"-"`
 	Token             string        `toml:"-"`
+}
+
+// WebConfig controls the embedded browser UI served by agentsd.
+type WebConfig struct {
+	// Enabled serves the static SPA at / (default true when omitted).
+	// Set enabled = false to disable the web UI.
+	Enabled *bool `toml:"enabled"`
+}
+
+// WebEnabled reports whether the embedded web UI should be mounted.
+func (c *Config) WebEnabled() bool {
+	if c.Web.Enabled == nil {
+		return true
+	}
+	return *c.Web.Enabled
+}
+
+// MemoryConfig is workspace text memory (FTS + optional vectors). Optional; enabled by default.
+type MemoryConfig struct {
+	// Enabled defaults true when omitted.
+	Enabled *bool  `toml:"enabled"`
+	Dir     string `toml:"dir"` // default: {jobs_dir}/memory
+	// EmbedURL is OpenAI-compatible embeddings base or full .../embeddings URL.
+	// Empty = FTS only.
+	EmbedURL string `toml:"embed_url"`
+	// EmbedModel e.g. text-embedding-3-small or nomic-embed-text
+	EmbedModel string `toml:"embed_model"`
+	// EmbedAPIKeyEnv is env var name for the embed API key (default AGENTS_EMBED_KEY).
+	EmbedAPIKeyEnv string `toml:"embed_api_key_env"`
+}
+
+// EmbedAPIKey returns the API key from the configured env var, if any.
+func (c *Config) EmbedAPIKey() string {
+	env := c.Memory.EmbedAPIKeyEnv
+	if env == "" {
+		env = "AGENTS_EMBED_KEY"
+	}
+	return strings.TrimSpace(os.Getenv(env))
+}
+
+// MemoryEnabled reports whether memory APIs should be mounted.
+func (c *Config) MemoryEnabled() bool {
+	if c.Memory.Enabled == nil {
+		return true
+	}
+	return *c.Memory.Enabled
+}
+
+// MemoryDir returns the resolved memory data directory.
+func (c *Config) MemoryDir() string {
+	if c.Memory.Dir != "" {
+		return c.Memory.Dir
+	}
+	return filepath.Join(c.JobsDir, "memory")
 }
 
 type AuthConfig struct {

@@ -5,12 +5,13 @@
 No SSH required for day-to-day use (SSH remains an optional fallback).
 
 ```text
-  laptop                          server
+  laptop / browser                 server
  ┌─────────────┐    WebSocket    ┌──────────────────────────┐
  │ agentsctl   │ ──────────────► │ agentsd                  │
  │  · tui      │    + REST API   │  · tmux sessions         │
  │  · session  │                 │  · claude/grok/codex/…   │
- │  · status   │                 │  · full PTY bridge       │
+ │ browser UI  │  multi-tab PTY  │  · full PTY bridge       │
+ │  · tabs     │ ──────────────► │  · embedded web UI (/ )  │
  └─────────────┘                 └──────────────────────────┘
 ```
 
@@ -44,6 +45,15 @@ curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/inst
 ```
 
 Or grab `agents_${ver}_${os}_${arch}.tar.gz` from [Releases](https://github.com/reloadlife/agents/releases).
+
+### Update in place
+
+```bash
+agentsctl update              # latest agentsctl
+agentsd update                # latest agentsd (restart the service after)
+agentsctl update --check      # dry-run
+agentsctl update --version v0.2.2
+```
 
 ### From source
 
@@ -96,6 +106,22 @@ agentsctl session start -a claude --open
 agentsctl session start -a grok --open
 ```
 
+### 3. Browser UI (optional)
+
+With `agentsd` running, open the embedded UI (same host/port as the API):
+
+```text
+http://127.0.0.1:8787/
+```
+
+Paste your `AGENTSD_TOKEN`, then start or open sessions in tabs. Closing a tab
+**does not** kill the agent (tmux keeps running). See [docs/WEB.md](docs/WEB.md).
+
+```toml
+[web]
+enabled = true   # default; set false for API-only
+```
+
 ## CLI cheat sheet
 
 ```bash
@@ -111,6 +137,8 @@ agentsctl session list
 agentsctl session open [id]      # full PTY (WebSocket; auto-reconnect)
 agentsctl session open id --ssh  # fallback: ssh -t … tmux attach
 agentsctl session kill id
+agentsctl session resume id   # re-attach if alive, else restart agent (same id)
+agentsctl session history id  # dump terminal scrollback / last snapshot
 ```
 
 ## HTTP API (v1)
@@ -125,6 +153,8 @@ agentsctl session kill id
 | GET | `/v1/sessions/{id}` | Detail (`pty_path`, attach hints) |
 | GET | `/v1/sessions/{id}/pty` | **WebSocket full PTY** |
 | POST | `/v1/sessions/{id}/kill` | Kill tmux session |
+| POST | `/v1/sessions/{id}/resume` | Re-attach if tmux alive; else restart agent |
+| GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 
 Auth: `Authorization: Bearer <token>` on all `/v1/*` routes (including WebSocket).
@@ -174,6 +204,9 @@ See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
 | Doc | Contents |
 |-----|----------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions + PTY work |
+| [docs/WEB.md](docs/WEB.md) | Embedded multi-tab browser UI |
+| [docs/PROJECT-MAP.md](docs/PROJECT-MAP.md) | Project maps for agent orientation |
+| [docs/MEMORY.md](docs/MEMORY.md) | Workspace FTS memory for agents |
 | [docs/INSTALL.md](docs/INSTALL.md) | Install & deploy |
 | [docs/REMOTE-TTY.md](docs/REMOTE-TTY.md) | Client remote TTY guide |
 | [docs/OPEN-SOURCE.md](docs/OPEN-SOURCE.md) | Public preview status |
@@ -185,8 +218,10 @@ See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
 ```text
 cmd/agentsd/          daemon
 cmd/agentsctl/        CLI + TUI
+web/                  browser UI source (Vite + xterm.js)
 internal/
   api/                HTTP + WebSocket routes
+  webui/              go:embed SPA (built from web/)
   session/            tmux sessions + PTY bridge
   clientpty/          agentsctl PTY client
   tui/                Bubble Tea session picker
@@ -203,6 +238,10 @@ scripts/install.sh    release-tarball installer (source fallback)
 - [x] CLI status / agents catalog / TUI defaults  
 - [x] Non-root install docs + user systemd unit  
 - [x] CI integration test (tmux + mock)  
+- [x] Embedded multi-tab Web UI (xterm.js)  
+- [x] Project maps (`.agents/PROJECT_MAP.md` + skill)  
+- [x] Embedded workspace memory (SQLite FTS5 + optional HTTP embeddings)  
+- [x] Web UI map + memory panels  
 - [ ] Homebrew packaging  
 - [ ] Optional Tailscale / CF Access identity (beyond shared token)  
 - [ ] Multi-user isolation  

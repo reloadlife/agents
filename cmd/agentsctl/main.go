@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/reloadlife/agents/internal/cliview"
 	"github.com/reloadlife/agents/internal/ctlconfig"
 	"github.com/reloadlife/agents/internal/doctor"
+	"github.com/reloadlife/agents/internal/selfupdate"
 	"github.com/reloadlife/agents/internal/tui"
 )
 
@@ -80,9 +82,18 @@ cmd:
 		args = []string{"tui"}
 	}
 
-	// config subcommand before loading token requirement
-	if args[0] == "config" {
+	// local commands — no server token required
+	switch args[0] {
+	case "config":
 		os.Exit(cmdConfig(args[1:], cfgPath))
+	case "update":
+		os.Exit(cmdUpdate(args[1:]))
+	case "version":
+		fmt.Printf("agentsctl %s commit=%s date=%s\n", version, commit, date)
+		return
+	case "help":
+		usage()
+		return
 	}
 
 	cfg, err := ctlconfig.Load(cfgPath)
@@ -118,6 +129,10 @@ cmd:
 		os.Exit(cmdPlaywright(c, cmdArgs))
 	case "session", "sessions":
 		os.Exit(cmdSession(c, cmdArgs))
+	case "map", "maps":
+		os.Exit(cmdMap(c, cmdArgs))
+	case "memory", "mem":
+		os.Exit(cmdMemory(c, cmdArgs))
 	case "jobs":
 		os.Exit(cmdJobs(c, cmdArgs))
 	case "run":
@@ -131,10 +146,6 @@ cmd:
 		os.Exit(cmdConfirm(c, cmdArgs))
 	case "get":
 		os.Exit(cmdGet(c, cmdArgs))
-	case "version":
-		fmt.Printf("agentsctl %s commit=%s date=%s\n", version, commit, date)
-	case "help":
-		usage()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		usage()
@@ -155,13 +166,238 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]
-  agentsctl session list | kill ID | prune
+  agentsctl session list | kill ID | resume ID | history ID | prune
+  agentsctl map generate -r <cwd>        # write .agents/PROJECT_MAP.md on server
+  agentsctl map show|status -r <cwd>
+  agentsctl memory index -r <cwd>        # index map+docs into FTS memory
+  agentsctl memory search -r <cwd> "q"   # search (for agents / RAG)
 
 Config: agentsctl config init|path|show
+Update: agentsctl update [--check] [--force] [--version TAG] [--all]
 Other:  agentsctl status | version
 
 Docs: https://github.com/reloadlife/agents
 `)
+}
+
+func cmdUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only check for a newer release")
+	force := fs.Bool("force", false, "reinstall even if already on latest")
+	all := fs.Bool("all", false, "also update agentsd if installed next to this binary")
+	ver := fs.String("version", "", "install a specific tag (e.g. v0.2.2); default latest")
+	_ = fs.Parse(args)
+
+	_, err := selfupdate.Run(selfupdate.Options{
+		Current:   version,
+		Binary:    "agentsctl",
+		All:       *all,
+		Version:   *ver,
+		CheckOnly: *check,
+		Force:     *force,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdMemory(c *client, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agentsctl memory index|search|stats [-r cwd] [query]")
+		return 2
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("memory "+sub, flag.ExitOnError)
+	cwd := fs.String("r", ".", "workspace cwd")
+	clear := fs.Bool("clear", false, "clear workspace memory before index")
+	code := fs.Bool("code", false, "include shallow code samples when indexing")
+	genMap := fs.Bool("map", true, "generate project map before index")
+	limit := fs.Int("n", 8, "search result limit")
+	mode := fs.String("mode", "auto", "search mode: auto|fts|vector")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(args[1:])
+
+	switch sub {
+	case "index":
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/memory/index", map[string]any{
+			"cwd":          *cwd,
+			"clear":        *clear,
+			"include_code": *code,
+			"generate_map": *genMap,
+		}, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("indexed cwd=%v docs=%v total=%v\n", out["cwd"], out["indexed"], out["docs_total"])
+		return 0
+	case "search":
+		q := strings.Join(fs.Args(), " ")
+		if strings.TrimSpace(q) == "" {
+			fatal("usage: agentsctl memory search -r <cwd> <query>")
+		}
+		var out struct {
+			Cwd   string `json:"cwd"`
+			Query string `json:"query"`
+			Mode  string `json:"mode"`
+			Hits  []struct {
+				Path    string  `json:"path"`
+				Title   string  `json:"title"`
+				Source  string  `json:"source"`
+				Snippet string  `json:"snippet"`
+				Rank    float64 `json:"rank"`
+				Mode    string  `json:"mode"`
+			} `json:"hits"`
+		}
+		if err := c.json(http.MethodPost, "/v1/memory/search", map[string]any{
+			"cwd":   *cwd,
+			"query": q,
+			"limit": *limit,
+			"mode":  *mode,
+		}, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		if len(out.Hits) == 0 {
+			fmt.Println("(no hits)")
+			return 0
+		}
+		for i, h := range out.Hits {
+			m := h.Mode
+			if m == "" {
+				m = "fts"
+			}
+			fmt.Printf("%d. %s  [%s/%s]\n   %s\n", i+1, h.Path, h.Source, m, strings.ReplaceAll(h.Snippet, "\n", " "))
+		}
+		return 0
+	case "stats":
+		path := "/v1/memory/stats"
+		if *cwd != "" {
+			path += "?cwd=" + url.QueryEscape(*cwd)
+		}
+		var out map[string]any
+		if err := c.json(http.MethodGet, path, nil, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("cwd=%v docs=%v embedded=%v engine=%v model=%v\n",
+			out["cwd"], out["docs"], out["docs_embedded"], out["engine"], out["embed_model"])
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown memory subcommand: %s\n", sub)
+		return 2
+	}
+}
+
+func cmdMap(c *client, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agentsctl map generate|show|status [-r cwd]")
+		return 2
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("map "+sub, flag.ExitOnError)
+	cwd := fs.String("r", ".", "workspace cwd (relative to server workspace_root)")
+	asJSON := fs.Bool("json", false, "raw JSON output")
+	_ = fs.Parse(args[1:])
+
+	switch sub {
+	case "generate", "gen", "create":
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/maps", map[string]string{"cwd": *cwd}, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("map written for cwd=%v\n", out["cwd"])
+		if p, ok := out["map_path"].(string); ok {
+			fmt.Printf("  %s\n", p)
+		}
+		if st, ok := out["status"].(map[string]any); ok {
+			fmt.Printf("  stale=%v %v\n", st["stale"], st["reason"])
+		}
+		return 0
+	case "show", "get", "cat":
+		path := "/v1/maps?cwd=" + url.QueryEscape(*cwd)
+		if *asJSON {
+			path += "&format=json"
+		}
+		res, err := c.do(http.MethodGet, path, nil)
+		if err != nil {
+			fatal("%v", err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		if res.StatusCode >= 300 {
+			fatal("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+		}
+		if *asJSON {
+			fmt.Print(string(b))
+			if len(b) == 0 || b[len(b)-1] != '\n' {
+				fmt.Println()
+			}
+			return 0
+		}
+		var wrap struct {
+			Markdown string `json:"markdown"`
+		}
+		if err := json.Unmarshal(b, &wrap); err == nil && wrap.Markdown != "" {
+			fmt.Print(wrap.Markdown)
+			if !strings.HasSuffix(wrap.Markdown, "\n") {
+				fmt.Println()
+			}
+			return 0
+		}
+		fmt.Print(string(b))
+		return 0
+	case "status", "st":
+		var out map[string]any
+		if err := c.json(http.MethodGet, "/v1/maps/status?cwd="+url.QueryEscape(*cwd), nil, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		st, _ := out["status"].(map[string]any)
+		if st == nil {
+			fmt.Println(out)
+			return 0
+		}
+		fmt.Printf("cwd=%v exists=%v stale=%v\n", out["cwd"], st["exists"], st["stale"])
+		if r, ok := st["reason"].(string); ok && r != "" {
+			fmt.Printf("  reason: %s\n", r)
+		}
+		if g, ok := st["generated_at"].(string); ok && g != "" {
+			fmt.Printf("  generated_at: %s\n", g)
+		}
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown map subcommand: %s\n", sub)
+		return 2
+	}
 }
 
 func cmdPlaywright(c *client, args []string) int {
@@ -507,7 +743,7 @@ func cmdStatus(c *client, args []string) int {
 
 func cmdSession(c *client, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: agentsctl session start|open|list|attach|kill|get ...")
+		fmt.Fprintln(os.Stderr, "usage: agentsctl session start|open|list|attach|kill|resume|history|get|prune ...")
 		return 2
 	}
 	switch args[0] {
@@ -521,6 +757,10 @@ func cmdSession(c *client, args []string) int {
 		return cmdSessionAttachLocal(c, args[1:])
 	case "kill", "stop":
 		return cmdSessionKill(c, args[1:])
+	case "resume", "restart":
+		return cmdSessionResume(c, args[1:])
+	case "history", "log":
+		return cmdSessionHistory(c, args[1:])
 	case "prune":
 		return cmdSessionPrune(c, args[1:])
 	case "get":
@@ -629,10 +869,10 @@ func cmdSessionOpen(c *client, args []string) int {
 }
 
 func openSession(c *client, sess map[string]any, forceSSH bool) int {
-	if st, _ := sess["state"].(string); st != "" && st != "running" {
-		fatal("session not running (state=%v)", sess["state"])
-	}
 	id, _ := sess["id"].(string)
+	if st, _ := sess["state"].(string); st != "" && st != "running" {
+		fatal("session not running (state=%v) — try: agentsctl session resume %s", sess["state"], id)
+	}
 
 	if forceSSH {
 		tmux, _ := sess["tmux"].(string)
@@ -747,6 +987,59 @@ func cmdSessionAttachLocal(c *client, args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "note: local tmux attach — for remote use: agentsctl session open")
 	return execCmd(strings.Fields(attach))
+}
+
+func cmdSessionResume(c *client, args []string) int {
+	fs := flag.NewFlagSet("session resume", flag.ExitOnError)
+	doOpen := fs.Bool("open", false, "open full PTY immediately after resume")
+	useSSH := fs.Bool("ssh", false, "use SSH attach instead of WebSocket PTY")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fatal("usage: agentsctl session resume SESSION_ID [--open]")
+	}
+	id := fs.Arg(0)
+	var s map[string]any
+	if err := c.json(http.MethodPost, "/v1/sessions/"+id+"/resume", map[string]any{}, &s); err != nil {
+		fatal("%v", err)
+	}
+	printSessionSummary(s)
+	fmt.Println("(resume restarts the agent process if tmux was gone; terminal scrollback is restored from snapshot when available)")
+	if *doOpen {
+		return openSession(c, s, *useSSH)
+	}
+	fmt.Printf("\nnext: agentsctl session open %s\n", id)
+	return 0
+}
+
+func cmdSessionHistory(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl session history SESSION_ID")
+	}
+	id := args[0]
+	req, err := http.NewRequest(http.MethodGet, c.base+"/v1/sessions/"+id+"/history", nil)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	res, err := c.hc.Do(req)
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		fatal("history: HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if src := res.Header.Get("X-Agents-History-Source"); src != "" {
+		fmt.Fprintf(os.Stderr, "source: %s (%d bytes)\n", src, len(b))
+	}
+	_, _ = os.Stdout.Write(b)
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		fmt.Println()
+	}
+	return 0
 }
 
 func cmdSessionKill(c *client, args []string) int {

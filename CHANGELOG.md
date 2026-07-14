@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-14
+
+### Added
+
+- **Embedded Web UI** at `GET /` — multi-tab xterm.js sessions over the existing PTY WebSocket
+- Web UI **project map** + **memory** panels (generate/show map, index/search)
+- `web/` frontend (Vite + TypeScript + xterm.js); `make web` builds into `internal/webui/dist`
+- Config `[web] enabled` (default true) to disable the SPA
+- Auth: only `/v1/*` requires bearer token; static UI shell is public
+- **Project maps:** `agentsctl map generate|show|status`, `POST/GET /v1/maps`, writes `.agents/PROJECT_MAP.md`
+- **Workspace memory:** SQLite FTS5 + optional OpenAI-compatible **vector** embeddings
+  - `agentsctl memory index|search|stats` (`--mode auto|fts|vector`)
+  - `/v1/memory/*`
+- Skill: [skills/project-map/SKILL.md](skills/project-map/SKILL.md)
+- Docs: [docs/WEB.md](docs/WEB.md), [docs/PROJECT-MAP.md](docs/PROJECT-MAP.md), [docs/MEMORY.md](docs/MEMORY.md)
+- **Self-update:** `agentsctl update` and `agentsd update` download the matching GitHub release tarball and replace the binary in place (`--check`, `--force`, `--version TAG`, `--all`)
+
+### Changed
+
+- **Web UI redesign:** sessions-first rail, new-session modal, tools drawer (map/memory/Playwright), connection pill, filter/prune/kill-from-list, keyboard shortcuts, mobile sidebar, ops-console styling
+- **Sessions survive agentsd restart:** systemd units use `KillMode=process`; tmux started with setsid; manager reloads JSON + re-probes live tmux
+- **`POST /v1/sessions/{id}/resume`**, `agentsctl session resume`, Web UI resume — re-attach if alive, else restart agent under same id
+- **Terminal history:** seed PTY attach with `tmux capture-pane` scrollback; snapshot `.pane` on kill/detach; `GET /v1/sessions/{id}/history` + `agentsctl session history`
+
 ## [0.2.2] — 2026-07-13
 
 ### Changed

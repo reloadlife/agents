@@ -77,3 +77,19 @@ elevated = ["git_push", "gh_pr", "kubectl_write", "shell_raw"]
 gke_context = ""
 # optional HTTP probe for status panel
 opendray_url = ""
+
+# Embedded browser UI (multi-tab PTY) at http://<listen>/
+# Set enabled = false to serve API only.
+[web]
+enabled = true
+
+# Workspace text memory (SQLite FTS5 + optional vectors).
+# Agents: agentsctl memory search
+# dir defaults to {jobs_dir}/memory
+[memory]
+enabled = true
+# dir = ""
+# Optional OpenAI-compatible embeddings (vector search). Leave empty for FTS only.
+# embed_url = "https://api.openai.com/v1"
+# embed_model = "text-embedding-3-small"
+# embed_api_key_env = "AGENTS_EMBED_KEY"

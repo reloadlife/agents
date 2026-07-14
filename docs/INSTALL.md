@@ -113,6 +113,28 @@ token = "same-as-server"
 | Tailscale | `127.0.0.1` or tailnet IP | `http://100.x.y.z:8787` |
 | Cloudflare Tunnel | `127.0.0.1:8787` | `https://agents-api.example.com` + Access |
 
+## Update
+
+Both binaries can self-update from [GitHub Releases](https://github.com/reloadlife/agents/releases):
+
+```bash
+# Mac / laptop client
+agentsctl update              # install latest agentsctl over itself
+agentsctl update --check      # only print whether an update exists
+agentsctl update --version v0.2.2
+agentsctl update --all        # also agentsd if sitting next to agentsctl
+
+# Server daemon
+agentsd update                # replace agentsd binary
+agentsd update --all          # + agentsctl in the same bindir
+# then restart:
+systemctl --user restart agentsd
+# or: sudo systemctl restart agentsd
+```
+
+Requires write access to the install path (`~/.local/bin` or `/usr/local/bin`).
+Uses the same assets as `scripts/install.sh` (`agents_${ver}_${os}_${arch}.tar.gz`).
+
 ## Verify
 
 ```bash

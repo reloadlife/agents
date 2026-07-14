@@ -7,6 +7,13 @@
 *.test
 *.out
 
+# frontend (source in web/; built assets committed under internal/webui/dist)
+web/node_modules/
+web/dist/
+# Keep embedded SPA trackable even if a global ignore has `dist/`
+!internal/webui/dist/
+!internal/webui/dist/**
+
 # local runtime
 .jobs/
 *.db
@@ -38,3 +45,9 @@ deploy/*personal*
 coverage.out
 coverage.html
 deploy/config.agents.toml.personal
+
+# generated project maps / memory (per-workspace)
+.agents/
+
+# TS incremental
+web/tsconfig.tsbuildinfo

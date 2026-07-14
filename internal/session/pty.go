@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -113,6 +114,24 @@ func (m *Manager) HandlePTY(w http.ResponseWriter, r *http.Request, id string) {
 		}
 	}()
 
+	// Seed client with scrollback *before* attach stream. Live capture is
+	// preferred; if empty, fall back to last on-disk snapshot (post-kill/resume).
+	scrollback, src, _ := m.scrollbackForAttach(id, s.Tmux)
+	if len(scrollback) > 0 {
+		// Chunk large histories so proxies don't choke on huge frames.
+		const chunk = 24 * 1024
+		for i := 0; i < len(scrollback); i += chunk {
+			j := i + chunk
+			if j > len(scrollback) {
+				j = len(scrollback)
+			}
+			if err := ww.write(websocket.BinaryMessage, scrollback[i:j]); err != nil {
+				return
+			}
+		}
+		m.log.Info("pty scrollback seeded", "id", id, "bytes", len(scrollback), "source", src)
+	}
+
 	_ = ww.writeCtrl(ctrlMsg{Type: "ready", Cols: cols, Rows: rows})
 	m.log.Info("pty attached", "id", id, "tmux", s.Tmux, "cols", cols, "rows", rows)
 
@@ -218,7 +237,54 @@ func (m *Manager) HandlePTY(w http.ResponseWriter, r *http.Request, id string) {
 	closeDone()
 	_ = conn.Close()
 	wg.Wait()
+	// Snapshot after detach so a later kill/crash still has recent output.
+	m.SnapshotHistory(id)
 	m.log.Info("pty detached", "id", id)
+}
+
+// scrollbackForAttach returns bytes to paint into the client before live attach.
+// Prefer live tmux history; on a freshly resumed session fall back to the
+// previous snapshot and a visual separator.
+func (m *Manager) scrollbackForAttach(id, tmuxName string) (data []byte, source string, err error) {
+	live, liveErr := capturePane(tmuxName)
+	snap, snapErr := os.ReadFile(m.historyPath(id))
+
+	if liveErr == nil && len(live) > 0 {
+		// Keep disk copy fresh for future death.
+		_ = os.WriteFile(m.historyPath(id), live, 0o600)
+		// Fresh resume: new process is short, old snapshot is long → prepend old output.
+		if snapErr == nil && len(snap) > len(live)+64 && !bytesContainsTail(live, snap) {
+			sep := []byte("\r\n\r\n\x1b[90m── previous session output (before resume) ──\x1b[0m\r\n\r\n")
+			out := make([]byte, 0, len(snap)+len(sep)+len(live)+2)
+			out = append(out, snap...)
+			if len(snap) > 0 && snap[len(snap)-1] != '\n' {
+				out = append(out, '\r', '\n')
+			}
+			out = append(out, sep...)
+			out = append(out, live...)
+			return out, "snapshot+live", nil
+		}
+		return live, "live", nil
+	}
+
+	if snapErr == nil && len(snap) > 0 {
+		sep := []byte("\r\n\x1b[90m── end of saved history ──\x1b[0m\r\n")
+		return append(snap, sep...), "snapshot", nil
+	}
+	return nil, "", liveErr
+}
+
+func bytesContainsTail(hay, needle []byte) bool {
+	// cheap: if live already includes end of snap, don't double-prepend
+	if len(needle) == 0 || len(hay) == 0 {
+		return false
+	}
+	n := 256
+	if len(needle) < n {
+		n = len(needle)
+	}
+	tail := needle[len(needle)-n:]
+	return bytes.Contains(hay, tail)
 }
 
 func envOr(k, def string) string {

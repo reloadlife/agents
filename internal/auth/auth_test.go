@@ -20,6 +20,16 @@ func TestMiddlewareBearer(t *testing.T) {
 		t.Fatalf("healthz: %d", rr.Code)
 	}
 
+	// public static UI shell (no token)
+	for _, path := range []string{"/", "/index.html", "/assets/index.js", "/favicon.ico"} {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		rr = httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Fatalf("public %s: want 200, got %d", path, rr.Code)
+		}
+	}
+
 	// missing token
 	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 	rr = httptest.NewRecorder()
@@ -43,5 +53,24 @@ func TestMiddlewareBearer(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("query token: want 200, got %d", rr.Code)
+	}
+}
+
+func TestIsPublicPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/healthz", true},
+		{"/", true},
+		{"/assets/app.js", true},
+		{"/v1", false},
+		{"/v1/status", false},
+		{"/v1/sessions/x/pty", false},
+	}
+	for _, tc := range cases {
+		if got := IsPublicPath(tc.path); got != tc.want {
+			t.Fatalf("IsPublicPath(%q)=%v want %v", tc.path, got, tc.want)
+		}
 	}
 }

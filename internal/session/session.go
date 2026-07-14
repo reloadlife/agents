@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -149,28 +150,13 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 
 	args := m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt)
-	// tmux new-session -d -s NAME -c CWD BIN ARGS...
-	tmuxArgs := []string{
-		"new-session", "-d",
-		"-s", tmuxName,
-		"-c", cwdAbs,
-		"--", bin,
-	}
-	tmuxArgs = append(tmuxArgs, args...)
-
-	cmd := exec.Command("tmux", tmuxArgs...)
-	cmd.Env = m.sessionEnv() // full-ish env: OAuth + DISPLAY for headed browsers
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("tmux new-session: %w (%s)", err, strings.TrimSpace(string(out)))
+	if err := m.startTmux(tmuxName, cwdAbs, bin, args); err != nil {
+		return nil, err
 	}
 
 	// For TTY mode, optional seed prompt is typed into the interactive UI (not -p).
 	if req.Mode == ModeTTY && req.Prompt != "" {
-		// small delay so claude can draw UI
-		time.Sleep(400 * time.Millisecond)
-		// send prompt then Enter — user can still edit/stop
-		_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "-l", req.Prompt).Run()
-		_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "Enter").Run()
+		m.seedPrompt(tmuxName, req.Prompt)
 	}
 
 	s := &Session{
@@ -194,6 +180,113 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	m.mu.Unlock()
 	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd)
 	return s, nil
+}
+
+// Default pane scrollback kept inside tmux (and mirrored into xterm on attach).
+const defaultHistoryLimit = 50000
+
+// startTmux creates a detached tmux session running bin+args in cwdAbs.
+// Setsid so a terminal SIGHUP/process-group kill of agentsd does not take
+// down the agent. Under systemd, also set KillMode=process (see deploy units)
+// so control-group stop does not kill the tmux server in the same cgroup.
+func (m *Manager) startTmux(tmuxName, cwdAbs, bin string, args []string) error {
+	tmuxArgs := []string{
+		"new-session", "-d",
+		"-s", tmuxName,
+		"-c", cwdAbs,
+		"--", bin,
+	}
+	tmuxArgs = append(tmuxArgs, args...)
+	cmd := exec.Command("tmux", tmuxArgs...)
+	cmd.Env = m.sessionEnv()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux new-session: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	// Large scrollback so re-attach can dump history (tmux default is often 2000).
+	_ = exec.Command("tmux", "set-option", "-t", tmuxName, "history-limit", fmt.Sprintf("%d", defaultHistoryLimit)).Run()
+	return nil
+}
+
+func (m *Manager) historyPath(id string) string {
+	return filepath.Join(m.dir, id+".pane")
+}
+
+// capturePane dumps tmux scrollback + visible pane with ANSI colors.
+// -S - = from start of history; -e = escape sequences; -p = stdout.
+func capturePane(tmuxName string) ([]byte, error) {
+	out, err := exec.Command(
+		"tmux", "capture-pane",
+		"-t", tmuxName,
+		"-e", // keep ANSI colors
+		"-p", // print to stdout
+		"-S", "-", // from beginning of history
+	).Output()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SnapshotHistory captures live pane output to disk (best-effort).
+// Called before kill and on PTY detach so dead sessions keep a transcript.
+func (m *Manager) SnapshotHistory(id string) {
+	m.mu.Lock()
+	s, ok := m.byID[id]
+	var tmux string
+	if ok {
+		tmux = s.Tmux
+	}
+	m.mu.Unlock()
+	if tmux == "" || !tmuxAlive(tmux) {
+		return
+	}
+	data, err := capturePane(tmux)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	_ = os.WriteFile(m.historyPath(id), data, 0o600)
+}
+
+// History returns the best available scrollback for a session:
+// live tmux capture if running, else last on-disk snapshot.
+func (m *Manager) History(id string) (data []byte, source string, err error) {
+	m.refreshStates()
+	m.mu.Lock()
+	s, ok := m.byID[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, "", fmt.Errorf("session not found")
+	}
+	tmux := s.Tmux
+	m.mu.Unlock()
+
+	if tmuxAlive(tmux) {
+		data, err = capturePane(tmux)
+		if err == nil && len(data) > 0 {
+			// refresh disk snapshot while we're here
+			_ = os.WriteFile(m.historyPath(id), data, 0o600)
+			return data, "live", nil
+		}
+	}
+	data, err = os.ReadFile(m.historyPath(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", fmt.Errorf("no history snapshot for session")
+		}
+		return nil, "", err
+	}
+	return data, "snapshot", nil
+}
+
+func (m *Manager) seedPrompt(tmuxName, prompt string) {
+	time.Sleep(400 * time.Millisecond)
+	_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "-l", prompt).Run()
+	_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "Enter").Run()
+}
+
+func tmuxAlive(name string) bool {
+	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
 }
 
 func (m *Manager) buildArgs(agentName string, acfg config.AgentConfig, mode Mode, prompt string) []string {
@@ -395,6 +488,8 @@ func (m *Manager) Kill(id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Snapshot scrollback before destroying tmux so resume/history still work.
+	m.SnapshotHistory(id)
 	_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
 	s.State = StateKilled
 	m.mu.Lock()
@@ -407,6 +502,103 @@ func (m *Manager) Kill(id string) (*Session, error) {
 	return s, nil
 }
 
+// Resume re-opens a session that still has metadata on disk.
+//
+//   - If the tmux session is still alive (e.g. agentsd restarted but agents
+//     survived): mark running and return — client can attach as usual.
+//   - If the agent process is gone (exited/killed, or cgroup wipe): start a
+//     fresh tmux session with the same id/agent/cwd/name. This is a process
+//     restart, not a restore of in-agent chat history.
+func (m *Manager) Resume(id string) (*Session, error) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil, fmt.Errorf("tmux required for TTY sessions: %w", err)
+	}
+
+	m.refreshStates()
+	m.mu.Lock()
+	cur, ok := m.byID[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("session not found")
+	}
+	// snapshot under lock
+	s := *cur
+	m.mu.Unlock()
+
+	if tmuxAlive(s.Tmux) {
+		m.mu.Lock()
+		if live, ok := m.byID[id]; ok {
+			live.State = StateRunning
+			_ = m.save(live)
+			s = *live
+		}
+		m.mu.Unlock()
+		m.fillAttach(&s)
+		m.log.Info("session resume: already live", "id", s.ID, "tmux", s.Tmux)
+		return &s, nil
+	}
+
+	acfg, ok := m.cfg.Agent(s.Agent)
+	if !ok {
+		return nil, fmt.Errorf("unknown agent %q (configure [agents.%s] or start a new session)", s.Agent, s.Agent)
+	}
+	bin := acfg.Bin
+	if bin == "" {
+		return nil, fmt.Errorf("agent %q has empty bin", s.Agent)
+	}
+	resolved := resolveBin(bin)
+	if resolved == "" {
+		return nil, fmt.Errorf("agent binary %q not found on PATH", bin)
+	}
+	bin = resolved
+
+	// Re-resolve cwd (allowlist may have changed; path must still exist).
+	cwdAbs, err := pathallow.Resolve(m.cfg.WorkspaceRoot, s.Cwd, m.cfg.Allow.Paths)
+	if err != nil {
+		// fall back to stored absolute path if still valid and under root
+		if s.CwdAbs != "" {
+			if st, stErr := os.Stat(s.CwdAbs); stErr == nil && st.IsDir() {
+				cwdAbs = s.CwdAbs
+			} else {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	if st, err := os.Stat(cwdAbs); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("cwd does not exist or is not a directory: %s", s.Cwd)
+	}
+
+	mode := s.Mode
+	if mode == "" {
+		mode = ModeTTY
+	}
+	args := m.buildArgs(s.Agent, acfg, mode, "")
+	// Drop any leftover name collision, then start fresh.
+	_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
+	if err := m.startTmux(s.Tmux, cwdAbs, bin, args); err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	live, ok := m.byID[id]
+	if !ok {
+		m.mu.Unlock()
+		_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
+		return nil, fmt.Errorf("session not found")
+	}
+	live.State = StateRunning
+	live.CwdAbs = cwdAbs
+	live.Mode = mode
+	_ = m.save(live)
+	out := *live
+	m.mu.Unlock()
+	m.fillAttach(&out)
+	m.log.Info("session resumed", "id", out.ID, "tmux", out.Tmux, "agent", out.Agent, "cwd", out.Cwd)
+	return &out, nil
+}
+
 // AttachCommand returns shell command to attach (local tmux).
 func (m *Manager) AttachCommand(id string) (string, error) {
 	s, err := m.Get(id)
@@ -414,7 +606,7 @@ func (m *Manager) AttachCommand(id string) (string, error) {
 		return "", err
 	}
 	if s.State != StateRunning {
-		return "", fmt.Errorf("session not running (state=%s)", s.State)
+		return "", fmt.Errorf("session not running (state=%s) — try: agentsctl session resume %s", s.State, id)
 	}
 	return s.Attach, nil
 }
@@ -423,12 +615,13 @@ func (m *Manager) refreshStates() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, s := range m.byID {
-		if s.State != StateRunning {
-			continue
-		}
-		// tmux has-session
-		err := exec.Command("tmux", "has-session", "-t", s.Tmux).Run()
-		if err != nil {
+		alive := tmuxAlive(s.Tmux)
+		switch {
+		case alive && s.State != StateRunning:
+			// agentsd restarted (or metadata lag) while tmux survived
+			s.State = StateRunning
+			_ = m.save(s)
+		case !alive && s.State == StateRunning:
 			s.State = StateExited
 			_ = m.save(s)
 		}
@@ -503,6 +696,7 @@ func (m *Manager) Prune(maxAge time.Duration) (removed int, err error) {
 	for _, id := range toDelete {
 		delete(m.byID, id)
 		_ = os.Remove(m.path(id))
+		_ = os.Remove(m.historyPath(id))
 		removed++
 	}
 	return removed, nil

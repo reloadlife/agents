@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-// Middleware enforces Authorization: Bearer <token>.
+// Middleware enforces Authorization: Bearer <token> on API routes.
 // WebSocket clients may also pass ?token= for environments that cannot set headers.
+// Public (no token): /healthz and non-/v1 paths (embedded web UI static shell).
 func Middleware(token string, next http.Handler) http.Handler {
 	want := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// healthz stays public for tunnel probes
-		if r.URL.Path == "/healthz" {
+		if IsPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -26,6 +26,20 @@ func Middleware(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// IsPublicPath reports whether path may be served without a bearer token.
+// API under /v1 is always authenticated; health probes and the static web UI are public.
+func IsPublicPath(path string) bool {
+	if path == "/healthz" {
+		return true
+	}
+	// Control plane API — always require auth (including bare /v1).
+	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
+		return false
+	}
+	// Static web UI (and any non-API path mounted by agentsd).
+	return true
 }
 
 func bearer(h string) string {

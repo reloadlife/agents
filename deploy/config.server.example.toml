@@ -12,6 +12,10 @@ max_timeout = "2h"
 [auth]
 bearer_env = "AGENTSD_TOKEN"
 
+# Embedded multi-tab browser UI at http://<listen>/
+[web]
+enabled = true
+
 [sessions]
 # Optional: only used for agentsctl session open --ssh
 ssh_host = "my-agent-box"
