@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/reloadlife/agents/internal/agentacct"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/pathallow"
+	"github.com/reloadlife/agents/internal/workspaces"
 )
 
 // Mode of how the agent binary is launched inside tmux.
@@ -55,6 +57,13 @@ type Session struct {
 	// Used on resume so chat history survives host reboot (grok --resume, etc.).
 	// Distinct from ID (agentsd control-plane id / tmux name).
 	AgentSessionID string `json:"agent_session_id,omitempty"`
+	// Optional git worktree isolation (parallel agents on separate checkouts).
+	Worktree     bool   `json:"worktree,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"` // relative path of worktree (same as Cwd when set)
+	BaseCwd      string `json:"base_cwd,omitempty"`      // original cwd before worktree isolation
+	Branch       string `json:"branch,omitempty"`        // branch checked out in the worktree
+	// GitBranch is best-effort current branch for the session cwd (list/get enrichment).
+	GitBranch string `json:"git_branch,omitempty"`
 	// How you attach (filled on create/get)
 	Attach     string `json:"attach"`
 	SSHAttach  string `json:"ssh_attach,omitempty"`
@@ -73,6 +82,10 @@ type CreateRequest struct {
 	// multiple accounts can run in parallel. global: switch the host-wide login first.
 	Account     string `json:"account,omitempty"`
 	AccountMode string `json:"account_mode,omitempty"` // isolated|global
+	// Worktree: when true and cwd is inside a git repo, create an isolated git
+	// worktree for this session (branch agents/<short-id> or WorktreeBranch).
+	Worktree       bool   `json:"worktree,omitempty"`
+	WorktreeBranch string `json:"worktree_branch,omitempty"`
 }
 
 // ArchiveFunc optionally archives pane data (recording store).
@@ -192,6 +205,38 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		tmuxName = tmuxName[:50]
 	}
 
+	// Optional git worktree isolation for parallel agents.
+	baseCwd := req.Cwd
+	worktree := false
+	worktreePath := ""
+	branch := ""
+	var worktreeRepoAbs string
+	if req.Worktree {
+		if workspaces.IsGitWorkTree(cwdAbs) {
+			wt, werr := workspaces.CreateSessionWorktree(
+				m.cfg.WorkspaceRoot,
+				req.Cwd,
+				cwdAbs,
+				id,
+				req.WorktreeBranch,
+				m.cfg.Allow.Paths,
+			)
+			if werr != nil {
+				return nil, fmt.Errorf("worktree: %w", werr)
+			}
+			worktree = true
+			worktreePath = wt.Path
+			baseCwd = wt.BaseCwd
+			branch = wt.Branch
+			worktreeRepoAbs = wt.RepoAbs
+			req.Cwd = wt.Path
+			cwdAbs = wt.Abs
+			m.log.Info("session worktree created", "id", id, "path", wt.Path, "branch", wt.Branch, "base_cwd", wt.BaseCwd)
+		} else {
+			m.log.Info("worktree requested but cwd is not a git repo; continuing without isolation", "cwd", req.Cwd)
+		}
+	}
+
 	// Pin a native conversation id when the CLI supports it (e.g. grok --session-id)
 	// so resume after reboot can restore chat, not just a blank process.
 	agentSessID := ""
@@ -208,14 +253,23 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	if !shell && account != "" {
 		plat := agentacct.MapAgentToPlatform(req.Agent)
 		if plat == "" {
+			if worktree {
+				_ = workspaces.RemoveWorktree(worktreeRepoAbs, cwdAbs)
+			}
 			return nil, fmt.Errorf("agent %q does not support multi-account profiles (cursor/claude/codex/grok)", req.Agent)
 		}
 		am, err := agentacct.New(m.cfg.JobsDir)
 		if err != nil {
+			if worktree {
+				_ = workspaces.RemoveWorktree(worktreeRepoAbs, cwdAbs)
+			}
 			return nil, err
 		}
 		if accountMode == "global" {
 			if err := am.Switch(plat, account); err != nil {
+				if worktree {
+					_ = workspaces.RemoveWorktree(worktreeRepoAbs, cwdAbs)
+				}
 				return nil, fmt.Errorf("account switch (%s/%s): %w", plat, account, err)
 			}
 			accountMode = "global"
@@ -223,6 +277,9 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 			// isolated (default): parallel-safe private HOME
 			home, err := am.EnsureIsolated(plat, account)
 			if err != nil {
+				if worktree {
+					_ = workspaces.RemoveWorktree(worktreeRepoAbs, cwdAbs)
+				}
 				return nil, fmt.Errorf("account isolate (%s/%s): %w — save a profile first: cursor-switch --platform %s save %s", plat, account, err, plat, account)
 			}
 			accountHome = home
@@ -231,6 +288,9 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		}
 	}
 	if err := m.startTmux(tmuxName, cwdAbs, bin, args, env); err != nil {
+		if worktree {
+			_ = workspaces.RemoveWorktree(worktreeRepoAbs, cwdAbs)
+		}
 		return nil, err
 	}
 
@@ -256,6 +316,12 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		AccountHome:    accountHome,
 		AgentSessionID: agentSessID,
 	}
+	if worktree {
+		s.Worktree = true
+		s.WorktreePath = worktreePath
+		s.BaseCwd = baseCwd
+		s.Branch = branch
+	}
 	m.fillAttach(s)
 	if err := m.save(s); err != nil {
 		return nil, err
@@ -263,7 +329,7 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	m.mu.Lock()
 	m.byID[s.ID] = s
 	m.mu.Unlock()
-	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "account", account, "account_mode", accountMode)
+	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "worktree", worktree, "account", account, "account_mode", accountMode)
 	if m.OnEvent != nil {
 		m.OnEvent("session.started", s.ID, s.Agent, s.Cwd, s.Name, "session started")
 	}
@@ -559,23 +625,79 @@ func (m *Manager) fillAttach(s *Session) {
 	s.AttachHint = "Full remote PTY: agentsctl session open " + s.ID + "  (WebSocket, no SSH). TUI: agentsctl tui"
 }
 
+// gitBranchTimeout caps best-effort branch lookups so list endpoints stay snappy.
+const gitBranchTimeout = 400 * time.Millisecond
+
+// gitBranch returns the current branch for cwdAbs (or "" on any error / non-repo).
+// Detached HEAD is reported as "HEAD".
+func gitBranch(cwdAbs string) string {
+	cwdAbs = strings.TrimSpace(cwdAbs)
+	if cwdAbs == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitBranchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", cwdAbs, "rev-parse", "--abbrev-ref", "HEAD")
+	// Avoid inheriting a huge env; git only needs PATH for helpers.
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func sessionCwdAbs(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	if strings.TrimSpace(s.CwdAbs) != "" {
+		return s.CwdAbs
+	}
+	return strings.TrimSpace(s.Cwd)
+}
+
+// enrichGitBranch fills GitBranch best-effort. branchCache dedupes by cwd within one list call.
+func enrichGitBranch(s *Session, branchCache map[string]string) {
+	if s == nil {
+		return
+	}
+	abs := sessionCwdAbs(s)
+	if abs == "" {
+		s.GitBranch = ""
+		return
+	}
+	if branchCache != nil {
+		if b, ok := branchCache[abs]; ok {
+			s.GitBranch = b
+			return
+		}
+	}
+	b := gitBranch(abs)
+	if branchCache != nil {
+		branchCache[abs] = b
+	}
+	s.GitBranch = b
+}
+
 func (m *Manager) Get(id string) (*Session, error) {
 	m.refreshStates()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.byID[id]
 	if !ok {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("session not found")
 	}
 	cp := *s
 	m.fillAttach(&cp)
+	m.mu.Unlock()
+	// Best-effort git outside the lock so a slow rev-parse never blocks other ops.
+	enrichGitBranch(&cp, nil)
 	return &cp, nil
 }
 
 func (m *Manager) List() ([]*Session, error) {
 	m.refreshStates()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	out := make([]*Session, 0, len(m.byID))
 	for _, s := range m.byID {
 		cp := *s
@@ -589,6 +711,12 @@ func (m *Manager) List() ([]*Session, error) {
 				out[i], out[j] = out[j], out[i]
 			}
 		}
+	}
+	m.mu.Unlock()
+	// One git lookup per unique cwd (session lists are small).
+	branchCache := make(map[string]string, 8)
+	for _, s := range out {
+		enrichGitBranch(s, branchCache)
 	}
 	return out, nil
 }
@@ -617,6 +745,8 @@ func (m *Manager) Kill(id string) (*Session, error) {
 
 // Delete stops the agent if still running and removes session metadata (JSON +
 // pane snapshot) so it no longer appears in list. Irreversible.
+// When the session used a git worktree, best-effort removes that worktree
+// (never fails Delete if remove fails; never removes the main repo).
 func (m *Manager) Delete(id string) error {
 	m.refreshStates()
 	m.mu.Lock()
@@ -626,6 +756,9 @@ func (m *Manager) Delete(id string) error {
 		return fmt.Errorf("session not found")
 	}
 	tmux := s.Tmux
+	wt := s.Worktree
+	wtAbs := s.CwdAbs
+	baseCwd := s.BaseCwd
 	m.mu.Unlock()
 
 	// Best-effort history snapshot then kill tmux (running or not).
@@ -635,16 +768,38 @@ func (m *Manager) Delete(id string) error {
 		_ = exec.Command("tmux", "kill-session", "-t", tmux).Run()
 	}
 
+	if wt && wtAbs != "" {
+		m.cleanupWorktree(baseCwd, wtAbs)
+	}
+
 	m.mu.Lock()
 	delete(m.byID, id)
 	m.mu.Unlock()
 	_ = os.Remove(m.path(id))
 	_ = os.Remove(m.historyPath(id))
-	m.log.Info("session deleted", "id", id, "tmux", tmux)
+	m.log.Info("session deleted", "id", id, "tmux", tmux, "worktree", wt)
 	if m.OnEvent != nil {
 		m.OnEvent("session.deleted", id, agent, cwd, name, "session deleted")
 	}
 	return nil
+}
+
+// cleanupWorktree best-effort removes a session-owned git worktree.
+func (m *Manager) cleanupWorktree(baseCwdRel, worktreeAbs string) {
+	repoAbs := ""
+	if baseCwdRel != "" {
+		if abs, err := pathallow.Resolve(m.cfg.WorkspaceRoot, baseCwdRel, m.cfg.Allow.Paths); err == nil {
+			if root, rerr := workspaces.RepoRoot(abs); rerr == nil {
+				repoAbs = root
+			}
+		}
+	}
+	// When repoAbs is empty, RemoveWorktree discovers the common dir from the worktree.
+	if err := workspaces.RemoveWorktree(repoAbs, worktreeAbs); err != nil {
+		m.log.Warn("worktree remove failed (ignored)", "path", worktreeAbs, "err", err)
+	} else {
+		m.log.Info("session worktree removed", "path", worktreeAbs)
+	}
 }
 
 // Resume re-opens a session that still has metadata on disk.

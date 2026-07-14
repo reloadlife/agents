@@ -738,7 +738,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.audit(r, "session.create", sess.ID, map[string]any{"agent": sess.Agent, "cwd": sess.Cwd})
+	s.audit(r, "session.create", sess.ID, map[string]any{"agent": sess.Agent, "cwd": sess.Cwd, "worktree": sess.Worktree})
 	// Attach context summary for clients (non-breaking extra fields via wrapper).
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":               sess.ID,
@@ -755,6 +755,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"account_mode":     sess.AccountMode,
 		"account_home":     sess.AccountHome,
 		"agent_session_id": sess.AgentSessionID,
+		"worktree":         sess.Worktree,
+		"worktree_path":    sess.WorktreePath,
+		"base_cwd":         sess.BaseCwd,
+		"branch":           sess.Branch,
 		"attach":           sess.Attach,
 		"ssh_attach":       sess.SSHAttach,
 		"pty_path":         sess.PTYPath,
