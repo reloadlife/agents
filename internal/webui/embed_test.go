@@ -38,3 +38,31 @@ func TestHandlerDoesNotShadowAPI(t *testing.T) {
 		t.Fatalf("want 404 for /v1/status via webui, got %d", rr.Code)
 	}
 }
+
+func TestHandlerSPAFallback(t *testing.T) {
+	h := Handler()
+	for _, path := range []string{
+		"/desk",
+		"/new",
+		"/project/new",
+		"/projects/new",
+		"/new/project",
+		"/tools",
+		"/help",
+		"/profile",
+		"/profile/github",
+		"/settings/ssh",
+		"/project/agents/session/s_01TEST/tools",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d", path, rr.Code)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(strings.ToLower(body), "<html") && !strings.Contains(strings.ToLower(body), "<!doctype") {
+			t.Fatalf("GET %s: expected SPA index HTML, got %q", path, body[:min(80, len(body))])
+		}
+	}
+}

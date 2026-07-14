@@ -33,20 +33,37 @@ func Handler() http.Handler {
 		if path == "" {
 			path = "index.html"
 		}
-		// If the file exists, serve it; otherwise SPA fallback.
+		// Clean leading "./" etc. but keep as relative embed path.
+		path = strings.TrimPrefix(path, "./")
+
+		// If the path is a real file under dist/, serve it.
 		if f, err := sub.Open(path); err == nil {
+			stat, stErr := f.Stat()
 			_ = f.Close()
-			fileServer.ServeHTTP(w, r)
-			return
+			// Directories under dist (if any) are not SPA assets — fall through.
+			if stErr == nil && !stat.IsDir() {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
 		}
 		// Asset misses should 404 (not return HTML).
 		if strings.HasPrefix(path, "assets/") {
 			http.NotFound(w, r)
 			return
 		}
-		// SPA fallback
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/index.html"
-		fileServer.ServeHTTP(w, r2)
+		// SPA fallback: always serve index.html content (no FileServer rewrite tricks).
+		serveIndex(w, sub)
 	})
+}
+
+func serveIndex(w http.ResponseWriter, sub fs.FS) {
+	b, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		http.Error(w, "index.html missing from webui embed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
 }
