@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] — 2026-07-14
+
+### Changed
+
+- **Web UI polish** (minimal dark shadcn hierarchy)
+  - Sidebar: one primary **New session**; quiet new-project link
+  - Topbar: conn pill · command palette · overflow menu (no CTA spam)
+  - Session rows: Stop/Resume/Delete behind ⋯ menu
+  - Empty desk: unified copy + ⌘K hint
+  - Create sheets: body-only Vaul forms; account options collapsed
+  - Shared workspace tools body (Tools sheet + Settings → Workspace)
+  - Settings mobile: Back always visible; SSH key layout fixed
+
+### Added
+
+- **Keyboard session/tab switching**
+  - `j/k` list · `⇧j/⇧k` step+open · `h/l` tabs · `Ctrl+Tab` (works in TTY)
+  - `Ctrl+1–9` jump tab from TTY · `y` copy id · `i` focus term · full `?` help
+
+### Fixed
+
+- Integration test auth: hand-built config sets `TokenMap` (CI green again)
+- Vaul drawer empty body (content inject + flex height)
+
+## [0.7.5] — 2026-07-14
+
+### Fixed
+
+- **Agent account switcher** (cursor-switch)
+  - `switch` now passes `--plain` so it works under systemd (no TTY / spinner)
+  - Full Settings → Agent accounts UI: platform chips, live login, Switch / Save / Remove / Add
+  - `POST /v1/agent-accounts/remove` (+ DELETE alias)
+  - New session account picker shows email + saved status and links to manage accounts
+
+## [0.7.4] — 2026-07-14
+
+### Added
+
+- **New project modal** — `/project/new` (also `/projects/new`, `/new/project`)
+  - Clone or GitHub-fork into `workspace_root`
+  - Optional “Open new session after clone”
+  - Sidebar **+ New project**, topbar **Project**, palette, `Shift+n`
+  - New session form links to this flow (clone removed from session form)
+
+## [0.7.3] — 2026-07-14
+
+### Added
+
+- **Web UI client routing** (History API + SPA fallback)
+  - `/` · `/new` — new session modal
+  - `/desk` — desk without modal
+  - `/tools` · `/help` · `/profile[/:tab]` (and `/settings` alias)
+  - `/project/:projectId/session/:sessionId[/tools]` — shareable session links
+  - Session list + tabs + breadcrumbs are real `<a>` links
+  - Browser back/forward restores the matching view
+
+## [0.7.2] — 2026-07-14
+
+### Fixed
+
+- **Image paste into the web terminal (hardened)**
+  - Document-level capture paste/drop (survives term-host rebuilds; beats xterm text paste)
+  - Reads `clipboardData.files` + `items` + HTML `data:image` URLs + async `clipboard.read()`
+  - Accepts clipboard files with empty MIME (extension / server MIME fallback)
+  - PTY input sent as binary WebSocket frames (no JSON-control collision)
+  - Toolbar **Image** button as file-picker fallback
+  - Still uploads to `<cwd>/.agents/pastes/` and types the absolute path into the PTY
+
 ## [0.7.1] — 2026-07-14
 
 ### Fixed
