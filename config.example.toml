@@ -93,3 +93,14 @@ enabled = true
 # embed_url = "https://api.openai.com/v1"
 # embed_model = "text-embedding-3-small"
 # embed_api_key_env = "AGENTS_EMBED_KEY"
+
+# Context manager — orientation for faster/better agent runs.
+# On session start: ensure PROJECT_MAP + CONTEXT.md + memory index, seed short protocol.
+# agentsctl context status|ensure|pack|note -r <cwd>
+[context]
+ensure_on_session = true
+seed_orientation = true
+# seed_budget = 1800
+# pack_budget = 12000
+auto_index = true
+write_files = true

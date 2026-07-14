@@ -137,6 +137,8 @@ cmd:
 		os.Exit(cmdMap(c, cmdArgs))
 	case "memory", "mem":
 		os.Exit(cmdMemory(c, cmdArgs))
+	case "context", "ctx":
+		os.Exit(cmdContext(c, cmdArgs))
 	case "jobs":
 		os.Exit(cmdJobs(c, cmdArgs))
 	case "run":
@@ -178,6 +180,7 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl map show|status -r <cwd>
   agentsctl memory index -r <cwd>        # index map+docs into FTS memory
   agentsctl memory search -r <cwd> "q"   # search (for agents / RAG)
+  agentsctl context status|ensure|pack|note -r <cwd>   # orientation manager
 
 Config: agentsctl config init|path|show
 Update: agentsctl update [--check] [--force] [--version TAG] [--all]
@@ -309,6 +312,127 @@ func cmdMemory(c *client, args []string) int {
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown memory subcommand: %s\n", sub)
+		return 2
+	}
+}
+
+func cmdContext(c *client, args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agentsctl context status|ensure|pack|note [-r cwd] [args]")
+		return 2
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("context "+sub, flag.ExitOnError)
+	cwd := fs.String("r", ".", "workspace cwd")
+	asJSON := fs.Bool("json", false, "JSON output")
+	forceMap := fs.Bool("force-map", false, "regenerate map even if fresh")
+	forceIndex := fs.Bool("force-index", false, "clear+reindex memory")
+	code := fs.Bool("code", false, "include shallow code samples when indexing")
+	query := fs.String("q", "", "topic query for pack memory hits")
+	budget := fs.Int("budget", 0, "pack character budget (0 = server default)")
+	noWrite := fs.Bool("no-write", false, "do not write CONTEXT.md")
+	title := fs.String("title", "", "note title (note subcommand)")
+	_ = fs.Parse(args[1:])
+
+	switch sub {
+	case "status", "st":
+		var out map[string]any
+		if err := c.json(http.MethodGet, "/v1/context/status?cwd="+url.QueryEscape(*cwd), nil, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("cwd=%v ready=%v memory_docs=%v context=%v\n",
+			out["cwd"], out["ready"], out["memory_docs"], out["has_context"])
+		if m, ok := out["map"].(map[string]any); ok {
+			fmt.Printf("  map exists=%v stale=%v %v\n", m["exists"], m["stale"], m["reason"])
+		}
+		if hints, ok := out["hints"].([]any); ok {
+			for _, h := range hints {
+				fmt.Printf("  · %v\n", h)
+			}
+		}
+		return 0
+	case "ensure", "prep", "refresh":
+		body := map[string]any{
+			"cwd":          *cwd,
+			"force_map":    *forceMap,
+			"force_index":  *forceIndex,
+			"include_code": *code,
+			"query":        *query,
+			"no_write":     *noWrite,
+		}
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/context/ensure", body, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("ensure cwd=%v map_generated=%v memory_indexed=%v context_wrote=%v pack_chars=%v\n",
+			*cwd, out["map_generated"], out["memory_indexed"], out["context_wrote"], out["pack_chars"])
+		if st, ok := out["status"].(map[string]any); ok {
+			fmt.Printf("  ready=%v memory_docs=%v\n", st["ready"], st["memory_docs"])
+		}
+		return 0
+	case "pack":
+		write := !*noWrite
+		body := map[string]any{
+			"cwd":        *cwd,
+			"query":      *query,
+			"budget":     *budget,
+			"write_file": write,
+		}
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/context/pack", body, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		if md, ok := out["markdown"].(string); ok {
+			fmt.Print(md)
+			if !strings.HasSuffix(md, "\n") {
+				fmt.Println()
+			}
+		}
+		if p, ok := out["path"].(string); ok && write {
+			fmt.Fprintf(os.Stderr, "# wrote %s (%v chars)\n", p, out["chars"])
+		}
+		return 0
+	case "note":
+		text := strings.Join(fs.Args(), " ")
+		if strings.TrimSpace(text) == "" {
+			fatal("usage: agentsctl context note -r <cwd> [-title T] <text>")
+		}
+		var out map[string]any
+		if err := c.json(http.MethodPost, "/v1/context/note", map[string]any{
+			"cwd":   *cwd,
+			"title": *title,
+			"text":  text,
+		}, &out); err != nil {
+			fatal("%v", err)
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(out)
+			return 0
+		}
+		fmt.Printf("note saved cwd=%v\n", out["cwd"])
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown context subcommand: %s\n", sub)
 		return 2
 	}
 }

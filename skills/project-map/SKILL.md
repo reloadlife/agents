@@ -31,9 +31,20 @@ from the **project map** instead of re-walking the entire tree.
 - If older than ~14 days → regenerate
 - `agentsctl map status -r <cwd>` reports `stale` + reason
 
+## Context manager (preferred)
+
+One shot refresh of map + packed `CONTEXT.md` + memory index:
+
+```bash
+agentsctl context ensure -r .
+agentsctl context status -r .
+```
+
+Session start auto-runs ensure when `context.ensure_on_session = true` (default).
+
 ## Optional: memory search
 
-After reading the map, for topic-specific docs:
+After reading the map / CONTEXT.md, for topic-specific docs:
 
 ```bash
 agentsctl memory search -r . "relevant terms"
@@ -43,6 +54,7 @@ Index first (once per workspace, or after big doc changes):
 
 ```bash
 agentsctl memory index -r .
+# or: agentsctl context ensure -r .
 ```
 
 ## Do not

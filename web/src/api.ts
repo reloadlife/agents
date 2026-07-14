@@ -448,3 +448,71 @@ export function memoryStats(
 }> {
   return request(`/v1/memory/stats?cwd=${encodeURIComponent(cwd)}`);
 }
+
+export type ContextStatus = {
+  cwd?: string;
+  ready?: boolean;
+  map?: MapStatus;
+  memory_docs?: number;
+  memory_engine?: string;
+  has_context?: boolean;
+  has_instructions?: boolean;
+  context_path?: string;
+  map_path?: string;
+  hints?: string[];
+  protocol?: string;
+};
+
+export function contextStatus(cwd: string): Promise<ContextStatus> {
+  return request(`/v1/context/status?cwd=${encodeURIComponent(cwd)}`);
+}
+
+export function contextEnsure(body: {
+  cwd: string;
+  force_map?: boolean;
+  force_index?: boolean;
+  include_code?: boolean;
+  query?: string;
+}): Promise<{
+  status?: ContextStatus;
+  map_generated?: boolean;
+  memory_indexed?: number;
+  context_wrote?: boolean;
+  pack_chars?: number;
+  seed?: string;
+}> {
+  return request("/v1/context/ensure", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function contextPack(body: {
+  cwd: string;
+  query?: string;
+  budget?: number;
+  write_file?: boolean;
+}): Promise<{
+  cwd?: string;
+  markdown?: string;
+  chars?: number;
+  path?: string;
+  wrote_file?: boolean;
+  memory_hits?: number;
+}> {
+  return request("/v1/context/pack", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function contextNote(body: {
+  cwd: string;
+  title?: string;
+  text: string;
+}): Promise<{ ok?: boolean; note?: { path?: string; title?: string } }> {
+  return request("/v1/context/note", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

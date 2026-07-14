@@ -220,6 +220,7 @@ See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions + PTY work |
 | [docs/WEB.md](docs/WEB.md) | Embedded multi-tab browser UI |
 | [docs/PROJECT-MAP.md](docs/PROJECT-MAP.md) | Project maps for agent orientation |
+| [docs/CONTEXT.md](docs/CONTEXT.md) | Context manager (ensure / pack / session seed) |
 | [docs/MEMORY.md](docs/MEMORY.md) | Workspace FTS memory for agents |
 | [docs/INSTALL.md](docs/INSTALL.md) | Install & deploy |
 | [docs/REMOTE-TTY.md](docs/REMOTE-TTY.md) | Client remote TTY guide |
@@ -255,6 +256,7 @@ scripts/install.sh    release-tarball installer (source fallback)
 - [x] Embedded multi-tab Web UI (xterm.js)  
 - [x] Project maps (`.agents/PROJECT_MAP.md` + skill)  
 - [x] Embedded workspace memory (SQLite FTS5 + optional HTTP embeddings)  
+- [x] Context manager (ensure/pack/seed on session + `agentsctl context`)  
 - [x] Web UI map + memory panels  
 - [ ] Homebrew packaging  
 - [ ] Optional Tailscale / CF Access identity (beyond shared token)  

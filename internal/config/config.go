@@ -25,6 +25,7 @@ type Config struct {
 	Sessions          SessionsConfig         `toml:"sessions"`
 	Web               WebConfig              `toml:"web"`
 	Memory            MemoryConfig           `toml:"memory"`
+	Context           ContextConfig          `toml:"context"`
 	// DefaultCwd used when client sends empty / "." and "." is not allowlisted.
 	DefaultCwd string `toml:"default_cwd"`
 
@@ -86,6 +87,66 @@ func (c *Config) MemoryDir() string {
 		return c.Memory.Dir
 	}
 	return filepath.Join(c.JobsDir, "memory")
+}
+
+// ContextConfig controls session orientation (map + pack + seed).
+// Defaults favour "ensure + seed" so agents start with better context.
+type ContextConfig struct {
+	// EnsureOnSession generates/refreshes map+CONTEXT.md on session create (default true).
+	EnsureOnSession *bool `toml:"ensure_on_session"`
+	// SeedOrientation prepends a short orientation protocol to the TTY seed (default true).
+	SeedOrientation *bool `toml:"seed_orientation"`
+	// SeedBudget max characters for the TTY seed block (default 1800).
+	SeedBudget int `toml:"seed_budget"`
+	// PackBudget max characters for .agents/CONTEXT.md (default 12000).
+	PackBudget int `toml:"pack_budget"`
+	// AutoIndex indexes memory when empty / after map regen (default true).
+	AutoIndex *bool `toml:"auto_index"`
+	// WriteFiles writes CONTEXT.md + INSTRUCTIONS.md on ensure (default true).
+	WriteFiles *bool `toml:"write_files"`
+}
+
+func boolDefaultTrue(p *bool) bool {
+	if p == nil {
+		return true
+	}
+	return *p
+}
+
+// ContextEnsureOnSession reports whether session create should ensure orientation.
+func (c *Config) ContextEnsureOnSession() bool {
+	return boolDefaultTrue(c.Context.EnsureOnSession)
+}
+
+// ContextSeedOrientation reports whether to prepend orientation to TTY seeds.
+func (c *Config) ContextSeedOrientation() bool {
+	return boolDefaultTrue(c.Context.SeedOrientation)
+}
+
+// ContextAutoIndex reports whether ensure should index empty memory.
+func (c *Config) ContextAutoIndex() bool {
+	return boolDefaultTrue(c.Context.AutoIndex)
+}
+
+// ContextWriteFiles reports whether ensure writes CONTEXT.md / INSTRUCTIONS.md.
+func (c *Config) ContextWriteFiles() bool {
+	return boolDefaultTrue(c.Context.WriteFiles)
+}
+
+// ContextSeedBudget returns TTY seed budget.
+func (c *Config) ContextSeedBudget() int {
+	if c.Context.SeedBudget > 0 {
+		return c.Context.SeedBudget
+	}
+	return 1800
+}
+
+// ContextPackBudget returns CONTEXT.md pack budget.
+func (c *Config) ContextPackBudget() int {
+	if c.Context.PackBudget > 0 {
+		return c.Context.PackBudget
+	}
+	return 12000
 }
 
 type AuthConfig struct {

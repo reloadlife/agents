@@ -11,17 +11,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reloadlife/agents/internal/agentacct"
 	"github.com/reloadlife/agents/internal/agentsinfo"
 	"github.com/reloadlife/agents/internal/auth"
 	"github.com/reloadlife/agents/internal/config"
+	"github.com/reloadlife/agents/internal/ctxmgr"
+	"github.com/reloadlife/agents/internal/ghauth"
 	"github.com/reloadlife/agents/internal/job"
 	"github.com/reloadlife/agents/internal/memory"
 	"github.com/reloadlife/agents/internal/pathallow"
 	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/projmap"
 	"github.com/reloadlife/agents/internal/session"
-	"github.com/reloadlife/agents/internal/agentacct"
-	"github.com/reloadlife/agents/internal/ghauth"
 	"github.com/reloadlife/agents/internal/sshkeys"
 	"github.com/reloadlife/agents/internal/status"
 	"github.com/reloadlife/agents/internal/webui"
@@ -103,6 +104,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/memory/search", s.handleMemorySearch)
 	mux.HandleFunc("GET /v1/memory/stats", s.handleMemoryStats)
 
+	// Context manager — ensure map/memory pack + session orientation
+	mux.HandleFunc("GET /v1/context/status", s.handleContextStatus)
+	mux.HandleFunc("POST /v1/context/ensure", s.handleContextEnsure)
+	mux.HandleFunc("POST /v1/context/pack", s.handleContextPack)
+	mux.HandleFunc("POST /v1/context/note", s.handleContextNote)
+
 	// Print/API jobs (secondary — uses credits; explicit only)
 	mux.HandleFunc("POST /v1/jobs", s.handleCreateJob)
 	mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
@@ -173,6 +180,20 @@ func (s *Server) handleCloneWorkspace(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
+	}
+	// Best-effort orientation so the first agent session is already ready.
+	if s.cfg.ContextEnsureOnSession() && out != nil && out.Cwd != "" {
+		if abs, rel, err := s.resolveMapCwd(out.Cwd); err == nil {
+			autoIndex := s.cfg.ContextAutoIndex()
+			writeFiles := s.cfg.ContextWriteFiles()
+			if _, err := ctxmgr.New(s.mem).Ensure(abs, rel, ctxmgr.Options{
+				AutoIndex:  &autoIndex,
+				WriteFiles: &writeFiles,
+				PackBudget: s.cfg.ContextPackBudget(),
+			}); err != nil {
+				s.log.Warn("context ensure after clone", "cwd", rel, "err", err)
+			}
+		}
 	}
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -572,12 +593,93 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Mode = session.ModeTTY
+
+	// Prepare workspace orientation before the agent boots (map + CONTEXT.md + seed).
+	ctxInfo := s.prepareSessionContext(&req)
+
 	sess, err := s.sess.Create(req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, sess)
+	// Attach context summary for clients (non-breaking extra fields via wrapper).
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":            sess.ID,
+		"name":          sess.Name,
+		"agent":         sess.Agent,
+		"mode":          sess.Mode,
+		"cwd":           sess.Cwd,
+		"cwd_abs":       sess.CwdAbs,
+		"tmux":          sess.Tmux,
+		"state":         sess.State,
+		"prompt":        sess.Prompt,
+		"created_at":    sess.CreatedAt,
+		"account":       sess.Account,
+		"account_mode":  sess.AccountMode,
+		"account_home":  sess.AccountHome,
+		"attach":        sess.Attach,
+		"ssh_attach":    sess.SSHAttach,
+		"pty_path":      sess.PTYPath,
+		"attach_hint":   sess.AttachHint,
+		"context":       ctxInfo,
+	})
+}
+
+// prepareSessionContext ensures orientation files and merges seed protocol into req.Prompt.
+func (s *Server) prepareSessionContext(req *session.CreateRequest) map[string]any {
+	info := map[string]any{"enabled": false}
+	if req == nil {
+		return info
+	}
+	// resolve cwd the same way Create will
+	cwd := strings.TrimSpace(req.Cwd)
+	if cwd == "" {
+		if s.cfg.DefaultCwd != "" {
+			cwd = s.cfg.DefaultCwd
+		} else {
+			cwd = "."
+		}
+	}
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		info["error"] = err.Error()
+		return info
+	}
+	info["cwd"] = rel
+	cm := ctxmgr.New(s.mem)
+	autoIndex := s.cfg.ContextAutoIndex()
+	writeFiles := s.cfg.ContextWriteFiles()
+
+	if s.cfg.ContextEnsureOnSession() {
+		info["enabled"] = true
+		res, err := cm.Ensure(abs, rel, ctxmgr.Options{
+			AutoIndex:  &autoIndex,
+			WriteFiles: &writeFiles,
+			PackBudget: s.cfg.ContextPackBudget(),
+			Query:      strings.TrimSpace(req.Prompt), // use seed prompt as topic when present
+		})
+		if err != nil {
+			info["ensure_error"] = err.Error()
+			s.log.Warn("context ensure", "cwd", rel, "err", err)
+		} else {
+			info["map_generated"] = res.MapGenerated
+			info["memory_indexed"] = res.MemoryIndexed
+			info["context_wrote"] = res.ContextWrote
+			info["ready"] = res.Status.Ready
+			info["memory_docs"] = res.Status.MemoryDocs
+		}
+	} else {
+		st := cm.ReadStatus(abs, rel)
+		info["ready"] = st.Ready
+		info["memory_docs"] = st.MemoryDocs
+	}
+
+	if s.cfg.ContextSeedOrientation() {
+		// Always seed short protocol so agents know about map/memory even without user prompt.
+		req.Prompt = ctxmgr.MergeSeed(rel, req.Prompt, true, s.cfg.ContextSeedBudget())
+		info["seeded"] = true
+	}
+	return info
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -1074,6 +1176,117 @@ func (s *Server) handleMemoryStats(w http.ResponseWriter, r *http.Request) {
 		"engine":         engine,
 		"embed_model":    s.mem.EmbedModel(),
 		"vector_enabled": s.mem.EmbedderConfigured(),
+	})
+}
+
+func (s *Server) handleContextStatus(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	abs, rel, err := s.resolveMapCwd(cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st := ctxmgr.New(s.mem).ReadStatus(abs, rel)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleContextEnsure(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd         string `json:"cwd"`
+		ForceMap    bool   `json:"force_map"`
+		ForceIndex  bool   `json:"force_index"`
+		IncludeCode bool   `json:"include_code"`
+		Query       string `json:"query"`
+		NoIndex     bool   `json:"no_index"`
+		NoWrite     bool   `json:"no_write"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	autoIndex := s.cfg.ContextAutoIndex() && !body.NoIndex
+	writeFiles := s.cfg.ContextWriteFiles() && !body.NoWrite
+	res, err := ctxmgr.New(s.mem).Ensure(abs, rel, ctxmgr.Options{
+		ForceMap:    body.ForceMap,
+		ForceIndex:  body.ForceIndex,
+		IncludeCode: body.IncludeCode,
+		AutoIndex:   &autoIndex,
+		WriteFiles:  &writeFiles,
+		PackBudget:  s.cfg.ContextPackBudget(),
+		Query:       body.Query,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleContextPack(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd         string `json:"cwd"`
+		Query       string `json:"query"`
+		Budget      int    `json:"budget"`
+		WriteFile   *bool  `json:"write_file"`
+		MemoryLimit int    `json:"memory_limit"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	abs, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeFile := true
+	if body.WriteFile != nil {
+		writeFile = *body.WriteFile
+	}
+	budget := body.Budget
+	if budget <= 0 {
+		budget = s.cfg.ContextPackBudget()
+	}
+	pack, err := ctxmgr.New(s.mem).Pack(abs, rel, ctxmgr.PackOptions{
+		Budget:      budget,
+		Query:       body.Query,
+		MemoryLimit: body.MemoryLimit,
+		WriteFile:   writeFile,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pack)
+}
+
+func (s *Server) handleContextNote(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("memory disabled"))
+		return
+	}
+	var body struct {
+		Cwd   string `json:"cwd"`
+		Title string `json:"title"`
+		Text  string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	_, rel, err := s.resolveMapCwd(body.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	doc, err := ctxmgr.New(s.mem).Note(rel, body.Title, body.Text)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":   true,
+		"cwd":  rel,
+		"note": doc,
 	})
 }
 

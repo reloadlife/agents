@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-14
+
+### Added
+
+- **Context manager** for faster / better agent orientation:
+  - `internal/ctxmgr` — ensure map + memory + pack `CONTEXT.md` / `INSTRUCTIONS.md`
+  - Auto **ensure on session create** and after workspace **clone** (config defaults on)
+  - Short **TTY orientation seed** (`seed_orientation`) so agents read map/context first
+  - API: `GET/POST /v1/context/{status,ensure,pack,note}`
+  - CLI: `agentsctl context status|ensure|pack|note`
+  - Web Tools + Settings → Workspace: Ensure / Show pack
+  - Durable notes: `agentsctl context note` → memory `source=note`
+  - Docs: [docs/CONTEXT.md](docs/CONTEXT.md)
+
+### Changed
+
+- Session create response includes `context` summary fields
+- Memory index also picks up `.agents/*.md`, `GEMINI.md`, `CODEX.md`
+- TTY seed prompt chunking + slightly longer wait for slow agent UIs
+
 ## [0.4.1] — 2026-07-14
 
 ### Added

@@ -325,8 +325,20 @@ func (m *Manager) History(id string) (data []byte, source string, err error) {
 }
 
 func (m *Manager) seedPrompt(tmuxName, prompt string) {
-	time.Sleep(400 * time.Millisecond)
-	_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "-l", prompt).Run()
+	// Longer wait for slow agent CLIs; orientation seeds are more useful after UI is up.
+	time.Sleep(900 * time.Millisecond)
+	// Chunk large seeds — some tmux builds choke on very long -l strings.
+	const chunk = 1200
+	for i := 0; i < len(prompt); i += chunk {
+		end := i + chunk
+		if end > len(prompt) {
+			end = len(prompt)
+		}
+		_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "-l", prompt[i:end]).Run()
+		if end < len(prompt) {
+			time.Sleep(40 * time.Millisecond)
+		}
+	}
 	_ = exec.Command("tmux", "send-keys", "-t", tmuxName, "Enter").Run()
 }
 

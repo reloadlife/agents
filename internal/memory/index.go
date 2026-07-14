@@ -38,10 +38,11 @@ func (s *Store) IndexWorkspace(wsKey, absRoot string, opt IndexOptions) (n int, 
 		}
 		n++
 	}
-	// standard docs
+	// standard docs + agent instruction files + packed context
 	globs := []string{
-		"README.md", "README", "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md",
-		"SECURITY.md", "CHANGELOG.md",
+		"README.md", "README", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "CODEX.md",
+		"CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md",
+		".agents/*.md", ".agents/**/*.md",
 		"docs/*.md", "docs/**/*.md",
 	}
 	seen := map[string]bool{}

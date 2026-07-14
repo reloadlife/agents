@@ -7,6 +7,9 @@ import "@xterm/xterm/css/xterm.css";
 import {
   clearToken,
   cloneWorkspace,
+  contextEnsure,
+  contextPack,
+  contextStatus,
   createSession,
   deleteSSHKey,
   deleteSession,
@@ -98,6 +101,7 @@ type AppState = {
   memStatus: string;
   memQuery: string;
   memHits: MemoryHit[];
+  ctxStatus: string;
   drawer: null | { title: string; body: string };
   panel: Panel;
   filter: string;
@@ -156,6 +160,7 @@ const state: AppState = {
   memStatus: "—",
   memQuery: "",
   memHits: [],
+  ctxStatus: "—",
   drawer: null,
   panel: null,
   filter: "",
@@ -935,7 +940,7 @@ function settingsSSHHTML(): string {
 
 function settingsWorkspaceHTML(): string {
   return `
-    <p class="settings-lede">Project map, workspace memory, and Playwright stack for a selected cwd.</p>
+    <p class="settings-lede">Context manager packs map + docs + memory so agents orient faster. Session start auto-ensures by default.</p>
     <div class="field">
       <label for="tools-cwd-select">Target workspace</label>
       <select id="tools-cwd-select" data-action-change="tools-cwd">
@@ -944,22 +949,30 @@ function settingsWorkspaceHTML(): string {
     </div>
     <div class="settings-cards">
       <div class="settings-card col">
+        <div class="settings-card-title"><strong>Context</strong> <span class="tool-status" id="ctx-status">${esc(state.ctxStatus)}</span></div>
+        <p class="tool-desc">Ensure map · memory · <code>.agents/CONTEXT.md</code> · instructions</p>
+        <div class="btn-row">
+          <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
+          <button type="button" class="ghost btn-sm" data-action="ctx-pack">Show pack</button>
+        </div>
+      </div>
+      <div class="settings-card col">
         <div class="settings-card-title"><strong>Project map</strong> <span class="tool-status" id="map-status">${esc(state.mapStatus)}</span></div>
         <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
         <div class="btn-row">
-          <button type="button" data-action="map-gen">Generate</button>
-          <button type="button" data-action="map-show">Show</button>
+          <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
+          <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
         </div>
       </div>
       <div class="settings-card col">
         <div class="settings-card-title"><strong>Memory</strong> <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span></div>
         <p class="tool-desc">FTS (and optional vector) index</p>
         <div class="btn-row">
-          <button type="button" data-action="mem-index">Reindex</button>
+          <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
         </div>
         <form class="mem-search" data-action-form="mem-search">
           <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
-          <button type="submit" class="primary">Search</button>
+          <button type="submit" class="primary btn-sm">Search</button>
         </form>
         <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
       </div>
@@ -967,9 +980,9 @@ function settingsWorkspaceHTML(): string {
         <div class="settings-card-title"><strong>Playwright</strong> <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span></div>
         <p class="tool-desc">Headed browser stack</p>
         <div class="btn-row">
-          <button type="button" data-action="pw-start">Start</button>
-          <button type="button" data-action="pw-stop">Stop</button>
-          <button type="button" data-action="pw-restart">Restart</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-start">Start</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-stop">Stop</button>
+          <button type="button" class="ghost btn-sm" data-action="pw-restart">Restart</button>
         </div>
       </div>
     </div>`;
@@ -1335,10 +1348,11 @@ function toolsCwd(): string {
 async function refreshToolsStatus(): Promise<void> {
   const cwd = toolsCwd();
   try {
-    const [ms, mem, pw] = await Promise.all([
+    const [ms, mem, pw, ctx] = await Promise.all([
       getMapStatus(cwd).catch((e: Error) => ({ status: { exists: false, reason: e.message } })),
       memoryStats(cwd).catch(() => ({ docs: 0, engine: "error" })),
       playwrightStatus().catch(() => null),
+      contextStatus(cwd).catch(() => null),
     ]);
     const st = (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } }).status ?? {};
     if (!st.exists) state.mapStatus = st.reason ? `error · ${st.reason}` : "no map";
@@ -1351,16 +1365,71 @@ async function refreshToolsStatus(): Promise<void> {
     if (m.vector_enabled) {
       state.memStatus += ` · emb ${m.docs_embedded ?? 0}`;
     }
+    if (ctx) {
+      const bits: string[] = [];
+      bits.push(ctx.ready ? "ready" : "needs ensure");
+      if (ctx.has_context) bits.push("CONTEXT.md");
+      bits.push(`${ctx.memory_docs ?? 0} mem`);
+      state.ctxStatus = bits.join(" · ");
+    } else {
+      state.ctxStatus = "unavailable";
+    }
     if (pw) {
       state.pwStatus = pw.running ? `running${pw.display ? ` · ${pw.display}` : ""}` : "stopped";
     } else {
       state.pwStatus = "unavailable";
     }
     paintTools();
+    if (state.settingsOpen && state.settingsTab === "workspace") paintSettings();
   } catch (e) {
     state.mapStatus = "error";
     state.memStatus = (e as Error).message || "failed";
+    state.ctxStatus = "error";
     paintTools();
+  }
+}
+
+async function onCtxEnsure(): Promise<void> {
+  try {
+    toast("Ensuring context…", "info", 12000);
+    const out = await contextEnsure({
+      cwd: toolsCwd(),
+      force_map: false,
+      force_index: false,
+    });
+    const bits = [
+      out.map_generated ? "map refreshed" : "map ok",
+      out.memory_indexed ? `+${out.memory_indexed} mem` : "mem ok",
+      out.context_wrote ? "CONTEXT.md" : "",
+    ].filter(Boolean);
+    toast(`Context ready · ${bits.join(" · ")}`, "ok");
+    await refreshToolsStatus();
+  } catch (e) {
+    toast((e as Error).message || "context ensure failed", "err");
+  }
+}
+
+async function onCtxPack(): Promise<void> {
+  try {
+    toast("Building pack…", "info", 8000);
+    const out = await contextPack({
+      cwd: toolsCwd(),
+      write_file: true,
+      query: state.memQuery || undefined,
+    });
+    if (!out.markdown) {
+      toast("Empty pack", "info");
+      return;
+    }
+    state.drawer = {
+      title: `Context pack · ${out.cwd || toolsCwd()}`,
+      body: out.markdown,
+    };
+    paintDrawer();
+    toast(`Pack ${out.chars ?? 0} chars${out.wrote_file ? " · wrote CONTEXT.md" : ""}`, "ok");
+    await refreshToolsStatus();
+  } catch (e) {
+    toast((e as Error).message || "pack failed", "err");
   }
 }
 
@@ -1456,6 +1525,8 @@ async function onPwAction(action: "start" | "stop" | "restart"): Promise<void> {
 
 function paintTools(): void {
   if (state.panel !== "tools") return;
+  const ctxEl = document.getElementById("ctx-status");
+  if (ctxEl) ctxEl.textContent = state.ctxStatus;
   const mapEl = document.getElementById("map-status");
   if (mapEl) mapEl.textContent = state.mapStatus;
   const memEl = document.getElementById("mem-status");
@@ -1914,6 +1985,18 @@ function toolsHTML(): string {
             ${workspaceOptionsHTML()}
           </select>
         </div>
+
+        <section class="tool-block">
+          <div class="tool-block-head">
+            <h3>Context</h3>
+            <span class="tool-status" id="ctx-status">${esc(state.ctxStatus)}</span>
+          </div>
+          <p class="tool-desc">Map + memory pack · auto-ensured on new session</p>
+          <div class="btn-row">
+            <button type="button" class="primary btn-sm" data-action="ctx-ensure">Ensure</button>
+            <button type="button" class="ghost btn-sm" data-action="ctx-pack">Show pack</button>
+          </div>
+        </section>
 
         <section class="tool-block">
           <div class="tool-block-head">
@@ -2822,6 +2905,14 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         state.sidebarOpen = false;
         paintChrome();
+        break;
+      case "ctx-ensure":
+        ev.preventDefault();
+        void onCtxEnsure();
+        break;
+      case "ctx-pack":
+        ev.preventDefault();
+        void onCtxPack();
         break;
       case "map-gen":
         ev.preventDefault();
