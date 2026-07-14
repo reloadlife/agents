@@ -26,9 +26,18 @@ type Info struct {
 var order = []string{"claude", "grok", "codex", "opencode", "cursor", "cursor-agent", "mock"}
 
 // List returns configured agents, resolved against PATH.
+// Built-in "shell" is always listed first (plain interactive shell in tmux).
 func List(cfg *config.Config) []Info {
 	seen := map[string]bool{}
-	var out []Info
+	out := []Info{{
+		Name:      "shell",
+		Bin:       "shell",
+		Resolved:  "builtin",
+		Available: true,
+		TTY:       true,
+		Note:      "plain terminal ($SHELL)",
+	}}
+	seen["shell"] = true
 
 	// stable order first
 	for _, name := range order {
@@ -52,10 +61,11 @@ func List(cfg *config.Config) []Info {
 }
 
 // AvailableTTY returns names suitable for interactive sessions (bin found, not mock-only noise).
+// Always includes built-in "shell" for a plain terminal.
 func AvailableTTY(cfg *config.Config) []string {
-	var names []string
+	names := []string{"shell"}
 	for _, a := range List(cfg) {
-		if a.Available && a.TTY && a.Name != "mock" {
+		if a.Available && a.TTY && a.Name != "mock" && a.Name != "shell" {
 			// hide cursor-agent duplicate if cursor exists
 			if a.Name == "cursor-agent" {
 				if _, ok := cfg.Agents["cursor"]; ok {

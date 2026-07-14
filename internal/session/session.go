@@ -143,19 +143,32 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		}
 	}
 
-	acfg, ok := m.cfg.Agent(req.Agent)
-	if !ok {
-		return nil, fmt.Errorf("unknown agent %q", req.Agent)
+	shell := IsShellAgent(req.Agent)
+	var acfg config.AgentConfig
+	var bin string
+	var args []string
+	if shell {
+		// Built-in plain shell terminal — no [agents.shell] config required.
+		req.Agent = "shell"
+		bin = defaultShell()
+		args = nil
+		req.Account = "" // no multi-account for shell
+	} else {
+		var ok bool
+		acfg, ok = m.cfg.Agent(req.Agent)
+		if !ok {
+			return nil, fmt.Errorf("unknown agent %q", req.Agent)
+		}
+		bin = acfg.Bin
+		if bin == "" {
+			return nil, fmt.Errorf("agent %q has empty bin", req.Agent)
+		}
+		resolved := resolveBin(bin)
+		if resolved == "" {
+			return nil, fmt.Errorf("agent binary %q not found on PATH (install it or fix [agents.%s].bin)", bin, req.Agent)
+		}
+		bin = resolved
 	}
-	bin := acfg.Bin
-	if bin == "" {
-		return nil, fmt.Errorf("agent %q has empty bin", req.Agent)
-	}
-	resolved := resolveBin(bin)
-	if resolved == "" {
-		return nil, fmt.Errorf("agent binary %q not found on PATH (install it or fix [agents.%s].bin)", bin, req.Agent)
-	}
-	bin = resolved
 
 	cwdAbs, err := pathallow.Resolve(m.cfg.WorkspaceRoot, req.Cwd, m.cfg.Allow.Paths)
 	if err != nil {
@@ -182,15 +195,17 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	// Pin a native conversation id when the CLI supports it (e.g. grok --session-id)
 	// so resume after reboot can restore chat, not just a blank process.
 	agentSessID := ""
-	if req.Mode != ModePrint && canPinSessionID(req.Agent) {
+	if !shell && req.Mode != ModePrint && canPinSessionID(req.Agent) {
 		agentSessID = newNativeSessionID()
 	}
-	args := m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt, agentSessID, false)
+	if !shell {
+		args = m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt, agentSessID, false)
+	}
 	env := m.sessionEnv()
 	account := strings.TrimSpace(req.Account)
 	accountMode := strings.ToLower(strings.TrimSpace(req.AccountMode))
 	accountHome := ""
-	if account != "" {
+	if !shell && account != "" {
 		plat := agentacct.MapAgentToPlatform(req.Agent)
 		if plat == "" {
 			return nil, fmt.Errorf("agent %q does not support multi-account profiles (cursor/claude/codex/grok)", req.Agent)
@@ -220,7 +235,8 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 
 	// For TTY mode, optional seed prompt is typed into the interactive UI (not -p).
-	if req.Mode == ModeTTY && req.Prompt != "" {
+	// Skip for plain shell terminals.
+	if !shell && req.Mode == ModeTTY && req.Prompt != "" {
 		m.seedPrompt(tmuxName, req.Prompt)
 	}
 
@@ -668,19 +684,29 @@ func (m *Manager) Resume(id string) (*Session, error) {
 		return &s, nil
 	}
 
-	acfg, ok := m.cfg.Agent(s.Agent)
-	if !ok {
-		return nil, fmt.Errorf("unknown agent %q (configure [agents.%s] or start a new session)", s.Agent, s.Agent)
+	shell := IsShellAgent(s.Agent)
+	var acfg config.AgentConfig
+	var bin string
+	var args []string
+	if shell {
+		bin = defaultShell()
+		args = nil
+	} else {
+		var ok bool
+		acfg, ok = m.cfg.Agent(s.Agent)
+		if !ok {
+			return nil, fmt.Errorf("unknown agent %q (configure [agents.%s] or start a new session)", s.Agent, s.Agent)
+		}
+		bin = acfg.Bin
+		if bin == "" {
+			return nil, fmt.Errorf("agent %q has empty bin", s.Agent)
+		}
+		resolved := resolveBin(bin)
+		if resolved == "" {
+			return nil, fmt.Errorf("agent binary %q not found on PATH", bin)
+		}
+		bin = resolved
 	}
-	bin := acfg.Bin
-	if bin == "" {
-		return nil, fmt.Errorf("agent %q has empty bin", s.Agent)
-	}
-	resolved := resolveBin(bin)
-	if resolved == "" {
-		return nil, fmt.Errorf("agent binary %q not found on PATH", bin)
-	}
-	bin = resolved
 
 	// Re-resolve cwd (allowlist may have changed; path must still exist).
 	cwdAbs, err := pathallow.Resolve(m.cfg.WorkspaceRoot, s.Cwd, m.cfg.Allow.Paths)
@@ -708,15 +734,17 @@ func (m *Manager) Resume(id string) (*Session, error) {
 
 	// Resolve native agent conversation id for chat restore.
 	nativeID := strings.TrimSpace(s.AgentSessionID)
-	if nativeID == "" {
-		if found := discoverNativeSessionID(&s); found != "" {
-			nativeID = found
-			m.log.Info("session resume: discovered agent conversation", "id", s.ID, "agent_session_id", nativeID)
+	if !shell {
+		if nativeID == "" {
+			if found := discoverNativeSessionID(&s); found != "" {
+				nativeID = found
+				m.log.Info("session resume: discovered agent conversation", "id", s.ID, "agent_session_id", nativeID)
+			}
 		}
+		args = m.buildArgs(s.Agent, acfg, mode, "", nativeID, true)
 	}
-	args := m.buildArgs(s.Agent, acfg, mode, "", nativeID, true)
 	env := m.sessionEnv()
-	if s.Account != "" && s.AccountMode != "global" {
+	if !shell && s.Account != "" && s.AccountMode != "global" {
 		plat := agentacct.MapAgentToPlatform(s.Agent)
 		if plat != "" {
 			if am, err := agentacct.New(m.cfg.JobsDir); err == nil {

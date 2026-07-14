@@ -11,10 +11,33 @@ import (
 	"github.com/reloadlife/agents/internal/config"
 )
 
+// IsShellAgent reports whether this is a plain shell terminal (not an AI agent).
+func IsShellAgent(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "shell" || n == "term" || n == "terminal" || n == "bash" || n == "zsh" || n == "sh"
+}
+
+// defaultShell picks an interactive shell binary.
+func defaultShell() string {
+	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
+		if st, err := os.Stat(s); err == nil && !st.IsDir() {
+			return s
+		}
+	}
+	for _, c := range []string{"/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash", "/bin/sh"} {
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	return "/bin/sh"
+}
+
 // Agent family helpers — map config agent names to native CLI resume behaviour.
 func agentFamily(name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))
 	switch {
+	case IsShellAgent(n):
+		return "shell"
 	case strings.Contains(n, "grok"):
 		return "grok"
 	case strings.Contains(n, "claude"):

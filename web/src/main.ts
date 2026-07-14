@@ -28,6 +28,7 @@ import {
   contextStatus,
   createBackup,
   createSession,
+  openWorkspace,
   historySearch,
   installSkills,
   listRecordings,
@@ -607,6 +608,23 @@ function paletteItems(): PaletteItem[] {
     },
     { id: "tools", label: "Quick tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
     {
+      id: "shell",
+      label: "Open terminal (shell)",
+      hint: "⇧t",
+      group: "Navigate",
+      run: () => {
+        void openShellTerminal();
+      },
+    },
+    {
+      id: "open-remote",
+      label: "Open project in remote editor…",
+      group: "Navigate",
+      run: () => {
+        void showOpenRemoteDrawer();
+      },
+    },
+    {
       id: "settings",
       label: "Settings",
       hint: ",",
@@ -821,6 +839,71 @@ function paintCommandPalette(): void {
       item?.run();
     });
   });
+}
+
+/** Plain shell session in the current/default workspace (no AI agent). */
+async function openShellTerminal(cwd?: string): Promise<void> {
+  const useCwd = (cwd || state.formCwd || state.defaultCwd || ".").trim() || ".";
+  try {
+    toast("Starting shell…", "info", 4000);
+    const sess = await createSession({
+      agent: "shell",
+      cwd: useCwd,
+      name: `shell · ${useCwd === "." ? "root" : useCwd.split("/").pop() || useCwd}`,
+    });
+    await refreshSessions();
+    openTab(sess);
+    toast(`Shell in ${useCwd}`, "ok");
+  } catch (e) {
+    toast((e as Error).message || "shell failed", "err");
+  }
+}
+
+/** Drawer with copy-paste commands to open cwd in Cursor / Zed / VS Code (SSH remote). */
+async function showOpenRemoteDrawer(cwd?: string): Promise<void> {
+  const useCwd = (cwd || toolsCwd() || state.formCwd || state.defaultCwd || ".").trim() || ".";
+  try {
+    const out = await openWorkspace({ cwd: useCwd });
+    const lines: string[] = [
+      `Workspace: ${out.cwd}`,
+      `Absolute:  ${out.abs}`,
+      out.ssh_host ? `SSH host:  ${out.ssh_host}` : "",
+      "",
+      "── Run on your laptop (SSH Remote) ──",
+      out.commands.cursor_remote || "",
+      out.commands.zed_remote || "",
+      out.commands.vscode_remote || "",
+      "",
+      "── Run on this agents host (if editor installed) ──",
+      out.commands.cursor_local || "",
+      out.commands.zed_local || "",
+      out.commands.vscode_local || "",
+      "",
+      "── SSH shell ──",
+      out.commands.ssh || "",
+      "",
+      out.editors?.length
+        ? `Local binaries on host: ${out.editors.join(", ")}`
+        : "No cursor/zed/code binary on host PATH (remote commands still work from your laptop).",
+    ].filter((l) => l !== undefined);
+    state.drawer = {
+      title: `Open remote · ${out.cwd}`,
+      body: lines.filter(Boolean).join("\n"),
+    };
+    void paintDrawer();
+    // Also put the primary Cursor remote command on the clipboard when possible.
+    const primary = out.commands.cursor_remote || out.commands.zed_remote || out.commands.vscode_remote;
+    if (primary) {
+      try {
+        await navigator.clipboard.writeText(primary);
+        toast("Copied Cursor remote command", "ok", 2500);
+      } catch {
+        toast("Commands ready — copy from drawer", "info", 2500);
+      }
+    }
+  } catch (e) {
+    toast((e as Error).message || "open remote failed", "err");
+  }
 }
 
 async function showDashboardDrawer(): Promise<void> {
@@ -1669,7 +1752,8 @@ function emptyTermHTML(): string {
         <p>Start a session or open one from the rail. Closing a browser tab only detaches — agents keep running in tmux.</p>
         <div class="term-empty-actions">
           <button type="button" class="primary" data-action="new-session">New session</button>
-          <button type="button" class="ghost" data-action="new-project">New project</button>
+          <button type="button" class="ghost" data-action="open-shell">Terminal</button>
+          <button type="button" class="ghost" data-action="open-remote">Open remote</button>
         </div>
         <p class="term-empty-hint">Press <kbd>⌘</kbd><kbd>K</kbd> for commands · <kbd>?</kbd> for shortcuts</p>
       </div>
@@ -3383,6 +3467,10 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
 function toolsHTML(): string {
   return `
     <div class="modal-body tools-body sheet-form">
+      <div class="btn-row" style="margin-bottom:0.85rem">
+        <button type="button" class="primary btn-sm" data-action="open-shell">Terminal</button>
+        <button type="button" class="ghost btn-sm" data-action="open-remote">Open remote…</button>
+      </div>
       ${workspaceToolsBodyHTML()}
       <p class="form-hint" style="margin-top:0.75rem">
         Accounts, GitHub, SSH →
@@ -3448,6 +3536,7 @@ function helpHTML(): string {
           <h3>Panels</h3>
           <dl class="keys">
             <div><dt><kbd>t</kbd></dt><dd>Tools</dd></div>
+            <div><dt><kbd>⇧</kbd><kbd>t</kbd></dt><dd>Plain shell terminal</dd></div>
             <div><dt><kbd>,</kbd> <kbd>a</kbd></dt><dd>Settings</dd></div>
             <div><dt><kbd>g</kbd></dt><dd>Settings → GitHub</dd></div>
             <div><dt><kbd>w</kbd></dt><dd>Toggle session rail</dd></div>
@@ -3677,6 +3766,10 @@ function shellHTML(): string {
             <a href="/project/new" class="linkish sidebar-sublink" data-action="new-project" data-nav id="btn-new-project" title="Clone a repo (Shift+n)">
               New project
             </a>
+            <div class="sidebar-quick">
+              <button type="button" class="ghost btn-sm" data-action="open-shell" title="Plain shell in workspace">Terminal</button>
+              <button type="button" class="ghost btn-sm" data-action="open-remote" title="Open folder in Cursor / Zed / VS Code">Open remote</button>
+            </div>
           </div>
           <div class="sidebar-menu">
             <a href="/tools" class="sidebar-menu-btn" data-action="tools" data-nav title="Quick tools (t)">
@@ -3738,6 +3831,8 @@ function shellHTML(): string {
             <div class="menu-panel">
               <button type="button" data-action="new-session">New session <kbd>n</kbd></button>
               <button type="button" data-action="new-project">New project <kbd>⇧n</kbd></button>
+              <button type="button" data-action="open-shell">Terminal <kbd>⇧t</kbd></button>
+              <button type="button" data-action="open-remote">Open remote…</button>
               <button type="button" data-action="tools">Tools <kbd>t</kbd></button>
               <button type="button" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
               <button type="button" data-action="help">Shortcuts <kbd>?</kbd></button>
@@ -4185,6 +4280,10 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
       openPanel("new");
       return true;
     case "t":
+      if (shift) {
+        void openShellTerminal();
+        return true;
+      }
       openPanel("tools");
       return true;
     case ",":
@@ -4606,6 +4705,16 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         state.sidebarOpen = false;
         paintChrome();
+        break;
+      case "open-shell":
+        ev.preventDefault();
+        document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        void openShellTerminal();
+        break;
+      case "open-remote":
+        ev.preventDefault();
+        document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        void showOpenRemoteDrawer();
         break;
       case "open-palette":
         ev.preventDefault();

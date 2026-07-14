@@ -964,6 +964,16 @@ a.session-item {
 .sidebar-actions {
   padding: 0 0.15rem;
 }
+.sidebar-quick {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0 0.15rem 0.45rem;
+  flex-wrap: wrap;
+}
+.sidebar-quick .btn-sm {
+  flex: 1;
+  min-width: 0;
+}
 .term-empty-hint {
   margin: 1rem 0 0;
   font-size: 0.75rem;

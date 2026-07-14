@@ -477,6 +477,28 @@ export function cloneWorkspace(body: {
   });
 }
 
+export type WorkspaceOpenResult = {
+  cwd: string;
+  abs: string;
+  ssh_host?: string;
+  commands: Record<string, string>;
+  editors?: string[];
+  launched?: string;
+  launch_error?: string;
+};
+
+/** Build remote/local open commands; optional launch of editor binary on host. */
+export function openWorkspace(body: {
+  cwd: string;
+  editor?: string;
+  launch?: boolean;
+}): Promise<WorkspaceOpenResult> {
+  return request("/v1/workspaces/open", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getStatus(): Promise<StatusSnapshot> {
   return request("/v1/status");
 }

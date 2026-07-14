@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9] — 2026-07-14
+
+### Added
+
+- **Plain shell terminal** — agent `shell` (no config required); UI **Terminal** button / `⇧t`
+- **Open remote** — `POST /v1/workspaces/open` returns Cursor / Zed / VS Code SSH-remote commands
+  - UI drawer with copy-to-clipboard; optional host-side launch when editor is on PATH
+
 ## [0.7.8] — 2026-07-14
 
 ### Changed

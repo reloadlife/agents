@@ -99,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/agents", s.handleListAgents)
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces/clone", s.handleCloneWorkspace)
+	mux.HandleFunc("POST /v1/workspaces/open", s.handleOpenWorkspace)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
 	// SSH identity keys (public only; private never served)
@@ -273,6 +274,26 @@ func (s *Server) handleCloneWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req workspaces.OpenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := workspaces.Open(s.cfg, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.audit(r, "workspace.open", req.Cwd, map[string]any{
+		"editor":  req.Editor,
+		"launch":  req.Launch,
+		"abs":     out.Abs,
+		"launched": out.Launched,
+	})
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) sshKeys() (*sshkeys.Manager, error) {
@@ -704,8 +725,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Mode = session.ModeTTY
 
-	// Prepare workspace orientation before the agent boots (map + CONTEXT.md + seed).
-	ctxInfo := s.prepareSessionContext(&req)
+	// Prepare workspace orientation before the agent boots (skip for plain shell).
+	ctxInfo := map[string]any{"enabled": false}
+	if !session.IsShellAgent(req.Agent) {
+		ctxInfo = s.prepareSessionContext(&req)
+	}
 
 	sess, err := s.sess.Create(req)
 	if err != nil {
@@ -715,24 +739,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "session.create", sess.ID, map[string]any{"agent": sess.Agent, "cwd": sess.Cwd})
 	// Attach context summary for clients (non-breaking extra fields via wrapper).
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":            sess.ID,
-		"name":          sess.Name,
-		"agent":         sess.Agent,
-		"mode":          sess.Mode,
-		"cwd":           sess.Cwd,
-		"cwd_abs":       sess.CwdAbs,
-		"tmux":          sess.Tmux,
-		"state":         sess.State,
-		"prompt":        sess.Prompt,
-		"created_at":    sess.CreatedAt,
-		"account":       sess.Account,
-		"account_mode":  sess.AccountMode,
-		"account_home":  sess.AccountHome,
-		"attach":        sess.Attach,
-		"ssh_attach":    sess.SSHAttach,
-		"pty_path":      sess.PTYPath,
-		"attach_hint":   sess.AttachHint,
-		"context":       ctxInfo,
+		"id":               sess.ID,
+		"name":             sess.Name,
+		"agent":            sess.Agent,
+		"mode":             sess.Mode,
+		"cwd":              sess.Cwd,
+		"cwd_abs":          sess.CwdAbs,
+		"tmux":             sess.Tmux,
+		"state":            sess.State,
+		"prompt":           sess.Prompt,
+		"created_at":       sess.CreatedAt,
+		"account":          sess.Account,
+		"account_mode":     sess.AccountMode,
+		"account_home":     sess.AccountHome,
+		"agent_session_id": sess.AgentSessionID,
+		"attach":           sess.Attach,
+		"ssh_attach":       sess.SSHAttach,
+		"pty_path":         sess.PTYPath,
+		"attach_hint":      sess.AttachHint,
+		"context":          ctxInfo,
 	})
 }
 
