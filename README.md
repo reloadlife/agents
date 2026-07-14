@@ -166,8 +166,8 @@ agentsctl gh status|login|switch|logout|setup-git
 | POST | `/v1/gh/login` | `gh auth login --with-token` (token write-only) |
 | POST | `/v1/gh/switch` | Switch active gh account |
 | POST | `/v1/gh/logout` | Logout local gh account |
-| GET | `/v1/agent-accounts` | Multi-account profiles (`?platform=grok`) |
-| POST | `/v1/agent-accounts/save\|switch\|add` | Save / global-switch / register profiles |
+| GET | `/v1/agent-accounts` | Multi-account profiles (`?platform=grok` or `all`) |
+| POST | `/v1/agent-accounts/save\|switch\|add\|remove` | Save / global-switch / register / remove profiles |
 | GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 

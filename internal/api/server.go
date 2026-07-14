@@ -120,6 +120,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent-accounts/save", s.handleAgentAccountSave)
 	mux.HandleFunc("POST /v1/agent-accounts/switch", s.handleAgentAccountSwitch)
 	mux.HandleFunc("POST /v1/agent-accounts/add", s.handleAgentAccountAdd)
+	mux.HandleFunc("POST /v1/agent-accounts/remove", s.handleAgentAccountRemove)
+	mux.HandleFunc("DELETE /v1/agent-accounts/{platform}/{id}", s.handleAgentAccountRemove)
 
 	// Playwright / headed browser stack
 	mux.HandleFunc("GET /v1/playwright", s.handlePlaywrightStatus)
@@ -549,6 +551,39 @@ func (s *Server) handleAgentAccountAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := m.Status(body.Platform)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
+}
+
+func (s *Server) handleAgentAccountRemove(w http.ResponseWriter, r *http.Request) {
+	m, err := s.agentAcct()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	platform := strings.TrimSpace(r.PathValue("platform"))
+	id := strings.TrimSpace(r.PathValue("id"))
+	if platform == "" || id == "" {
+		var body struct {
+			Platform string `json:"platform"`
+			ID       string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if platform == "" {
+			platform = strings.TrimSpace(body.Platform)
+		}
+		if id == "" {
+			id = strings.TrimSpace(body.ID)
+		}
+	}
+	if platform == "" || id == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("platform and id required"))
+		return
+	}
+	if err := m.RemoveAccount(platform, id); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, _ := m.Status(platform)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": st})
 }
 

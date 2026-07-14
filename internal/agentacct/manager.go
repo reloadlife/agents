@@ -149,8 +149,9 @@ func (m *Manager) Save(platform, id, label string) error {
 }
 
 // Switch globally restores a profile into the live auth store.
+// --plain avoids the interactive spinner (needs a TTY; agentsd has none under systemd).
 func (m *Manager) Switch(platform, id string) error {
-	_, err := m.run(90*time.Second, "--platform", platform, "switch", id)
+	_, err := m.run(90*time.Second, "--platform", platform, "switch", id, "--plain")
 	return err
 }
 
@@ -161,6 +162,12 @@ func (m *Manager) AddAccount(platform, id, label string) error {
 		args = append(args, "--label", label)
 	}
 	_, err := m.run(15*time.Second, args...)
+	return err
+}
+
+// RemoveAccount deletes a registered account and its saved profile.
+func (m *Manager) RemoveAccount(platform, id string) error {
+	_, err := m.run(30*time.Second, "--platform", platform, "account", "remove", id)
 	return err
 }
 
@@ -294,11 +301,32 @@ func parseStatus(platform, raw string) *PlatformStatus {
 			break
 		}
 	}
-	// Current line from status text
+	// Fill gaps from status text (Current account / Active profile).
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "Current account:") {
-			st.Current = strings.TrimSpace(strings.TrimPrefix(line, "Current account:"))
+			cur := strings.TrimSpace(strings.TrimPrefix(line, "Current account:"))
+			if cur != "" && st.Current == "" {
+				st.Current = cur
+			}
+		}
+		if strings.HasPrefix(line, "Active profile:") {
+			// e.g. "Personal" (label) — map to id when possible
+			label := strings.TrimSpace(strings.TrimPrefix(line, "Active profile:"))
+			if st.Active == "" && label != "" {
+				for i := range st.Accounts {
+					if strings.EqualFold(st.Accounts[i].Label, label) ||
+						strings.EqualFold(st.Accounts[i].ID, label) {
+						st.Active = st.Accounts[i].ID
+						st.Accounts[i].Active = true
+						break
+					}
+				}
+				if st.Active == "" {
+					// treat as raw id
+					st.Active = strings.ToLower(label)
+				}
+			}
 		}
 	}
 	return st
