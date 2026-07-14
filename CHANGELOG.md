@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-14
+
+### Changed
+
+- **Web UI overhaul — shadcn sidebar-08 dashboard**
+  - Inset main panel (rounded card on sidebar background)
+  - Structured sidebar: Platform nav · Sessions list · host user footer
+  - Header breadcrumb + session tabs + connection pill
+  - Terminal stage sits in a bordered inset surface
+  - Settings page matches the same sidebar-08 chrome
+  - All session/PTY/tools behavior unchanged
+
 ## [0.5.2] — 2026-07-14
 
 ### Added

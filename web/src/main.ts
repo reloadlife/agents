@@ -825,18 +825,22 @@ function settingsHTML(): string {
   }
 
   return `
-    <div class="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-sidebar="08">
       <aside class="settings-nav">
         <div class="settings-nav-head">
           <div class="eyebrow">Configuration</div>
           <h1 id="settings-title">Settings</h1>
         </div>
         <nav class="settings-nav-list">${nav}</nav>
-        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to sessions</button>
+        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to desk</button>
       </aside>
       <section class="settings-main">
         <header class="settings-main-head">
-          <h2>${esc(tabs.find((t) => t.id === state.settingsTab)?.label || "Settings")}</h2>
+          <div class="topbar-lead" style="gap:0.55rem">
+            <span class="eyebrow" style="margin:0">Host</span>
+            <span class="topbar-sep" aria-hidden="true"></span>
+            <h2 style="margin:0">${esc(tabs.find((t) => t.id === state.settingsTab)?.label || "Settings")}</h2>
+          </div>
           <button type="button" class="ghost btn-icon sm" data-action="close-settings" title="Close (Esc)" aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
@@ -2292,6 +2296,14 @@ function paintChrome(): void {
     const run = state.sessions.filter((s) => s.state === "running").length;
     count.textContent = `${run}/${state.sessions.length}`;
   }
+  const crumb = document.getElementById("breadcrumb");
+  if (crumb) crumb.outerHTML = breadcrumbHTML();
+  const host = document.getElementById("nav-host");
+  if (host) {
+    host.textContent = (state.statusText || "host").split("·")[0]?.trim() || "host";
+  }
+  const navStatus = document.getElementById("nav-status");
+  if (navStatus) navStatus.textContent = state.statusText || "connected";
   const shell = document.querySelector(".shell");
   shell?.classList.toggle("sidebar-open", state.sidebarOpen);
   paintConn();
@@ -2308,10 +2320,10 @@ function loginHTML(): string {
         <span class="logo-mark" aria-hidden="true">a</span>
         <div>
           <h1>agents</h1>
-          <p class="sub">Host control plane</p>
+          <p class="sub">Control plane</p>
         </div>
       </div>
-      <p class="login-lede">Paste the same bearer token as <code>agentsctl</code> (<code>AGENTSD_TOKEN</code>) to connect to this host.</p>
+      <p class="login-lede">Paste the same bearer token as <code>agentsctl</code> (<code>AGENTSD_TOKEN</code>), or run <code>agentsctl web</code> for auto-login.</p>
       <form id="login-form">
         <div class="field">
           <label for="token">API token</label>
@@ -2326,55 +2338,125 @@ function loginHTML(): string {
   </div>`;
 }
 
+function iconSvg(name: string): string {
+  const common =
+    'width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="menu-ico" aria-hidden="true"';
+  switch (name) {
+    case "terminal":
+      return `<svg ${common}><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+    case "settings":
+      return `<svg ${common}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    case "wrench":
+      return `<svg ${common}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+    case "help":
+      return `<svg ${common}><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+    case "panel":
+      return `<svg ${common}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>`;
+    case "logout":
+      return `<svg ${common}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`;
+    default:
+      return "";
+  }
+}
+
+function breadcrumbHTML(): string {
+  const tab = state.openTabs.find((t) => t.id === state.activeId);
+  if (!tab) {
+    return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
+      <span>Desk</span>
+      <span class="sep-chev">/</span>
+      <strong>Sessions</strong>
+    </nav>`;
+  }
+  return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
+    <span>Sessions</span>
+    <span class="sep-chev">/</span>
+    <strong title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(tab.title)}</strong>
+  </nav>`;
+}
+
 function shellHTML(): string {
+  const host = (state.statusText || "host").split("·")[0]?.trim() || "host";
   return `
-  <div class="shell${state.sidebarOpen ? " sidebar-open" : ""}">
+  <div class="shell${state.sidebarOpen ? " sidebar-open" : ""}" data-sidebar="08">
     <div class="sidebar-backdrop" id="sidebar-backdrop" data-action="close-sidebar" hidden></div>
+
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="brand">
           <span class="logo-mark sm" aria-hidden="true">a</span>
-          <span class="brand-name">agents</span>
+          <div class="brand-meta">
+            <span class="brand-name">agents</span>
+            <span class="brand-sub">control plane</span>
+          </div>
         </div>
-        <button type="button" class="ghost btn-icon" data-action="logout" title="Log out" aria-label="Log out">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </div>
+
+      <div class="sidebar-content">
+        <div class="sidebar-group">
+          <div class="sidebar-group-label">Platform</div>
+          <div class="sidebar-actions">
+            <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
+              <span>+ New session</span>
+              <kbd>n</kbd>
+            </button>
+          </div>
+          <div class="sidebar-menu">
+            <button type="button" class="sidebar-menu-btn" data-action="tools" title="Quick tools (t)">
+              ${iconSvg("wrench")}<span>Tools</span><kbd>t</kbd>
+            </button>
+            <button type="button" class="sidebar-menu-btn" data-action="open-settings" data-tab="accounts" title="Settings (,)">
+              ${iconSvg("settings")}<span>Settings</span><kbd>,</kbd>
+            </button>
+            <button type="button" class="sidebar-menu-btn" data-action="help" title="Shortcuts (?)">
+              ${iconSvg("help")}<span>Shortcuts</span><kbd>?</kbd>
+            </button>
+          </div>
+        </div>
+
+        <div class="sidebar-group grow">
+          <div class="sidebar-group-label">Sessions</div>
+          <div class="sidebar-filter">
+            <input id="filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" />
+            <span class="sess-count" id="sess-count" title="running / total">0/0</span>
+          </div>
+          <div class="session-list" id="session-list">
+            ${sessionListHTML()}
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button type="button" class="nav-user" data-action="open-settings" data-tab="about" title="About this host">
+          <span class="nav-user-avatar">a</span>
+          <span class="nav-user-text">
+            <strong id="nav-host">${esc(host)}</strong>
+            <span id="nav-status">${esc(state.statusText || "connected")}</span>
+          </span>
+          ${iconSvg("settings")}
         </button>
-      </div>
-
-      <div class="sidebar-actions">
-        <button type="button" class="primary sidebar-new" data-action="new-session" id="btn-new">
-          <span>+ New session</span>
-          <kbd>n</kbd>
-        </button>
-      </div>
-
-      <div class="sidebar-filter">
-        <input id="filter" type="search" placeholder="Filter sessions…" value="${esc(state.filter)}" autocomplete="off" />
-        <span class="sess-count" id="sess-count" title="running / total">0/0</span>
-      </div>
-
-      <div class="session-list" id="session-list">
-        ${sessionListHTML()}
-      </div>
-
-      <div class="sidebar-foot">
-        <button type="button" class="ghost btn-sm" data-action="prune" title="Delete all stopped sessions">Clear stopped</button>
-        <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts">Settings</button>
+        <div class="sidebar-foot-actions">
+          <button type="button" class="ghost btn-sm" data-action="prune" title="Delete all stopped sessions">Clear stopped</button>
+          <button type="button" class="ghost btn-sm" data-action="logout" title="Log out">${iconSvg("logout")} Logout</button>
+        </div>
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <button type="button" class="ghost btn-icon mobile-only" data-action="toggle-sidebar" title="Sessions (w)" aria-label="Toggle sessions">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
-        </button>
+        <div class="topbar-lead">
+          <button type="button" class="ghost btn-icon" data-action="toggle-sidebar" title="Toggle sidebar (w)" aria-label="Toggle sidebar">
+            ${iconSvg("panel")}
+          </button>
+          <span class="topbar-sep" aria-hidden="true"></span>
+          ${breadcrumbHTML()}
+        </div>
         <div class="tabs" id="tabs">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
-          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n / Alt+n)">New</button>
-          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (, / Alt+,)">Settings</button>
-          <button type="button" class="ghost btn-sm" data-action="tools" title="Quick tools (t / Alt+t)">Tools</button>
-          <button type="button" class="ghost btn-sm" data-action="help" title="Shortcuts (?)">?</button>
+          <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">New</button>
+          <button type="button" class="ghost btn-sm" data-action="tools" title="Tools (t)">Tools</button>
+          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (,)">Settings</button>
         </div>
       </header>
       <div class="term-wrap">
@@ -2385,7 +2467,7 @@ function shellHTML(): string {
             <p>Open a session from the sidebar, or start a new one. Closing a tab detaches only — agents keep running in tmux.</p>
             <div class="term-empty-actions">
               <button type="button" class="primary" data-action="new-session">New session</button>
-              <button type="button" class="ghost" data-action="open-settings" data-tab="accounts">Settings</button>
+              <button type="button" class="ghost" data-action="tools">Tools</button>
             </div>
           </div>
         </div>
