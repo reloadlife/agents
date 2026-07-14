@@ -71,6 +71,12 @@ type CreateRequest struct {
 	AccountMode string `json:"account_mode,omitempty"` // isolated|global
 }
 
+// ArchiveFunc optionally archives pane data (recording store).
+type ArchiveFunc func(sessionID, agent, cwd, name, reason string, data []byte)
+
+// OnEventFunc is called for lifecycle events (notify / audit / auto-note).
+type OnEventFunc func(typ, sessionID, agent, cwd, name, message string)
+
 // Manager creates interactive agent sessions in tmux.
 type Manager struct {
 	cfg     *config.Config
@@ -79,6 +85,9 @@ type Manager struct {
 	mu      sync.Mutex
 	byID    map[string]*Session
 	sshHost string
+	// optional hooks
+	Archive ArchiveFunc
+	OnEvent OnEventFunc
 }
 
 func NewManager(cfg *config.Config, log *slog.Logger) (*Manager, error) {
@@ -121,6 +130,13 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux required for TTY sessions: %w", err)
+	}
+	// Resource limit: max concurrent running TTY sessions
+	if max := m.cfg.Sessions.MaxConcurrent; max > 0 {
+		m.refreshStates()
+		if n := m.RunningCount(); n >= max {
+			return nil, fmt.Errorf("max concurrent sessions reached (%d) — stop one first or raise sessions.max_concurrent", max)
+		}
 	}
 
 	acfg, ok := m.cfg.Agent(req.Agent)
@@ -221,6 +237,9 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	m.byID[s.ID] = s
 	m.mu.Unlock()
 	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "account", account, "account_mode", accountMode)
+	if m.OnEvent != nil {
+		m.OnEvent("session.started", s.ID, s.Agent, s.Cwd, s.Name, "session started")
+	}
 	return s, nil
 }
 
@@ -275,12 +294,20 @@ func capturePane(tmuxName string) ([]byte, error) {
 
 // SnapshotHistory captures live pane output to disk (best-effort).
 // Called before kill and on PTY detach so dead sessions keep a transcript.
+// reason is for optional archive (kill|detach|manual).
 func (m *Manager) SnapshotHistory(id string) {
+	m.SnapshotHistoryReason(id, "detach")
+}
+
+// SnapshotHistoryReason is like SnapshotHistory but tags the archive reason.
+func (m *Manager) SnapshotHistoryReason(id, reason string) {
 	m.mu.Lock()
 	s, ok := m.byID[id]
 	var tmux string
+	var agent, cwd, name string
 	if ok {
 		tmux = s.Tmux
+		agent, cwd, name = s.Agent, s.Cwd, s.Name
 	}
 	m.mu.Unlock()
 	if tmux == "" || !tmuxAlive(tmux) {
@@ -291,6 +318,9 @@ func (m *Manager) SnapshotHistory(id string) {
 		return
 	}
 	_ = os.WriteFile(m.historyPath(id), data, 0o600)
+	if m.Archive != nil && m.cfg != nil && m.cfg.RecordingEnabled() {
+		m.Archive(id, agent, cwd, name, reason, data)
+	}
 }
 
 // History returns the best available scrollback for a session:
@@ -546,7 +576,7 @@ func (m *Manager) Kill(id string) (*Session, error) {
 		return nil, err
 	}
 	// Snapshot scrollback before destroying tmux so resume/history still work.
-	m.SnapshotHistory(id)
+	m.SnapshotHistoryReason(id, "kill")
 	_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
 	s.State = StateKilled
 	m.mu.Lock()
@@ -556,6 +586,9 @@ func (m *Manager) Kill(id string) (*Session, error) {
 	}
 	m.mu.Unlock()
 	m.fillAttach(s)
+	if m.OnEvent != nil {
+		m.OnEvent("session.stopped", s.ID, s.Agent, s.Cwd, s.Name, "session stopped/killed")
+	}
 	return s, nil
 }
 
@@ -573,8 +606,9 @@ func (m *Manager) Delete(id string) error {
 	m.mu.Unlock()
 
 	// Best-effort history snapshot then kill tmux (running or not).
+	agent, cwd, name := s.Agent, s.Cwd, s.Name
 	if tmuxAlive(tmux) {
-		m.SnapshotHistory(id)
+		m.SnapshotHistoryReason(id, "delete")
 		_ = exec.Command("tmux", "kill-session", "-t", tmux).Run()
 	}
 
@@ -584,6 +618,9 @@ func (m *Manager) Delete(id string) error {
 	_ = os.Remove(m.path(id))
 	_ = os.Remove(m.historyPath(id))
 	m.log.Info("session deleted", "id", id, "tmux", tmux)
+	if m.OnEvent != nil {
+		m.OnEvent("session.deleted", id, agent, cwd, name, "session deleted")
+	}
 	return nil
 }
 

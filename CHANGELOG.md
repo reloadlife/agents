@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-14
+
+### Added
+
+- **Session recording** (`sessions.recording`) — archive pane snapshots under `jobs_dir/recordings`
+  - `GET /v1/recordings`, `GET /v1/recordings/{id}`, `POST /v1/sessions/{id}/record`
+  - `agentsctl recordings list|show|snap`
+- **History search** — `GET /v1/history/search?q=` + `agentsctl history search`
+- **Session templates** — presets (agent/cwd/prompt/account)
+  - `GET/POST /v1/templates`, `POST /v1/templates/{id}/start`
+  - `agentsctl templates list|save|start|delete`
+- **Webhooks** — `[notify] webhook_url` + events; `agentsctl notify test`
+- **Multi-token auth** — `auth.extra_tokens` + optional `trusted_header` (Tailscale/CF Access)
+- **Audit log** — JSONL under `jobs_dir/audit`; `GET /v1/audit`, `agentsctl audit`
+- **Backup/restore** — `POST /v1/backup`, `POST /v1/backup/restore`; `agentsctl backup`
+- **Workspace dashboard** — `GET /v1/dashboard`, `agentsctl dashboard`
+- **Skill install helper** — `POST /v1/skills/install`, `agentsctl skills install`
+- **Session limits** — `sessions.max_concurrent`
+- **Auto-notes** — on stop/delete write memory note (`sessions.auto_note`, default true)
+- **Hybrid memory search** — FTS + vector RRF when embeddings configured
+- **Web command palette** — `Ctrl/Cmd+K` or `p` (templates, dashboard, backup, theme…)
+- **Light/dark theme** toggle (palette)
+
 ## [0.6.3] — 2026-07-14
 
 ### Changed

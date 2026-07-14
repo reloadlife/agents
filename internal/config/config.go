@@ -26,6 +26,7 @@ type Config struct {
 	Web               WebConfig              `toml:"web"`
 	Memory            MemoryConfig           `toml:"memory"`
 	Context           ContextConfig          `toml:"context"`
+	Notify            NotifyConfig           `toml:"notify"`
 	// DefaultCwd used when client sends empty / "." and "." is not allowlisted.
 	DefaultCwd string `toml:"default_cwd"`
 
@@ -33,6 +34,9 @@ type Config struct {
 	DefaultTimeoutDur time.Duration `toml:"-"`
 	MaxTimeoutDur     time.Duration `toml:"-"`
 	Token             string        `toml:"-"`
+	// Tokens maps label → raw token for multi-token auth (optional).
+	// Primary Token from bearer_env is always accepted as label "default".
+	TokenMap map[string]string `toml:"-"`
 }
 
 // WebConfig controls the embedded browser UI served by agentsd.
@@ -151,6 +155,21 @@ func (c *Config) ContextPackBudget() int {
 
 type AuthConfig struct {
 	BearerEnv string `toml:"bearer_env"`
+	// ExtraTokens maps label → env var name holding an additional bearer token.
+	// Example: extra_tokens = { ops = "AGENTS_TOKEN_OPS", guest = "AGENTS_TOKEN_GUEST" }
+	ExtraTokens map[string]string `toml:"extra_tokens"`
+	// TrustedHeader: if set (e.g. "Tailscale-User-Login" or "Cf-Access-Authenticated-User-Email"),
+	// a non-empty value is accepted as identity alongside (or instead of requiring) bearer when
+	// require_bearer is false. When require_bearer is true (default), header is only used for audit actor.
+	TrustedHeader string `toml:"trusted_header"`
+	// RequireBearer defaults true. Set false only behind a trusted reverse proxy with trusted_header.
+	RequireBearer *bool `toml:"require_bearer"`
+}
+
+// NotifyConfig webhook notifications.
+type NotifyConfig struct {
+	WebhookURL string   `toml:"webhook_url"`
+	Events     []string `toml:"events"` // empty = all
 }
 
 type AgentConfig struct {
@@ -173,6 +192,27 @@ type SessionsConfig struct {
 	PlaywrightBrowsersPath string `toml:"playwright_browsers_path"`
 	// PlaywrightServer optional remote Playwright server WS base, e.g. "ws://127.0.0.1:9333"
 	PlaywrightServer string `toml:"playwright_server"`
+	// Recording archives pane snapshots under jobs_dir/recordings (default false).
+	Recording *bool `toml:"recording"`
+	// MaxConcurrent caps running TTY sessions (0 = unlimited). Default 0.
+	MaxConcurrent int `toml:"max_concurrent"`
+	// AutoNote writes a memory note when a session is killed/stopped (default true).
+	AutoNote *bool `toml:"auto_note"`
+}
+
+// RecordingEnabled reports whether session pane archiving is on.
+func (c *Config) RecordingEnabled() bool {
+	return c.Sessions.Recording != nil && *c.Sessions.Recording
+}
+
+// AutoNoteEnabled defaults true.
+func (c *Config) AutoNoteEnabled() bool {
+	return boolDefaultTrue(c.Sessions.AutoNote)
+}
+
+// RequireBearer defaults true.
+func (c *Config) RequireBearer() bool {
+	return boolDefaultTrue(c.Auth.RequireBearer)
 }
 
 type AllowConfig struct {
@@ -263,10 +303,27 @@ func (c *Config) normalize() error {
 	c.JobsDir = jobs
 
 	c.Token = strings.TrimSpace(os.Getenv(c.Auth.BearerEnv))
-	if c.Token == "" {
+	if c.Token == "" && c.RequireBearer() {
 		return fmt.Errorf("auth token empty: set env %s", c.Auth.BearerEnv)
 	}
+	c.TokenMap = map[string]string{}
+	if c.Token != "" {
+		c.TokenMap["default"] = c.Token
+	}
+	for label, envName := range c.Auth.ExtraTokens {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" {
+			c.TokenMap[label] = v
+		}
+	}
+	if len(c.TokenMap) == 0 && c.RequireBearer() {
+		return fmt.Errorf("no auth tokens configured")
+	}
 	return nil
+}
+
+// RecordingsDir returns jobs_dir/recordings.
+func (c *Config) RecordingsDir() string {
+	return filepath.Join(c.JobsDir, "recordings")
 }
 
 // IsElevatedCap reports whether cap requires confirm.

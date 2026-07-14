@@ -13,36 +13,83 @@ import (
 
 	"github.com/reloadlife/agents/internal/agentacct"
 	"github.com/reloadlife/agents/internal/agentsinfo"
+	"github.com/reloadlife/agents/internal/audit"
 	"github.com/reloadlife/agents/internal/auth"
 	"github.com/reloadlife/agents/internal/config"
 	"github.com/reloadlife/agents/internal/ctxmgr"
 	"github.com/reloadlife/agents/internal/ghauth"
 	"github.com/reloadlife/agents/internal/job"
 	"github.com/reloadlife/agents/internal/memory"
+	"github.com/reloadlife/agents/internal/notify"
 	"github.com/reloadlife/agents/internal/pathallow"
 	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/projmap"
+	"github.com/reloadlife/agents/internal/recording"
 	"github.com/reloadlife/agents/internal/session"
 	"github.com/reloadlife/agents/internal/sshkeys"
 	"github.com/reloadlife/agents/internal/status"
+	"github.com/reloadlife/agents/internal/templates"
 	"github.com/reloadlife/agents/internal/webui"
 	"github.com/reloadlife/agents/internal/workspaces"
 )
 
 type Server struct {
-	cfg  *config.Config
-	mgr  *job.Manager
-	sess *session.Manager
-	mem  *memory.Store
-	pw   *playwrightctl.Manager
-	log  *slog.Logger
+	cfg      *config.Config
+	mgr      *job.Manager
+	sess     *session.Manager
+	mem      *memory.Store
+	pw       *playwrightctl.Manager
+	log      *slog.Logger
+	rec      *recording.Store
+	tmpl     *templates.Store
+	notify   *notify.Notifier
+	auditLog *audit.Log
 }
 
 func New(cfg *config.Config, mgr *job.Manager, sess *session.Manager, mem *memory.Store, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{cfg: cfg, mgr: mgr, sess: sess, mem: mem, pw: playwrightctl.New(cfg), log: log}
+	s := &Server{cfg: cfg, mgr: mgr, sess: sess, mem: mem, pw: playwrightctl.New(cfg), log: log}
+	if rec, err := recording.New(cfg.RecordingsDir()); err == nil {
+		s.rec = rec
+	}
+	if tmpl, err := templates.New(cfg.JobsDir); err == nil {
+		s.tmpl = tmpl
+	}
+	if al, err := audit.New(cfg.JobsDir); err == nil {
+		s.auditLog = al
+	}
+	s.notify = notify.New(notify.Config{
+		WebhookURL: cfg.Notify.WebhookURL,
+		Events:     cfg.Notify.Events,
+	}, log)
+	// wire session hooks
+	if sess != nil {
+		if s.rec != nil {
+			sess.Archive = func(sessionID, agent, cwd, name, reason string, data []byte) {
+				_, _ = s.rec.Archive(sessionID, agent, cwd, name, reason, data)
+			}
+		}
+		sess.OnEvent = func(typ, sessionID, agent, cwd, name, message string) {
+			s.notify.Emit(typ, sessionID, agent, cwd, name, message, nil)
+			if s.auditLog != nil {
+				s.auditLog.Record(typ, "system", sessionID, "", map[string]any{
+					"agent": agent, "cwd": cwd, "name": name, "message": message,
+				})
+			}
+			// auto-note into memory on stop/delete
+			if s.mem != nil && cfg.AutoNoteEnabled() && (typ == "session.stopped" || typ == "session.deleted") {
+				title := "session " + sessionID
+				if name != "" {
+					title = name
+				}
+				text := fmt.Sprintf("Session %s (%s) in %s — %s", sessionID, agent, cwd, message)
+				_, _ = ctxmgr.New(s.mem).Note(cwd, title, text)
+			}
+		}
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -110,6 +157,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/context/pack", s.handleContextPack)
 	mux.HandleFunc("POST /v1/context/note", s.handleContextNote)
 
+	// Recordings + history search
+	mux.HandleFunc("GET /v1/recordings", s.handleListRecordings)
+	mux.HandleFunc("GET /v1/recordings/{id}", s.handleGetRecording)
+	mux.HandleFunc("POST /v1/sessions/{id}/record", s.handleManualRecord)
+	mux.HandleFunc("GET /v1/history/search", s.handleHistorySearch)
+
+	// Session templates
+	mux.HandleFunc("GET /v1/templates", s.handleListTemplates)
+	mux.HandleFunc("POST /v1/templates", s.handleUpsertTemplate)
+	mux.HandleFunc("DELETE /v1/templates/{id}", s.handleDeleteTemplate)
+	mux.HandleFunc("POST /v1/templates/{id}/delete", s.handleDeleteTemplate)
+	mux.HandleFunc("POST /v1/templates/{id}/start", s.handleStartTemplate)
+
+	// Audit / notify / backup / skills / dashboard
+	mux.HandleFunc("GET /v1/audit", s.handleAuditTail)
+	mux.HandleFunc("POST /v1/notify/test", s.handleNotifyTest)
+	mux.HandleFunc("POST /v1/backup", s.handleBackupCreate)
+	mux.HandleFunc("POST /v1/backup/restore", s.handleBackupRestore)
+	mux.HandleFunc("POST /v1/skills/install", s.handleSkillsInstall)
+	mux.HandleFunc("GET /v1/dashboard", s.handleWorkspaceDashboard)
+
 	// Print/API jobs (secondary — uses credits; explicit only)
 	mux.HandleFunc("POST /v1/jobs", s.handleCreateJob)
 	mux.HandleFunc("GET /v1/jobs", s.handleListJobs)
@@ -124,7 +192,11 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", webui.Handler())
 	}
 
-	return auth.Middleware(s.cfg.Token, withLogging(s.log, mux))
+	return auth.MiddlewareOpts(auth.Options{
+		Tokens:        s.cfg.TokenMap,
+		TrustedHeader: s.cfg.Auth.TrustedHeader,
+		RequireBearer: s.cfg.RequireBearer(),
+	}, withLogging(s.log, mux))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -602,6 +674,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	s.audit(r, "session.create", sess.ID, map[string]any{"agent": sess.Agent, "cwd": sess.Cwd})
 	// Attach context summary for clients (non-breaking extra fields via wrapper).
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":            sess.ID,

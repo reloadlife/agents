@@ -104,3 +104,21 @@ seed_orientation = true
 # pack_budget = 12000
 auto_index = true
 write_files = true
+
+# Session recording archives pane snapshots under jobs_dir/recordings (privacy: default off)
+# [sessions]
+# recording = true
+# max_concurrent = 8
+# auto_note = true
+
+# Webhooks (JSON POST Event) — ntfy, Discord, Slack-compatible, etc.
+# [notify]
+# webhook_url = "https://ntfy.sh/my-agents-topic"
+# events = ["session.started", "session.stopped", "session.deleted"]
+
+# Multi-token auth: map label → env var name
+# [auth]
+# bearer_env = "AGENTSD_TOKEN"
+# extra_tokens = { ops = "AGENTS_TOKEN_OPS" }
+# trusted_header = "Tailscale-User-Login"   # audit actor / optional auth
+# require_bearer = true

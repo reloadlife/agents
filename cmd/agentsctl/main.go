@@ -142,6 +142,22 @@ cmd:
 		os.Exit(cmdMemory(c, cmdArgs))
 	case "context", "ctx":
 		os.Exit(cmdContext(c, cmdArgs))
+	case "recordings", "recording", "rec":
+		os.Exit(cmdRecordings(c, cmdArgs))
+	case "templates", "template", "tpl":
+		os.Exit(cmdTemplates(c, cmdArgs))
+	case "audit":
+		os.Exit(cmdAudit(c, cmdArgs))
+	case "backup":
+		os.Exit(cmdBackup(c, cmdArgs))
+	case "dashboard", "dash":
+		os.Exit(cmdDashboard(c, cmdArgs))
+	case "history":
+		os.Exit(cmdHistorySearch(c, cmdArgs))
+	case "skills", "skill":
+		os.Exit(cmdSkills(c, cmdArgs))
+	case "notify":
+		os.Exit(cmdNotify(c, cmdArgs))
 	case "jobs":
 		os.Exit(cmdJobs(c, cmdArgs))
 	case "run":
@@ -185,6 +201,14 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl memory index -r <cwd>        # index map+docs into FTS memory
   agentsctl memory search -r <cwd> "q"   # search (for agents / RAG)
   agentsctl context status|ensure|pack|note -r <cwd>   # orientation manager
+  agentsctl templates list|save|start|delete           # session presets
+  agentsctl recordings list|show|snap                  # pane archives (if enabled)
+  agentsctl history search <q>                         # search transcripts
+  agentsctl dashboard                                  # workspace readiness cards
+  agentsctl audit [--limit N]                          # control-plane audit log
+  agentsctl backup create|restore                      # jobs_dir tarball
+  agentsctl skills install -r <cwd>                    # write project-map skill stub
+  agentsctl notify test                                # fire webhook test
 
 Config: agentsctl config init|path|show
 Update: agentsctl update [--check] [--force] [--version TAG] [--all]

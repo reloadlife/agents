@@ -637,3 +637,108 @@ export function contextNote(body: {
     body: JSON.stringify(body),
   });
 }
+
+export type SessionTemplate = {
+  id: string;
+  name: string;
+  agent: string;
+  cwd: string;
+  prompt?: string;
+  account?: string;
+  account_mode?: string;
+  ensure_context?: boolean;
+};
+
+export function listTemplates(): Promise<{ templates: SessionTemplate[] }> {
+  return request("/v1/templates");
+}
+
+export function saveTemplate(body: {
+  id?: string;
+  name: string;
+  agent: string;
+  cwd: string;
+  prompt?: string;
+  account?: string;
+  account_mode?: string;
+  ensure_context?: boolean;
+}): Promise<SessionTemplate> {
+  return request("/v1/templates", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function deleteTemplate(id: string): Promise<{ ok?: boolean }> {
+  return request(`/v1/templates/${encodeURIComponent(id)}/delete`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function startTemplate(id: string): Promise<Session> {
+  return request(`/v1/templates/${encodeURIComponent(id)}/start`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function listRecordings(params?: {
+  session_id?: string;
+  q?: string;
+  limit?: number;
+}): Promise<{ recordings: Array<Record<string, unknown>>; enabled?: boolean }> {
+  const sp = new URLSearchParams();
+  if (params?.session_id) sp.set("session_id", params.session_id);
+  if (params?.q) sp.set("q", params.q);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  const q = sp.toString();
+  return request(`/v1/recordings${q ? `?${q}` : ""}`);
+}
+
+export function getRecording(id: string): Promise<{ meta?: unknown; text?: string }> {
+  return request(`/v1/recordings/${encodeURIComponent(id)}`);
+}
+
+export function historySearch(q: string): Promise<{
+  hits: Array<{
+    session_id?: string;
+    agent?: string;
+    cwd?: string;
+    name?: string;
+    snippet?: string;
+    source?: string;
+  }>;
+}> {
+  return request(`/v1/history/search?q=${encodeURIComponent(q)}`);
+}
+
+export function workspaceDashboard(): Promise<{
+  workspaces: Array<{
+    path: string;
+    abs?: string;
+    map_exists?: boolean;
+    map_stale?: boolean;
+    has_context?: boolean;
+    memory_docs?: number;
+    live_sessions?: number;
+  }>;
+}> {
+  return request("/v1/dashboard");
+}
+
+export function auditTail(limit = 50): Promise<{ entries: Array<Record<string, unknown>> }> {
+  return request(`/v1/audit?limit=${limit}`);
+}
+
+export function createBackup(): Promise<{ path?: string }> {
+  return request("/v1/backup", { method: "POST", body: "{}" });
+}
+
+export function installSkills(cwd: string): Promise<{ ok?: boolean; path?: string }> {
+  return request("/v1/skills/install", {
+    method: "POST",
+    body: JSON.stringify({ cwd }),
+  });
+}
+
+export function notifyTest(): Promise<{ ok?: boolean }> {
+  return request("/v1/notify/test", { method: "POST", body: "{}" });
+}

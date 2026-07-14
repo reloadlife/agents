@@ -258,10 +258,16 @@ scripts/install.sh    release-tarball installer (source fallback)
 - [x] Embedded workspace memory (SQLite FTS5 + optional HTTP embeddings)  
 - [x] Context manager (ensure/pack/seed on session + `agentsctl context`)  
 - [x] Web UI map + memory panels  
+- [x] Session recording (opt-in) + history search  
+- [x] Session templates  
+- [x] Webhooks / notifications  
+- [x] Multi-token auth + trusted header (Tailscale / CF Access)  
+- [x] Audit log, backup/restore, dashboard, skills install  
+- [x] Command palette + light/dark theme  
 - [ ] Homebrew packaging  
-- [ ] Optional Tailscale / CF Access identity (beyond shared token)  
-- [ ] Multi-user isolation  
-- [ ] Session recording (opt-in, documented privacy)  
+- [ ] Full multi-user isolation (workspaces per principal)  
+- [ ] Collaborative multi-viewer PTY  
+
 
 ## Support / donations
 

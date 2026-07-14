@@ -3,7 +3,8 @@
 
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
-:root {
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
 
   /* shadcn zinc dark */
@@ -84,6 +85,53 @@
   --radius-lg: calc(var(--radius) + 4px);
   --shadow: 0 10px 40px -12px rgba(0, 0, 0, 0.55);
   --shadow-soft: none;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --sidebar-background: 0 0% 98%;
+  --sidebar-foreground: 240 5.3% 26.1%;
+  --sidebar-primary: 240 5.9% 10%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 240 4.8% 95.9%;
+  --sidebar-accent-foreground: 240 5.9% 10%;
+  --sidebar-border: 220 13% 91%;
+  --sidebar-ring: 217.2 91.2% 59.8%;
+  --bg: hsl(var(--background));
+  --bg-panel: hsl(var(--sidebar-background));
+  --bg-elevated: hsl(var(--secondary));
+  --bg-hover: hsl(240 5% 92%);
+  --text: hsl(var(--foreground));
+  --muted-fg: hsl(var(--muted-foreground));
+  --faint: hsl(240 4% 55%);
+  --line: hsl(var(--border));
+  --line-strong: hsl(240 5% 80%);
+  --primary-bg: hsl(var(--primary));
+  --primary-fg: hsl(var(--primary-foreground));
+  --danger-soft: hsl(0 84% 60% / 0.12);
+  --paper: var(--text);
+  --paper-dim: var(--muted-fg);
+  --paper-faint: var(--faint);
+  --shadow: 0 10px 40px -12px rgba(0, 0, 0, 0.15);
 }
 
 * {
@@ -2298,6 +2346,90 @@ kbd {
   .vaul-body {
     padding: 1.15rem 1.25rem 1.5rem;
   }
+}
+
+/* —— Command palette —— */
+.palette-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: grid;
+  place-items: start center;
+  padding: 12vh 1rem 1rem;
+  background: hsl(0 0% 0% / 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.palette-card {
+  width: min(100%, 34rem);
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  height: 2.75rem;
+  border: none;
+  border-bottom: 1px solid hsl(var(--border));
+  border-radius: 0;
+  background: transparent;
+  padding: 0 1rem;
+  font-size: 0.95rem;
+  box-shadow: none;
+}
+
+.palette-input:focus {
+  outline: none;
+  box-shadow: none;
+  border-color: hsl(var(--border));
+}
+
+.palette-list {
+  max-height: min(50vh, 22rem);
+  overflow: auto;
+  padding: 0.35rem;
+}
+
+.palette-item {
+  width: 100%;
+  justify-content: space-between;
+  height: 2.25rem;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 0 0.75rem;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.palette-item:hover,
+.palette-item.active {
+  background: hsl(var(--accent));
+  border: none;
+}
+
+.palette-empty {
+  padding: 1rem;
+  color: var(--muted-fg);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.palette-foot {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.45rem 0.85rem;
+  border-top: 1px solid hsl(var(--border));
+  color: var(--faint);
+  font-size: 0.7rem;
+}
+
+.palette-foot span {
+  font-family: var(--mono);
+  color: var(--muted-fg);
 }
 
 @media (prefers-reduced-motion: reduce) {

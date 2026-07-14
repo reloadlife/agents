@@ -11,7 +11,15 @@ import {
   contextEnsure,
   contextPack,
   contextStatus,
+  createBackup,
   createSession,
+  historySearch,
+  installSkills,
+  listRecordings,
+  listTemplates,
+  notifyTest,
+  startTemplate,
+  workspaceDashboard,
   deleteSSHKey,
   deleteSession,
   generateMap,
@@ -51,6 +59,7 @@ import {
   type GHStatus,
   type MemoryHit,
   type Session,
+  type SessionTemplate,
   type SSHKey,
 } from "./api";
 import {
@@ -151,6 +160,10 @@ type AppState = {
   settingsBusy: boolean;
   /** keyboard highlight in session list (j/k) */
   listCursorId: string | null;
+  commandPalette: boolean;
+  paletteQuery: string;
+  templates: SessionTemplate[];
+  theme: "dark" | "light";
 };
 
 const state: AppState = {
@@ -209,6 +222,10 @@ const state: AppState = {
   settingsAcctLabel: "",
   settingsBusy: false,
   listCursorId: null,
+  commandPalette: false,
+  paletteQuery: "",
+  templates: [],
+  theme: (localStorage.getItem("agents_theme") as "dark" | "light") || "dark",
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -227,6 +244,257 @@ let lastSessionListSig = "";
 let pressMotionBound = false;
 
 const app = document.getElementById("app")!;
+
+function applyTheme(): void {
+  document.documentElement.dataset.theme = state.theme;
+  localStorage.setItem("agents_theme", state.theme);
+}
+
+function toggleTheme(): void {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  applyTheme();
+  toast(`Theme: ${state.theme}`, "ok", 1400);
+}
+
+function openCommandPalette(): void {
+  state.commandPalette = true;
+  paintCommandPalette();
+  window.requestAnimationFrame(() => {
+    (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
+  });
+}
+
+function closeCommandPalette(): void {
+  state.commandPalette = false;
+  document.getElementById("command-palette")?.remove();
+}
+
+type PaletteItem = { id: string; label: string; hint?: string; run: () => void };
+
+function paletteItems(): PaletteItem[] {
+  const q = state.paletteQuery.trim().toLowerCase();
+  const items: PaletteItem[] = [
+    { id: "new", label: "New session", hint: "n", run: () => openPanel("new") },
+    { id: "tools", label: "Quick tools", hint: "t", run: () => openPanel("tools") },
+    { id: "settings", label: "Settings", hint: ",", run: () => openSettings("accounts") },
+    { id: "help", label: "Shortcuts", hint: "?", run: () => openPanel("help") },
+    {
+      id: "ensure",
+      label: "Ensure context (active cwd)",
+      run: () => {
+        void onCtxEnsure();
+      },
+    },
+    {
+      id: "dashboard",
+      label: "Workspace dashboard",
+      run: () => {
+        void showDashboardDrawer();
+      },
+    },
+    {
+      id: "templates",
+      label: "Start from template…",
+      run: () => {
+        void showTemplatesDrawer();
+      },
+    },
+    {
+      id: "history",
+      label: "Search history…",
+      run: () => {
+        void showHistorySearch();
+      },
+    },
+    {
+      id: "recordings",
+      label: "List recordings",
+      run: () => {
+        void showRecordingsDrawer();
+      },
+    },
+    {
+      id: "backup",
+      label: "Create backup",
+      run: () => {
+        void createBackup()
+          .then((o) => toast(`Backup: ${o.path || "ok"}`, "ok", 5000))
+          .catch((e) => toast((e as Error).message, "err"));
+      },
+    },
+    {
+      id: "skills",
+      label: "Install skills into cwd",
+      run: () => {
+        void installSkills(toolsCwd())
+          .then((o) => toast(`Skills: ${o.path || "ok"}`, "ok"))
+          .catch((e) => toast((e as Error).message, "err"));
+      },
+    },
+    {
+      id: "notify",
+      label: "Test webhook notify",
+      run: () => {
+        void notifyTest()
+          .then(() => toast("Notify test sent", "ok"))
+          .catch((e) => toast((e as Error).message, "err"));
+      },
+    },
+    { id: "theme", label: "Toggle light/dark theme", run: () => toggleTheme() },
+    { id: "refresh", label: "Refresh sessions", run: () => void refreshSessionsManual() },
+  ];
+  // templates as quick starts
+  for (const t of state.templates.slice(0, 12)) {
+    items.push({
+      id: `tpl-${t.id}`,
+      label: `Template: ${t.name}`,
+      hint: t.agent,
+      run: () => {
+        void startTemplate(t.id)
+          .then((sess) => {
+            toast(`Started ${sess.agent} · ${sess.id}`, "ok");
+            void refreshSessions().then(() => {
+              const s = state.sessions.find((x) => x.id === sess.id);
+              if (s) openTab(s);
+            });
+          })
+          .catch((e) => toast((e as Error).message, "err"));
+      },
+    });
+  }
+  if (!q) return items;
+  return items.filter(
+    (i) =>
+      i.label.toLowerCase().includes(q) ||
+      (i.hint && i.hint.toLowerCase().includes(q)) ||
+      i.id.includes(q),
+  );
+}
+
+function paintCommandPalette(): void {
+  if (!state.commandPalette) {
+    document.getElementById("command-palette")?.remove();
+    return;
+  }
+  let root = document.getElementById("command-palette");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "command-palette";
+    root.className = "palette-root";
+    document.body.appendChild(root);
+    root.addEventListener("mousedown", (ev) => {
+      if (ev.target === root) closeCommandPalette();
+    });
+  }
+  const items = paletteItems();
+  root.innerHTML = `
+    <div class="palette-card" role="dialog" aria-label="Command palette">
+      <input id="palette-input" class="palette-input" placeholder="Type a command…" value="${esc(state.paletteQuery)}" autocomplete="off" />
+      <div class="palette-list">
+        ${
+          items.length
+            ? items
+                .map(
+                  (it, i) => `
+          <button type="button" class="palette-item ${i === 0 ? "active" : ""}" data-palette-id="${esc(it.id)}">
+            <span>${esc(it.label)}</span>
+            ${it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ""}
+          </button>`,
+                )
+                .join("")
+            : `<div class="palette-empty">No matches</div>`
+        }
+      </div>
+      <div class="palette-foot"><span>↑↓</span> move · <span>↵</span> run · <span>esc</span> close</div>
+    </div>`;
+  const input = document.getElementById("palette-input") as HTMLInputElement | null;
+  input?.addEventListener("input", () => {
+    state.paletteQuery = input.value;
+    paintCommandPalette();
+    (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
+  });
+  root.querySelectorAll<HTMLElement>("[data-palette-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-palette-id");
+      const item = paletteItems().find((x) => x.id === id);
+      closeCommandPalette();
+      item?.run();
+    });
+  });
+}
+
+async function showDashboardDrawer(): Promise<void> {
+  try {
+    const out = await workspaceDashboard();
+    const lines = (out.workspaces || [])
+      .map(
+        (w) =>
+          `${w.path}\n  map=${w.map_exists ? "yes" : "no"}${w.map_stale ? " (stale)" : ""}  ctx=${w.has_context ? "yes" : "no"}  mem=${w.memory_docs ?? 0}  live=${w.live_sessions ?? 0}`,
+      )
+      .join("\n\n");
+    state.drawer = { title: "Workspace dashboard", body: lines || "No workspaces" };
+    void paintDrawer();
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
+async function showTemplatesDrawer(): Promise<void> {
+  try {
+    const out = await listTemplates();
+    state.templates = out.templates || [];
+    const lines = state.templates
+      .map((t) => `${t.id}  ${t.name}\n  agent=${t.agent}  cwd=${t.cwd}`)
+      .join("\n\n");
+    state.drawer = {
+      title: "Templates (start via palette or agentsctl templates start)",
+      body: lines || "No templates — save with agentsctl templates save --name …",
+    };
+    void paintDrawer();
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
+async function showRecordingsDrawer(): Promise<void> {
+  try {
+    const out = await listRecordings({ limit: 40 });
+    if (out.enabled === false) {
+      toast("Recording disabled — set sessions.recording = true", "info", 5000);
+    }
+    const lines = (out.recordings || [])
+      .map(
+        (r) =>
+          `${r.id}\n  sess=${r.session_id}  agent=${r.agent}  ${r.bytes}B  ${r.created_at}`,
+      )
+      .join("\n\n");
+    state.drawer = { title: "Recordings", body: lines || "No recordings yet" };
+    void paintDrawer();
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
+async function showHistorySearch(): Promise<void> {
+  const q = window.prompt("Search session history for:");
+  if (!q?.trim()) return;
+  try {
+    const out = await historySearch(q.trim());
+    const lines = (out.hits || [])
+      .map(
+        (h) =>
+          `${h.session_id}  ${h.agent}/${h.cwd}  [${h.source}]\n  ${h.snippet || ""}`,
+      )
+      .join("\n\n");
+    state.drawer = {
+      title: `History search: ${q}`,
+      body: lines || "No hits",
+    };
+    void paintDrawer();
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
 
 function toast(msg: string, kind: ToastKind = "info", ms = 3200): void {
   state.toast = { msg, kind };
@@ -2327,6 +2595,7 @@ function filteredSessions(): Session[] {
 
 /** Full paint: login or initial shell mount. */
 function paint(): void {
+  applyTheme();
   if (!state.token) {
     stopPolling();
     state.shellMounted = false;
@@ -2360,6 +2629,13 @@ function paint(): void {
       bindPressMotion(document);
     }
     if (state.activeId) void attachActive();
+    void listTemplates()
+      .then((o) => {
+        state.templates = o.templates || [];
+      })
+      .catch(() => {
+        /* optional */
+      });
     return;
   }
   paintChrome();
@@ -3008,6 +3284,9 @@ function handleShortcut(ev: KeyboardEvent, _fromTerm: boolean): boolean {
     case "r":
       void refreshSessionsManual();
       return true;
+    case "p":
+      openCommandPalette();
+      return true;
     case "`":
       focusTerminal();
       return true;
@@ -3023,19 +3302,24 @@ function bindKeys(): void {
     if (!state.token || !state.shellMounted) return;
 
     if (ev.key === "Escape") {
+      if (state.commandPalette) {
+        closeCommandPalette();
+        ev.preventDefault();
+        return;
+      }
       if (state.drawer) {
         state.drawer = null;
-        paintDrawer();
+        void paintDrawer();
         ev.preventDefault();
         return;
       }
       if (state.panel) {
-        closePanel();
+        void closePanel();
         ev.preventDefault();
         return;
       }
       if (state.settingsOpen) {
-        closeSettings();
+        void closeSettings();
         ev.preventDefault();
         return;
       }
@@ -3060,6 +3344,13 @@ function bindKeys(): void {
     // Form fields: only Escape (above). Don't steal typing.
     if (typing && !inTerm) return;
 
+    // Command palette: Ctrl/Cmd+K (and Ctrl/Cmd+P)
+    if ((ev.metaKey || ev.ctrlKey) && (ev.key === "k" || ev.key === "K" || ev.key === "p" || ev.key === "P")) {
+      ev.preventDefault();
+      if (state.commandPalette) closeCommandPalette();
+      else openCommandPalette();
+      return;
+    }
     // Ctrl/Cmd reserved for browser + terminal (copy etc.)
     if (ev.metaKey || ev.ctrlKey) return;
 

@@ -253,6 +253,21 @@ func (s *Store) SearchMode(workspace, query string, limit int, mode SearchMode) 
 	useVector := (mode == SearchVector || mode == SearchAuto) && s.embedder != nil
 	useFTS := mode == SearchFTS || mode == SearchAuto || mode == SearchVector
 
+	// Hybrid (auto): merge FTS + vector via simple RRF when both available.
+	if mode == SearchAuto && useVector && useFTS {
+		ftsHits, ftsErr := s.searchFTS(workspace, query, limit)
+		vecHits, vecErr := s.searchVector(workspace, query, limit)
+		if ftsErr == nil && vecErr == nil && (len(ftsHits) > 0 || len(vecHits) > 0) {
+			return mergeRRF(ftsHits, vecHits, limit), nil
+		}
+		if ftsErr == nil && len(ftsHits) > 0 {
+			return ftsHits, nil
+		}
+		if vecErr == nil {
+			return vecHits, vecErr
+		}
+	}
+
 	if useVector {
 		hits, err := s.searchVector(workspace, query, limit)
 		if err == nil && len(hits) > 0 {
@@ -270,6 +285,56 @@ func (s *Store) SearchMode(workspace, query string, limit int, mode SearchMode) 
 		return s.searchFTS(workspace, query, limit)
 	}
 	return nil, fmt.Errorf("no search backend")
+}
+
+// mergeRRF fuses two ranked lists (Reciprocal Rank Fusion).
+func mergeRRF(a, b []Hit, limit int) []Hit {
+	const k = 60.0
+	type scored struct {
+		h Hit
+		s float64
+	}
+	byID := map[string]*scored{}
+	add := func(list []Hit) {
+		for i, h := range list {
+			id := h.ID
+			if id == "" {
+				id = h.Path + h.Title
+			}
+			sc := 1.0 / (k + float64(i+1))
+			if cur, ok := byID[id]; ok {
+				cur.s += sc
+				if h.Mode != "" && cur.h.Mode != "" && h.Mode != cur.h.Mode {
+					cur.h.Mode = "hybrid"
+				}
+			} else {
+				cp := h
+				if cp.Mode == "" {
+					cp.Mode = "fts"
+				}
+				byID[id] = &scored{h: cp, s: sc}
+			}
+		}
+	}
+	add(a)
+	add(b)
+	out := make([]scored, 0, len(byID))
+	for _, v := range byID {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].s > out[j].s })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	hits := make([]Hit, len(out))
+	for i := range out {
+		hits[i] = out[i].h
+		hits[i].Rank = out[i].s
+		if hits[i].Mode != "hybrid" && len(a) > 0 && len(b) > 0 {
+			// leave mode as-is when only one list contributed
+		}
+	}
+	return hits
 }
 
 func (s *Store) searchFTS(workspace, query string, limit int) ([]Hit, error) {
