@@ -139,7 +139,7 @@ func RenderSessionList(w io.Writer, raw []byte) error {
 	}
 
 	fmt.Fprintln(w, stHeader.Render(" SESSIONS "))
-	fmt.Fprintf(w, "%s\n", stMuted.Render(fmt.Sprintf("  %-28s  %-10s  %-8s  %-20s  %s", "ID", "STATE", "AGENT", "TMUX", "CWD")))
+	fmt.Fprintf(w, "%s\n", stMuted.Render(fmt.Sprintf("  %-28s  %-10s  %-8s  %-16s  %-20s  %s", "ID", "STATE", "AGENT", "BRANCH", "TMUX", "CWD")))
 	for _, s := range out.Sessions {
 		state := str(s["state"])
 		st := stValue.Render(state)
@@ -149,8 +149,15 @@ func RenderSessionList(w io.Writer, raw []byte) error {
 		case "killed", "exited":
 			st = stMuted.Render(state)
 		}
-		fmt.Fprintf(w, "  %-28s  %-18s  %-8s  %-20s  %s\n",
-			str(s["id"]), st, str(s["agent"]), str(s["tmux"]), str(s["cwd"]))
+		branch := str(s["git_branch"])
+		if branch == "" {
+			branch = str(s["branch"])
+		}
+		if branch == "" {
+			branch = "-"
+		}
+		fmt.Fprintf(w, "  %-28s  %-18s  %-8s  %-16s  %-20s  %s\n",
+			str(s["id"]), st, str(s["agent"]), branch, str(s["tmux"]), str(s["cwd"]))
 	}
 	fmt.Fprintln(w, stMuted.Render("\n  open: agentsctl session open <id>   ·   tui: agentsctl tui"))
 	return nil

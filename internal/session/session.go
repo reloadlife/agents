@@ -321,6 +321,7 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		s.WorktreePath = worktreePath
 		s.BaseCwd = baseCwd
 		s.Branch = branch
+		s.GitBranch = branch
 	}
 	m.fillAttach(s)
 	if err := m.save(s); err != nil {
@@ -329,7 +330,11 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	m.mu.Lock()
 	m.byID[s.ID] = s
 	m.mu.Unlock()
-	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "worktree", worktree, "account", account, "account_mode", accountMode)
+	// Best-effort live branch for API clients (not required on disk).
+	if s.GitBranch == "" {
+		enrichGitBranch(s, nil)
+	}
+	m.log.Info("session started", "id", s.ID, "tmux", s.Tmux, "agent", s.Agent, "mode", s.Mode, "cwd", s.Cwd, "worktree", worktree, "branch", s.GitBranch, "account", account, "account_mode", accountMode)
 	if m.OnEvent != nil {
 		m.OnEvent("session.started", s.ID, s.Agent, s.Cwd, s.Name, "session started")
 	}
@@ -657,26 +662,36 @@ func sessionCwdAbs(s *Session) string {
 }
 
 // enrichGitBranch fills GitBranch best-effort. branchCache dedupes by cwd within one list call.
+// Falls back to worktree Branch metadata when git is unavailable or cwd is not a repo.
 func enrichGitBranch(s *Session, branchCache map[string]string) {
 	if s == nil {
 		return
 	}
 	abs := sessionCwdAbs(s)
+	meta := strings.TrimSpace(s.Branch)
 	if abs == "" {
-		s.GitBranch = ""
+		s.GitBranch = meta
 		return
 	}
 	if branchCache != nil {
-		if b, ok := branchCache[abs]; ok {
-			s.GitBranch = b
+		if cached, ok := branchCache[abs]; ok {
+			if cached != "" {
+				s.GitBranch = cached
+			} else {
+				s.GitBranch = meta
+			}
 			return
 		}
 	}
-	b := gitBranch(abs)
+	live := gitBranch(abs)
 	if branchCache != nil {
-		branchCache[abs] = b
+		branchCache[abs] = live // may be ""
 	}
-	s.GitBranch = b
+	if live != "" {
+		s.GitBranch = live
+		return
+	}
+	s.GitBranch = meta
 }
 
 func (m *Manager) Get(id string) (*Session, error) {

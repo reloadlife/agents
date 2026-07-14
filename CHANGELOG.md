@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session git branch** — `GET /v1/sessions` (and get/create) include best-effort `git_branch`
+  - Computed via `git -C <cwd> rev-parse --abbrev-ref HEAD` (short timeout; ignored on error)
+  - Deduped per unique cwd on list; falls back to worktree `branch` metadata when present
+  - Web session list meta: `agent · cwd · branch · age`; filter matches branch; tab title attribute only
 - **Plain shell terminal** — agent `shell` (no config required); UI **Terminal** button / `⇧t`
 - **Open remote** — `POST /v1/workspaces/open` returns Cursor / Zed / VS Code SSH-remote commands
   - UI drawer with copy-to-clipboard; optional host-side launch when editor is on PATH

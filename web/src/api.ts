@@ -13,6 +13,11 @@ export type Session = {
   created_at?: string;
   pty_path?: string;
   attach_hint?: string;
+  /** Best-effort current git branch for session cwd (from list/get). */
+  git_branch?: string;
+  /** Worktree branch metadata when session used isolated checkout. */
+  branch?: string;
+  worktree?: boolean;
 };
 
 export type AgentInfo = {
@@ -705,6 +710,55 @@ export type SessionTemplate = {
   ensure_context?: boolean;
 };
 
+export type TaskStatus = "todo" | "doing" | "done";
+
+export type WorkspaceTask = {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export function listTasks(cwd: string): Promise<{
+  cwd?: string;
+  path?: string;
+  tasks: WorkspaceTask[];
+}> {
+  const q = new URLSearchParams({ cwd });
+  return request(`/v1/tasks?${q}`);
+}
+
+export function createTask(body: {
+  cwd: string;
+  title: string;
+}): Promise<{ cwd?: string; task: WorkspaceTask; tasks?: WorkspaceTask[] }> {
+  return request("/v1/tasks", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateTask(
+  id: string,
+  body: { cwd: string; status?: TaskStatus; title?: string },
+): Promise<{ cwd?: string; task: WorkspaceTask; tasks?: WorkspaceTask[] }> {
+  return request(`/v1/tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTask(
+  id: string,
+  cwd: string,
+): Promise<{ ok?: boolean; tasks?: WorkspaceTask[] }> {
+  const q = new URLSearchParams({ cwd });
+  return request(`/v1/tasks/${encodeURIComponent(id)}?${q}`, {
+    method: "DELETE",
+  });
+}
+
 export function listTemplates(): Promise<{ templates: SessionTemplate[] }> {
   return request("/v1/templates");
 }
@@ -815,6 +869,105 @@ export function uploadImage(body: {
   mime?: string;
 }> {
   return request("/v1/uploads/image", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Git changes ──────────────────────────────────────────────────────────────
+
+/** One path in `git status` (porcelain-ish). */
+export type GitFileEntry = {
+  path: string;
+  /** Single status letter: M / A / D / ? / R / C / U */
+  status?: string;
+  /** Two-char porcelain XY when available */
+  xy?: string;
+  staged?: boolean;
+  insertions?: number;
+  deletions?: number;
+};
+
+export type GitStatusResult = {
+  cwd?: string;
+  branch?: string;
+  head?: string;
+  dirty?: boolean;
+  ahead?: number;
+  behind?: number;
+  upstream?: string;
+  is_repo?: boolean;
+  files?: GitFileEntry[];
+  error?: string;
+};
+
+export type GitDiffResult = {
+  cwd?: string;
+  path?: string;
+  staged?: boolean;
+  base?: string;
+  /** Unified diff text */
+  diff?: string;
+  patch?: string;
+  error?: string;
+};
+
+export type GitCommitResult = {
+  ok?: boolean;
+  hash?: string;
+  short_hash?: string;
+  message?: string;
+  files?: number;
+  error?: string;
+};
+
+export type GitPRResult = {
+  ok?: boolean;
+  url?: string;
+  number?: number;
+  title?: string;
+  draft?: boolean;
+  error?: string;
+};
+
+export function gitStatus(cwd: string): Promise<GitStatusResult> {
+  return request(`/v1/git/status?cwd=${encodeURIComponent(cwd)}`);
+}
+
+export function gitDiff(params: {
+  cwd: string;
+  path?: string;
+  staged?: boolean;
+  base?: string;
+}): Promise<GitDiffResult> {
+  const sp = new URLSearchParams();
+  sp.set("cwd", params.cwd);
+  if (params.path) sp.set("path", params.path);
+  sp.set("staged", params.staged ? "1" : "0");
+  if (params.base) sp.set("base", params.base);
+  return request(`/v1/git/diff?${sp}`);
+}
+
+export function gitCommit(body: {
+  cwd: string;
+  message: string;
+  all?: boolean;
+  paths?: string[];
+}): Promise<GitCommitResult> {
+  return request("/v1/git/commit", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function gitPullRequest(body: {
+  cwd: string;
+  title: string;
+  body?: string;
+  base?: string;
+  draft?: boolean;
+}): Promise<GitPRResult> {
+  return request("/v1/git/pull-request", {
     method: "POST",
     body: JSON.stringify(body),
   });

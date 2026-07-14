@@ -6,6 +6,7 @@
  *   /project/new · /projects/new   → new project (clone) modal
  *   /desk                          → empty desk (no modal)
  *   /tools                         → global tools
+ *   /git · /changes                → git changes panel
  *   /help                          → shortcuts help
  *   /profile[/:tab]                → profile / settings
  *   /settings[/:tab]               → alias for profile
@@ -20,6 +21,7 @@ export type Route =
   | { name: "new-project" }
   | { name: "desk" }
   | { name: "tools" }
+  | { name: "changes" }
   | { name: "help" }
   | { name: "profile"; tab: ProfileTab }
   | {
@@ -86,6 +88,7 @@ export function parsePath(pathname: string): Route {
   }
   if (parts[0] === "desk" || parts[0] === "sessions") return { name: "desk" };
   if (parts[0] === "tools") return { name: "tools" };
+  if (parts[0] === "git" || parts[0] === "changes") return { name: "changes" };
   if (parts[0] === "help" || parts[0] === "shortcuts") return { name: "help" };
 
   if (parts[0] === "profile" || parts[0] === "settings") {
@@ -124,6 +127,8 @@ export function serializeRoute(route: Route): string {
       return "/desk";
     case "tools":
       return "/tools";
+    case "changes":
+      return "/changes";
     case "help":
       return "/help";
     case "profile":
