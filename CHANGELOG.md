@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] — 2026-07-14
+
+### Changed
+
+- **Git Changes UI overhaul** — real in-shell product page (not a modal/overlay)
+  - Hero header with branch chips, dirty/clean, +/- totals, workspace switcher
+  - File rail with filter, status pills, multi-line rows, commit checkboxes
+  - Diff canvas with sticky hunk headers, dual line gutters, clearer add/del
+  - Bottom composer: multi-line commit message, scope, primary CTA, expandable PR
+
 ## [0.8.3] — 2026-07-14
 
 ### Added

@@ -223,6 +223,10 @@ type AppState = {
   gitPrDraft: boolean;
   gitPrUrl: string;
   gitBusy: boolean;
+  /** Filter string for git file list */
+  gitFileFilter: string;
+  /** PR composer expanded */
+  gitPrOpen: boolean;
 };
 
 const state: AppState = {
@@ -305,6 +309,8 @@ const state: AppState = {
   gitPrDraft: false,
   gitPrUrl: "",
   gitBusy: false,
+  gitFileFilter: "",
+  gitPrOpen: false,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -538,13 +544,13 @@ function openPanelOnly(p: Panel): void {
       state.formCwd = tab.cwd;
     }
   }
-  // Git is a full page — close any modal panel chrome
+  // Git is an in-shell full stage — close any modal panel chrome
   if (p === "changes") {
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
   } else {
-    // Opening a modal panel dismisses the git page shell
-    document.getElementById("git-page-root")?.remove();
+    // Opening a modal panel dismisses the git stage
+    unmountGitStage();
   }
   paintSidebarActive();
   window.queueMicrotask(async () => {
@@ -587,7 +593,10 @@ async function closePanelOnly(): Promise<void> {
   state.panel = null;
   state.createError = "";
   document.getElementById("panel-overlay")?.remove();
-  if (wasGit) document.getElementById("git-page-root")?.remove();
+  if (wasGit) {
+    unmountGitStage();
+    paintBreadcrumb(true);
+  }
   paintSidebarActive();
 }
 
@@ -600,7 +609,7 @@ function openSettingsOnly(tab?: SettingsTab): void {
     state.panel = null;
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
-    if (wasGit) document.getElementById("git-page-root")?.remove();
+    if (wasGit) unmountGitStage();
   }
   paintSidebarActive();
   void loadSettingsData().then(() => paintSettings({ animateIn: true }));
@@ -3746,11 +3755,11 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
     if (isAppDrawerOpen() && !state.drawer) {
       closeAppDrawer("programmatic");
     }
-    document.getElementById("git-page-root")?.remove();
+    unmountGitStage();
     return;
   }
 
-  // Git changes is a full page, not a modal sheet
+  // Git changes is an in-shell stage, not a modal sheet
   if (state.panel === "changes") {
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     paintGitPage();
@@ -3758,7 +3767,7 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   }
 
   // Other panels use app modal (dialog sheet)
-  document.getElementById("git-page-root")?.remove();
+  unmountGitStage();
   if (state.drawer) {
     state.drawer = null;
   }
@@ -4016,7 +4025,7 @@ function toolsHTML(): string {
     </div>`;
 }
 
-// ── Git Changes full page ────────────────────────────────────────────────────
+// ── Git Changes — in-shell stage ────────────────────────────────────────────
 
 function gitStatusLetter(f: GitFileEntry): string {
   if (f.status && f.status.trim()) {
@@ -4045,7 +4054,7 @@ function gitStatusLabel(letter: string): string {
     case "C":
       return "Copied";
     case "U":
-      return "Unmerged";
+      return "Conflict";
     case "?":
       return "Untracked";
     default:
@@ -4053,345 +4062,434 @@ function gitStatusLabel(letter: string): string {
   }
 }
 
-function gitFilePlusMinus(f: GitFileEntry): string {
-  const ins = f.additions ?? f.insertions;
-  const del = f.deletions;
-  if (ins == null && del == null) return "";
-  const parts: string[] = [];
-  if (ins != null && ins > 0) parts.push(`<span class="git-pm-add">+${ins}</span>`);
-  if (del != null && del > 0) parts.push(`<span class="git-pm-del">−${del}</span>`);
-  return parts.length ? `<span class="git-pm">${parts.join(" ")}</span>` : "";
-}
-
-function gitTotalsHTML(): string {
-  const files = state.gitStatus?.files ?? [];
+function gitLineStats(files: GitFileEntry[]): { add: number; del: number } {
   let add = 0;
   let del = 0;
   for (const f of files) {
     add += f.additions ?? f.insertions ?? 0;
     del += f.deletions ?? 0;
   }
-  if (!files.length && !add && !del) return "";
-  return `<span class="git-totals" title="Total line changes">
-    <span class="git-pm-add">+${add}</span>
-    <span class="git-pm-del">−${del}</span>
-  </span>`;
+  return { add, del };
 }
 
-function gitBranchMetaHTML(): string {
+function gitCommitScopeLabel(): string {
+  const files = state.gitStatus?.files ?? [];
+  const n = state.gitCheckedPaths.length;
+  const total = files.length;
+  if (!total) return "No files";
+  if (n > 0) return `${n} of ${total} file${total === 1 ? "" : "s"}`;
+  return `${total} file${total === 1 ? "" : "s"}`;
+}
+
+function gitIsChecked(path: string): boolean {
+  return state.gitCheckedPaths.length === 0 || state.gitCheckedPaths.includes(path);
+}
+
+function gitHeaderHTML(): string {
   const st = state.gitStatus;
+  const busy = state.gitBusy || state.gitLoading;
+  const files = st?.files ?? [];
+  const { add, del } = gitLineStats(files);
+
+  let statusBits = "";
   if (state.gitLoading && !st) {
-    return `<div class="git-branch-row"><span class="tool-status">Loading…</span></div>`;
+    statusBits = `<span class="git-chip">Loading status…</span>`;
+  } else if (state.gitError && !st) {
+    statusBits = `<span class="git-chip git-chip--err">${esc(state.gitError)}</span>`;
+  } else if (st?.is_repo === false) {
+    statusBits = `<span class="git-chip git-chip--warn">Not a git repository</span>`;
+  } else if (st) {
+    const branch = st.branch || st.head || "HEAD";
+    const dirty = st.dirty || files.length > 0;
+    statusBits = `
+      <span class="git-chip git-chip--branch" title="${esc(st.upstream || branch)}">
+        ${iconSvg("git-branch")}<span>${esc(branch)}</span>
+      </span>
+      <span class="git-chip ${dirty ? "git-chip--dirty" : "git-chip--clean"}">${dirty ? "Dirty" : "Clean"}</span>
+      <span class="git-chip">${files.length} file${files.length === 1 ? "" : "s"}</span>
+      ${add || del ? `<span class="git-chip git-chip--stats"><span class="git-pm-add">+${add}</span><span class="git-pm-del">−${del}</span></span>` : ""}
+      ${typeof st.ahead === "number" && st.ahead > 0 ? `<span class="git-chip" title="Ahead of upstream">↑${st.ahead}</span>` : ""}
+      ${typeof st.behind === "number" && st.behind > 0 ? `<span class="git-chip" title="Behind upstream">↓${st.behind}</span>` : ""}
+      ${st.upstream ? `<span class="git-chip git-chip--muted" title="Upstream">${esc(st.upstream)}</span>` : ""}
+    `;
   }
-  if (state.gitError && !st) {
-    return `<div class="git-branch-row"><span class="form-error" role="alert">${esc(state.gitError)}</span></div>`;
-  }
-  if (!st) {
-    return `<div class="git-branch-row"><span class="tool-status">—</span></div>`;
-  }
-  if (st.is_repo === false) {
-    return `<div class="git-branch-row"><span class="tool-status">Not a git repo in this workspace</span></div>`;
-  }
-  const branch = st.branch || st.head || "—";
-  const dirty = st.dirty || (st.files && st.files.length > 0);
-  const badges: string[] = [];
-  if (dirty) badges.push(`<span class="git-badge git-badge-dirty">dirty</span>`);
-  else badges.push(`<span class="git-badge git-badge-clean">clean</span>`);
-  if (typeof st.ahead === "number" && st.ahead > 0) {
-    badges.push(`<span class="git-badge" title="Commits ahead of upstream">↑${st.ahead}</span>`);
-  }
-  if (typeof st.behind === "number" && st.behind > 0) {
-    badges.push(`<span class="git-badge" title="Commits behind upstream">↓${st.behind}</span>`);
-  }
-  const n = st.files?.length ?? 0;
-  const upstream = st.upstream ? ` · ${st.upstream}` : "";
-  return `<div class="git-branch-row">
-    <span class="git-branch" title="${esc(st.upstream || branch)}">${iconSvg("git-branch")}<strong>${esc(branch)}</strong></span>
-    ${badges.join("")}
-    <span class="tool-status">${n} file${n === 1 ? "" : "s"}${esc(upstream)}</span>
-    ${gitTotalsHTML()}
-  </div>`;
+
+  return `
+    <header class="git-hero">
+      <div class="git-hero-text">
+        <div class="git-hero-kicker">Source control</div>
+        <h1 class="git-hero-title">Changes</h1>
+        <div class="git-hero-chips">${statusBits}</div>
+      </div>
+      <div class="git-hero-actions">
+        <label class="git-workspace">
+          <span class="git-workspace-label">Workspace</span>
+          <select id="git-cwd-select" class="git-cwd-select" data-action-change="git-cwd" ${busy ? "disabled" : ""}>
+            ${workspaceOptionsHTML()}
+          </select>
+        </label>
+        <button type="button" class="ghost btn-sm git-refresh-btn" data-action="git-refresh" title="Refresh" ${busy ? "disabled" : ""}>
+          ${state.gitLoading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+    </header>`;
 }
 
 function gitFileListHTML(): string {
-  const files = state.gitStatus?.files ?? [];
+  const allFiles = state.gitStatus?.files ?? [];
+  const q = state.gitFileFilter.trim().toLowerCase();
+  const files = q ? allFiles.filter((f) => (f.path || "").toLowerCase().includes(q)) : allFiles;
   const allActive = state.gitSelectedPath == null;
-  const head = `<button type="button" class="git-file git-file-all ${allActive ? "active" : ""}" data-action="git-select-all">
-      <span class="git-file-letter">∗</span>
-      <span class="git-file-path">All changes</span>
-      <span class="git-file-count">${files.length}</span>
+
+  const overview = `
+    <button type="button" class="git-file-row git-file-overview ${allActive ? "is-active" : ""}" data-action="git-select-all">
+      <span class="git-file-ico" aria-hidden="true">∑</span>
+      <span class="git-file-main">
+        <span class="git-file-name">All changes</span>
+        <span class="git-file-sub">Combined working-tree diff</span>
+      </span>
+      <span class="git-file-count">${allFiles.length}</span>
     </button>`;
-  if (!files.length) {
+
+  if (!allFiles.length) {
     return `<div class="git-file-list" data-git-files>
-      ${head}
-      <div class="git-empty-files">
+      ${overview}
+      <div class="git-empty">
+        <div class="git-empty-icon" aria-hidden="true">${iconSvg("git-branch")}</div>
         <p class="git-empty-title">Working tree clean</p>
         <p class="git-empty-hint">No uncommitted changes in this workspace.</p>
       </div>
     </div>`;
   }
+
+  if (!files.length) {
+    return `<div class="git-file-list" data-git-files>
+      ${overview}
+      <div class="git-empty git-empty--sm">
+        <p class="git-empty-title">No matching files</p>
+        <p class="git-empty-hint">Try a different filter.</p>
+      </div>
+    </div>`;
+  }
+
   const rows = files
     .map((f) => {
       const path = f.path || "";
       const letter = gitStatusLetter(f);
       const active = state.gitSelectedPath === path;
-      const checked =
-        state.gitCheckedPaths.length === 0 || state.gitCheckedPaths.includes(path);
-      const cls = [
-        "git-file",
-        active ? "active" : "",
-        `git-st-${letter === "?" ? "u" : letter.toLowerCase()}`,
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const checked = gitIsChecked(path);
       const name = basename(path);
       const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-      return `<div class="${cls}" data-git-path="${esc(path)}">
+      const ins = f.additions ?? f.insertions ?? 0;
+      const del = f.deletions ?? 0;
+      const stClass = letter === "?" ? "u" : letter.toLowerCase();
+      return `
+      <div class="git-file-row git-st-${stClass} ${active ? "is-active" : ""}" data-git-path="${esc(path)}">
         <label class="git-file-check" title="Include in commit">
           <input type="checkbox" data-action-change="git-check" data-path="${esc(path)}" ${checked ? "checked" : ""} />
         </label>
-        <button type="button" class="git-file-btn" data-action="git-select-file" data-path="${esc(path)}">
-          <span class="git-file-letter" title="${esc(gitStatusLabel(letter))}">${esc(letter)}</span>
-          <span class="git-file-text">
+        <button type="button" class="git-file-hit" data-action="git-select-file" data-path="${esc(path)}">
+          <span class="git-file-status" title="${esc(gitStatusLabel(letter))}">${esc(letter)}</span>
+          <span class="git-file-main">
             <span class="git-file-name" title="${esc(path)}">${esc(name)}</span>
-            ${dir ? `<span class="git-file-dir" title="${esc(dir)}">${esc(dir)}</span>` : ""}
+            ${dir ? `<span class="git-file-sub" title="${esc(dir)}">${esc(dir)}</span>` : ""}
           </span>
-          ${gitFilePlusMinus(f)}
+          <span class="git-file-stats">
+            ${ins > 0 ? `<span class="git-pm-add">+${ins}</span>` : ""}
+            ${del > 0 ? `<span class="git-pm-del">−${del}</span>` : ""}
+          </span>
         </button>
       </div>`;
     })
     .join("");
-  return `<div class="git-file-list" data-git-files>${head}${rows}</div>`;
+
+  return `<div class="git-file-list" data-git-files>${overview}${rows}</div>`;
 }
 
-/** Escape + colorize unified diff lines (textContent-safe via esc). */
 function gitDiffLinesHTML(diff: string): string {
   if (!diff) {
     if (state.gitDiffLoading) {
-      return `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`;
+      return `<div class="git-empty"><p class="git-empty-title">Loading diff…</p></div>`;
     }
     if (state.gitStatus?.is_repo === false) {
-      return `<div class="git-empty-diff">
+      return `<div class="git-empty">
+        <div class="git-empty-icon" aria-hidden="true">${iconSvg("folder-git")}</div>
         <p class="git-empty-title">Not a git repository</p>
-        <p class="git-empty-hint">Pick a workspace that has a <code>.git</code> directory.</p>
+        <p class="git-empty-hint">Choose a workspace that contains a <code>.git</code> directory.</p>
       </div>`;
     }
     if (!(state.gitStatus?.files?.length)) {
-      return `<div class="git-empty-diff">
-        <p class="git-empty-title">Nothing to show</p>
-        <p class="git-empty-hint">Working tree is clean — no unstaged diff.</p>
+      return `<div class="git-empty">
+        <div class="git-empty-icon" aria-hidden="true">${iconSvg("git-branch")}</div>
+        <p class="git-empty-title">Nothing to diff</p>
+        <p class="git-empty-hint">Your working tree is clean.</p>
       </div>`;
     }
-    return `<div class="git-empty-diff">
-      <p class="git-empty-title">No diff for this selection</p>
-      <p class="git-empty-hint">Binary files, renames, or pure mode changes may not render here.</p>
+    return `<div class="git-empty">
+      <p class="git-empty-title">No textual diff</p>
+      <p class="git-empty-hint">Binary files, renames, or mode-only changes may not render here.</p>
     </div>`;
   }
+
   const lines = diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
+
   let oldLn = 0;
   let newLn = 0;
-  const body = lines
-    .map((line) => {
-      let cls = "git-diff-line";
-      let gutL = "";
-      let gutR = "";
-      if (
-        line.startsWith("+++") ||
-        line.startsWith("---") ||
-        line.startsWith("diff ") ||
-        line.startsWith("index ") ||
-        line.startsWith("new file") ||
-        line.startsWith("deleted file") ||
-        line.startsWith("similarity") ||
-        line.startsWith("rename ")
-      ) {
-        cls += " git-diff-meta";
-      } else if (line.startsWith("@@")) {
-        cls += " git-diff-hunk";
-        const m = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)/.exec(line);
-        if (m) {
-          oldLn = Number(m[1]) - 1;
-          newLn = Number(m[2]) - 1;
-        }
-      } else if (line.startsWith("+")) {
-        cls += " git-diff-add";
-        newLn += 1;
-        gutR = String(newLn);
-      } else if (line.startsWith("-")) {
-        cls += " git-diff-del";
-        oldLn += 1;
-        gutL = String(oldLn);
-      } else if (line.startsWith("\\")) {
-        cls += " git-diff-meta";
-      } else {
-        oldLn += 1;
-        newLn += 1;
-        gutL = String(oldLn);
-        gutR = String(newLn);
-        if (line.startsWith(" ")) {
-          /* context */
-        } else {
-          cls += " git-diff-ctx";
-        }
+  const parts: string[] = [];
+
+  for (const line of lines) {
+    let kind: "meta" | "hunk" | "add" | "del" | "ctx" = "ctx";
+    let gutL = "";
+    let gutR = "";
+    let code = line;
+    let mark = " ";
+
+    if (
+      line.startsWith("diff ") ||
+      line.startsWith("index ") ||
+      line.startsWith("---") ||
+      line.startsWith("+++") ||
+      line.startsWith("new file") ||
+      line.startsWith("deleted file") ||
+      line.startsWith("similarity") ||
+      line.startsWith("rename ") ||
+      line.startsWith("\\")
+    ) {
+      kind = "meta";
+      code = line;
+    } else if (line.startsWith("@@")) {
+      kind = "hunk";
+      const m = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)/.exec(line);
+      if (m) {
+        oldLn = Number(m[1]) - 1;
+        newLn = Number(m[2]) - 1;
       }
-      const mark =
-        line.startsWith("+") && !line.startsWith("+++")
-          ? "+"
-          : line.startsWith("-") && !line.startsWith("---")
-            ? "−"
-            : " ";
-      return `<div class="${cls}"><span class="git-diff-gutter" aria-hidden="true"><span class="git-ln">${esc(gutL)}</span><span class="git-ln">${esc(gutR)}</span><span class="git-mark">${mark}</span></span><span class="git-diff-code">${esc(line.length && (line[0] === "+" || line[0] === "-" || line[0] === " ") ? line.slice(1) : line)}</span></div>`;
-    })
-    .join("");
-  return `<div class="git-diff" data-git-diff role="region" aria-label="Diff">${body}</div>`;
+      code = line;
+    } else if (line.startsWith("+")) {
+      kind = "add";
+      newLn += 1;
+      gutR = String(newLn);
+      mark = "+";
+      code = line.slice(1);
+    } else if (line.startsWith("-")) {
+      kind = "del";
+      oldLn += 1;
+      gutL = String(oldLn);
+      mark = "−";
+      code = line.slice(1);
+    } else {
+      kind = "ctx";
+      if (line.startsWith(" ")) code = line.slice(1);
+      oldLn += 1;
+      newLn += 1;
+      gutL = String(oldLn);
+      gutR = String(newLn);
+    }
+
+    if (kind === "hunk") {
+      parts.push(
+        `<div class="git-hunk" role="separator"><span class="git-hunk-label">${esc(line)}</span></div>`,
+      );
+      continue;
+    }
+    if (kind === "meta") {
+      parts.push(`<div class="git-diff-line is-meta"><span class="git-diff-code">${esc(code)}</span></div>`);
+      continue;
+    }
+
+    parts.push(
+      `<div class="git-diff-line is-${kind}">` +
+        `<span class="git-diff-gutter" aria-hidden="true">` +
+        `<span class="git-ln">${esc(gutL)}</span>` +
+        `<span class="git-ln">${esc(gutR)}</span>` +
+        `<span class="git-mark">${mark}</span>` +
+        `</span>` +
+        `<span class="git-diff-code">${esc(code)}</span>` +
+        `</div>`,
+    );
+  }
+
+  return `<div class="git-diff" data-git-diff role="region" aria-label="Diff">${parts.join("")}</div>`;
 }
 
-function paintGitPage(opts?: { animateIn?: boolean }): void {
+function gitDiffPaneHTML(): string {
+  const path = state.gitSelectedPath;
+  const files = state.gitStatus?.files ?? [];
+  const file = path ? files.find((f) => f.path === path) : null;
+  const letter = file ? gitStatusLetter(file) : path ? "?" : "∗";
+  const title = path || "All changes";
+  const sub = path
+    ? gitStatusLabel(letter)
+    : files.length
+      ? `${files.length} file${files.length === 1 ? "" : "s"} in working tree`
+      : "No changes";
+  const ins = file ? (file.additions ?? file.insertions ?? 0) : gitLineStats(files).add;
+  const del = file ? (file.deletions ?? 0) : gitLineStats(files).del;
+
+  return `
+    <section class="git-diff-pane" aria-label="Diff viewer">
+      <header class="git-diff-toolbar">
+        <div class="git-diff-identity">
+          <span class="git-file-status git-st-badge git-st-${letter === "?" ? "u" : letter === "∗" ? "all" : letter.toLowerCase()}">${esc(letter)}</span>
+          <div class="git-diff-titles">
+            <code class="git-diff-path" title="${esc(title)}">${esc(title)}</code>
+            <span class="git-diff-sub">${esc(sub)}</span>
+          </div>
+        </div>
+        <div class="git-diff-toolbar-meta">
+          ${ins > 0 ? `<span class="git-pm-add">+${ins}</span>` : ""}
+          ${del > 0 ? `<span class="git-pm-del">−${del}</span>` : ""}
+        </div>
+      </header>
+      <div class="git-diff-wrap" data-git-diff-wrap>
+        ${
+          state.gitDiffLoading
+            ? `<div class="git-empty"><p class="git-empty-title">Loading diff…</p></div>`
+            : gitDiffLinesHTML(state.gitDiffText)
+        }
+      </div>
+    </section>`;
+}
+
+function gitComposerHTML(): string {
+  const files = state.gitStatus?.files ?? [];
+  const commitDisabled = state.gitBusy || !files.length;
+  const scope = gitCommitScopeLabel();
+  const prOpen = state.gitPrOpen ? " open" : "";
+
+  return `
+    <footer class="git-composer" aria-label="Commit and pull request">
+      <form class="git-composer-commit" data-action-form="git-commit">
+        <div class="git-composer-field">
+          <label for="git-commit-msg">Commit message</label>
+          <textarea id="git-commit-msg" name="message" rows="3" placeholder="Summarize the change for teammates…" required ${commitDisabled ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
+        </div>
+        <div class="git-composer-actions">
+          <span class="git-composer-scope" data-git-commit-scope>${esc(scope)}</span>
+          <button type="button" class="ghost btn-sm" data-action="git-toggle-pr" aria-expanded="${state.gitPrOpen ? "true" : "false"}">
+            ${state.gitPrOpen ? "Hide PR" : "Pull request"}
+          </button>
+          <button type="submit" class="primary" ${commitDisabled ? "disabled" : ""}>
+            ${state.gitBusy ? "Working…" : "Commit changes"}
+          </button>
+        </div>
+      </form>
+      <div class="git-composer-pr${prOpen}" id="git-pr-panel" ${state.gitPrOpen ? "" : "hidden"}>
+        <form class="git-pr-form" data-action-form="git-pr">
+          <div class="git-pr-grid">
+            <div class="field">
+              <label for="git-pr-title">Title</label>
+              <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+            </div>
+            <div class="field">
+              <label for="git-pr-base">Base branch</label>
+              <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+            </div>
+          </div>
+          <div class="field">
+            <label for="git-pr-body">Description <span class="opt">optional</span></label>
+            <textarea id="git-pr-body" name="body" rows="3" placeholder="What should reviewers know?" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
+          </div>
+          <div class="git-pr-actions">
+            <label class="check">
+              <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
+              Draft PR
+            </label>
+            <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>
+              ${state.gitBusy ? "Working…" : "Create pull request"}
+            </button>
+          </div>
+          ${
+            state.gitPrUrl
+              ? `<p class="git-pr-url"><a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
+              : ""
+          }
+        </form>
+      </div>
+    </footer>`;
+}
+
+function unmountGitStage(): void {
+  document.getElementById("git-stage")?.remove();
+  document.getElementById("git-page-root")?.remove();
+  const main = document.querySelector(".main");
+  main?.classList.remove("main--git");
+  const term = document.querySelector<HTMLElement>(".term-wrap");
+  if (term) term.hidden = false;
+  const tabs = document.getElementById("tabs");
+  if (tabs) tabs.hidden = false;
+}
+
+function paintGitPage(_opts?: { animateIn?: boolean }): void {
   if (state.panel !== "changes" || !state.shellMounted) {
-    document.getElementById("git-page-root")?.remove();
+    unmountGitStage();
     return;
   }
-  let root = document.getElementById("git-page-root");
-  const wasMissing = !root;
-  if (!root) {
-    root = document.createElement("div");
-    root.id = "git-page-root";
-    root.className = "git-page-root";
-    document.body.appendChild(root);
+  const main = document.querySelector(".main");
+  if (!main) return;
+  main.classList.add("main--git");
+
+  const term = main.querySelector<HTMLElement>(".term-wrap");
+  if (term) term.hidden = true;
+  const tabs = document.getElementById("tabs");
+  if (tabs) tabs.hidden = true;
+
+  let stage = document.getElementById("git-stage");
+  if (!stage) {
+    stage = document.createElement("div");
+    stage.id = "git-stage";
+    stage.className = "git-stage";
+    stage.setAttribute("role", "main");
+    stage.setAttribute("aria-label", "Git changes");
+    if (term) term.before(stage);
+    else {
+      const status = main.querySelector(".status-bar");
+      if (status) status.before(stage);
+      else main.appendChild(stage);
+    }
   }
-  root.innerHTML = gitPageHTML();
-  root.style.opacity = "";
-  root.style.transform = "";
-  if (opts?.animateIn || wasMissing) {
-    void animateSettingsIn(root);
-  }
+  stage.hidden = false;
+  stage.innerHTML = gitPageHTML();
+  paintBreadcrumb(true);
+
+  const filter = document.getElementById("git-file-filter") as HTMLInputElement | null;
+  filter?.addEventListener("input", () => {
+    state.gitFileFilter = filter.value;
+    const list = document.querySelector("#git-stage [data-git-files]");
+    if (list) list.outerHTML = gitFileListHTML();
+  });
 }
 
 function gitPageHTML(): string {
-  const busy = state.gitBusy || state.gitLoading;
-  const selLabel = state.gitSelectedPath || "All changes";
   const files = state.gitStatus?.files ?? [];
-  const checkedN = state.gitCheckedPaths.length;
-  const commitScope =
-    checkedN > 0
-      ? `${checkedN} of ${files.length} file${files.length === 1 ? "" : "s"}`
-      : files.length
-        ? `all ${files.length} dirty file${files.length === 1 ? "" : "s"}`
-        : "no files";
-  const commitDisabled = state.gitBusy || !files.length;
   return `
-    <div class="git-page" role="main" aria-label="Git changes">
-      <header class="git-page-head">
-        <div class="git-page-head-lead">
-          <button type="button" class="ghost btn-icon" data-action="close-git-page" title="Back to desk (Esc)" aria-label="Back to desk">
-            ${iconSvg("panel")}
-          </button>
-          <div class="git-page-titles">
-            <div class="eyebrow">Workspace</div>
-            <h1>Changes</h1>
-            ${gitBranchMetaHTML()}
+    ${gitHeaderHTML()}
+    ${
+      state.gitError && state.gitStatus
+        ? `<div class="git-banner" role="alert">${esc(state.gitError)}</div>`
+        : ""
+    }
+    <div class="git-workspace-grid">
+      <aside class="git-files-pane" aria-label="Changed files">
+        <div class="git-files-head">
+          <div class="git-files-head-row">
+            <h2>Files</h2>
+            <span class="git-files-count">${files.length}</span>
           </div>
-        </div>
-        <div class="git-page-head-actions">
-          <label class="git-cwd-label" for="git-cwd-select">
-            <span class="sr-only">Workspace</span>
-            <select id="git-cwd-select" class="git-cwd-select" data-action-change="git-cwd" ${busy ? "disabled" : ""} title="Workspace">
-              ${workspaceOptionsHTML()}
-            </select>
+          <label class="git-files-filter">
+            <span class="sr-only">Filter files</span>
+            ${iconSvg("search")}
+            <input id="git-file-filter" type="search" placeholder="Filter files…" value="${esc(state.gitFileFilter)}" autocomplete="off" spellcheck="false" />
           </label>
-          <button type="button" class="ghost btn-sm" data-action="git-refresh" title="Refresh status" ${busy ? "disabled" : ""}>
-            ${state.gitLoading ? "Refreshing…" : "Refresh"}
-          </button>
-          <button type="button" class="ghost btn-icon sm" data-action="close-git-page" title="Close (Esc)" aria-label="Close">
-            ${iconSvg("x")}
-          </button>
         </div>
-      </header>
-      ${
-        state.gitError
-          ? `<div class="git-page-banner" role="alert">${esc(state.gitError)}</div>`
-          : ""
-      }
-      <div class="git-page-body">
-        <aside class="git-page-files" aria-label="Changed files">
-          <div class="git-col-head">
-            <span>Files</span>
-            <span class="git-col-meta">${files.length}</span>
-          </div>
-          ${gitFileListHTML()}
-        </aside>
-        <section class="git-page-diff" aria-label="Diff viewer">
-          <div class="git-col-head git-diff-head" title="${esc(selLabel)}">
-            <span class="git-diff-head-label">Diff</span>
-            <code class="git-diff-head-path">${esc(selLabel)}</code>
-          </div>
-          <div class="git-diff-wrap" data-git-diff-wrap>
-            ${
-              state.gitDiffLoading
-                ? `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`
-                : gitDiffLinesHTML(state.gitDiffText)
-            }
-          </div>
-        </section>
-        <aside class="git-page-side" aria-label="Commit and pull request">
-          <div class="git-side-card">
-            <div class="git-side-card-head">
-              <h2>Commit</h2>
-              <span class="opt">${esc(commitScope)}</span>
-            </div>
-            <form class="git-commit-form" data-action-form="git-commit">
-              <div class="field">
-                <label for="git-commit-msg">Message</label>
-                <textarea id="git-commit-msg" name="message" rows="4" placeholder="Describe why this change exists…" required ${commitDisabled ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
-              </div>
-              <p class="form-hint">Checked files are included. Leave all checked to commit everything dirty.</p>
-              <div class="btn-row">
-                <button type="submit" class="primary" ${commitDisabled ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
-              </div>
-            </form>
-          </div>
-          <div class="git-side-card">
-            <div class="git-side-card-head">
-              <h2>Pull request</h2>
-            </div>
-            <form class="git-pr-form" data-action-form="git-pr">
-              <div class="field">
-                <label for="git-pr-title">Title</label>
-                <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
-              </div>
-              <div class="field">
-                <label for="git-pr-body">Body <span class="opt">optional</span></label>
-                <textarea id="git-pr-body" name="body" rows="3" placeholder="What should reviewers know?" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
-              </div>
-              <div class="field-grid">
-                <div class="field">
-                  <label for="git-pr-base">Base <span class="opt">optional</span></label>
-                  <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
-                </div>
-                <div class="field field--check-end">
-                  <label class="check">
-                    <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
-                    Draft PR
-                  </label>
-                </div>
-              </div>
-              <div class="btn-row">
-                <button type="submit" class="primary" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
-              </div>
-              ${
-                state.gitPrUrl
-                  ? `<p class="form-hint git-pr-url">Opened: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
-                  : ""
-              }
-            </form>
-          </div>
-        </aside>
-      </div>
-    </div>`;
+        ${gitFileListHTML()}
+      </aside>
+      ${gitDiffPaneHTML()}
+    </div>
+    ${gitComposerHTML()}`;
 }
 
-/** Legacy modal body (kept for stripModalChrome / safety). */
 function gitChangesHTML(): string {
   return gitPageHTML();
 }
@@ -4409,6 +4507,8 @@ function syncGitFormFromDOM(): void {
   if (draft) state.gitPrDraft = draft.checked;
   const cwdSel = document.getElementById("git-cwd-select") as HTMLSelectElement | null;
   if (cwdSel?.value) state.formCwd = cwdSel.value;
+  const filter = document.getElementById("git-file-filter") as HTMLInputElement | null;
+  if (filter) state.gitFileFilter = filter.value;
 }
 
 function gitCwd(): string {
@@ -4420,17 +4520,13 @@ function gitCwd(): string {
   return toolsCwd();
 }
 
-function gitPageScope(): string {
-  return "#git-page-root";
-}
-
 async function refreshGitChanges(): Promise<void> {
   const cwd = gitCwd();
   state.gitLoading = true;
   state.gitError = "";
   if (state.panel === "changes") {
-    const row = document.querySelector(`${gitPageScope()} .git-branch-row`);
-    if (row) row.innerHTML = `<span class="tool-status">Loading…</span>`;
+    const chips = document.querySelector("#git-stage .git-hero-chips");
+    if (chips) chips.innerHTML = `<span class="git-chip">Loading status…</span>`;
   }
   try {
     const st = await gitStatus(cwd);
@@ -4487,34 +4583,37 @@ async function loadGitDiff(): Promise<void> {
 }
 
 function paintGitDiffOnly(): void {
-  const root = document.getElementById("git-page-root");
+  const root = document.getElementById("git-stage");
   if (!root) return;
-  const wrap = root.querySelector<HTMLElement>("[data-git-diff-wrap]");
-  if (wrap) {
-    wrap.innerHTML = state.gitDiffLoading
-      ? `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`
-      : gitDiffLinesHTML(state.gitDiffText);
+
+  // Refresh diff pane header + body without wiping commit composer
+  const pane = root.querySelector(".git-diff-pane");
+  if (pane) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = gitDiffPaneHTML();
+    const next = tmp.firstElementChild;
+    if (next) pane.replaceWith(next);
+  } else {
+    const wrap = root.querySelector<HTMLElement>("[data-git-diff-wrap]");
+    if (wrap) {
+      wrap.innerHTML = state.gitDiffLoading
+        ? `<div class="git-empty"><p class="git-empty-title">Loading diff…</p></div>`
+        : gitDiffLinesHTML(state.gitDiffText);
+    }
   }
-  const pathEl = root.querySelector(".git-diff-head-path");
-  if (pathEl) {
-    const label = state.gitSelectedPath || "All changes";
-    pathEl.textContent = label;
-  }
-  const head = root.querySelector(".git-diff-head");
-  if (head) head.setAttribute("title", state.gitSelectedPath || "All changes");
+
   root.querySelectorAll<HTMLElement>("[data-git-path]").forEach((row) => {
     const path = row.getAttribute("data-git-path") || "";
-    row.classList.toggle("active", state.gitSelectedPath === path);
+    row.classList.toggle("is-active", state.gitSelectedPath === path);
   });
   root.querySelectorAll<HTMLElement>("[data-action='git-select-all']").forEach((btn) => {
-    btn.classList.toggle("active", state.gitSelectedPath == null);
+    btn.classList.toggle("is-active", state.gitSelectedPath == null);
   });
 }
 
 async function onGitSelectFile(path: string | null): Promise<void> {
   syncGitFormFromDOM();
   state.gitSelectedPath = path;
-  // Update active styles immediately
   paintGitDiffOnly();
   await loadGitDiff();
 }
@@ -4578,8 +4677,9 @@ async function onGitCreatePR(): Promise<void> {
     const url = out.url || "";
     state.gitPrUrl = url;
     state.gitBusy = false;
+    state.gitPrOpen = true;
     paintGitPage();
-    if (url) toast(`PR created`, "ok");
+    if (url) toast("PR created", "ok");
     else
       toast(
         out.ok === false ? out.error || "PR create failed" : "PR created",
@@ -4591,6 +4691,7 @@ async function onGitCreatePR(): Promise<void> {
     toast((e as Error).message || "create PR failed", "err", 6000);
   }
 }
+
 
 function helpHTML(): string {
   return `
@@ -4703,7 +4804,7 @@ function paint(): void {
     hideSessionCtx();
     hideTopbarMore();
     closeCommandPalette();
-    document.getElementById("git-page-root")?.remove();
+    unmountGitStage();
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     app.innerHTML = loginHTML();
     bindLogin();
@@ -4972,6 +5073,13 @@ function crumbSep(): string {
 }
 
 function breadcrumbHTML(): string {
+  if (state.panel === "changes") {
+    return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
+      <a href="/desk" data-nav data-route="desk">Desk</a>
+      ${crumbSep()}
+      <span class="current" aria-current="page"><strong>Changes</strong></span>
+    </nav>`;
+  }
   const tab = state.openTabs.find((t) => t.id === state.activeId);
   if (!tab) {
     return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
@@ -6093,6 +6201,12 @@ function ensureUIDelegation(): void {
         void onGitSelectFile(path || null);
         break;
       }
+      case "git-toggle-pr":
+        ev.preventDefault();
+        syncGitFormFromDOM();
+        state.gitPrOpen = !state.gitPrOpen;
+        paintGitPage();
+        break;
       case "open-settings":
         ev.preventDefault();
         ev.stopPropagation();
@@ -6388,16 +6502,8 @@ function ensureUIDelegation(): void {
       }
       // collapse full selection back to "all"
       state.gitCheckedPaths = checked.length === files.length ? [] : checked;
-      const scopeEl = document.querySelector("#git-page-root .git-side-card-head .opt");
-      if (scopeEl) {
-        const n = state.gitCheckedPaths.length;
-        const total = files.length;
-        scopeEl.textContent = n > 0
-          ? `${n} of ${total} file${total === 1 ? "" : "s"}`
-          : total
-            ? `all ${total} dirty file${total === 1 ? "" : "s"}`
-            : "no files";
-      }
+      const scopeEl = document.querySelector("[data-git-commit-scope]");
+      if (scopeEl) scopeEl.textContent = gitCommitScopeLabel();
     }
     if (kind === "sess-agent" && el instanceof HTMLSelectElement) {
       state.formAgent = el.value;
