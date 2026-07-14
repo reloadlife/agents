@@ -1972,7 +1972,9 @@ function settingsAccountsHTML(): string {
         : "";
       const switchBtn = isActive
         ? `<button type="button" class="primary btn-sm" disabled title="Already active">Active</button>`
-        : `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" ${a.saved ? "" : "disabled"} title="Switch host-wide login to this profile">Switch to</button>`;
+        : a.saved
+          ? `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Restore saved credentials host-wide">Switch to</button>`
+          : `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Clear live login so you can sign into a new account, then Save current">Use empty</button>`;
       return `
         <div class="settings-card acct-card ${isActive ? "acct-active" : ""} ${a.saved ? "acct-saved" : "acct-empty"}">
           <div class="settings-card-main">
@@ -1982,7 +1984,13 @@ function settingsAccountsHTML(): string {
               ${savedBadge}${activeBadge}
             </div>
             <div class="settings-card-meta">
-              ${a.email ? `<span class="acct-email">${esc(a.email)}</span>` : `<span class="acct-email muted">No credentials saved</span>`}
+              ${
+                a.email
+                  ? `<span class="acct-email">${esc(a.email)}</span>`
+                  : a.saved
+                    ? `<span class="acct-email muted">Saved (no email detected)</span>`
+                    : `<span class="acct-email muted">Empty — switch here to sign into a new account</span>`
+              }
               ${a.saved_at ? ` · saved ${esc(formatSavedAt(a.saved_at))}` : ""}
             </div>
           </div>
@@ -2040,9 +2048,10 @@ function settingsAccountsHTML(): string {
       <summary>Workflow tips</summary>
       <ol class="howto-list">
         <li>Add a slot (e.g. <code>work</code>).</li>
-        <li>Log into the CLI on the host as that account.</li>
-        <li><strong>Save current</strong> on the slot.</li>
-        <li>Use <strong>Switch to</strong> host-wide, or pick the account when starting a session (isolated = parallel-safe).</li>
+        <li>Click <strong>Use empty</strong> on that slot — clears the live login so you can sign in as a new user.</li>
+        <li>On the host, log into the CLI for that tool as the new account.</li>
+        <li><strong>Save current</strong> on the slot (captures credentials).</li>
+        <li>Later: <strong>Switch to</strong> restores a saved profile; or pick the account when starting a session (isolated = parallel-safe).</li>
       </ol>
     </details>`;
 }
@@ -2144,20 +2153,26 @@ async function onAcctSave(platform: string, id: string, label: string): Promise<
 
 async function onAcctSwitch(platform: string, id: string): Promise<void> {
   if (state.settingsBusy) return;
-  if (
-    !confirm(
-      `Switch host-wide ${platformLabel(platform)} login to “${id}”?\n\nThis changes the global auth for that tool on the agents host.`,
-    )
-  ) {
-    return;
-  }
+  const plat = state.settingsPlatforms.find((p) => p.platform === platform);
+  const acc = plat?.accounts?.find((a) => a.id === id);
+  const empty = acc ? !acc.saved : false;
+  const msg = empty
+    ? `Use empty profile “${id}” for ${platformLabel(platform)}?\n\nClears the live login so you can sign into a new account on the host, then click Save current.`
+    : `Switch host-wide ${platformLabel(platform)} login to “${id}”?\n\nRestores saved credentials for that tool on this host.`;
+  if (!confirm(msg)) return;
   state.settingsBusy = true;
   paintSettings();
   try {
-    toast(`Switching ${platform} → ${id}…`, "info", 15000);
+    toast(empty ? `Preparing empty ${platform}/${id}…` : `Switching ${platform} → ${id}…`, "info", 15000);
     const out = await switchAgentAccount({ platform, id });
     patchPlatformStatus(platform, out.status);
-    toast(`Switched ${platformLabel(platform)} → ${id}`, "ok");
+    toast(
+      empty
+        ? `Empty “${id}” active — sign into ${platformLabel(platform)}, then Save current`
+        : `Switched ${platformLabel(platform)} → ${id}`,
+      "ok",
+      empty ? 8000 : 3000,
+    );
     await refreshSettingsAccounts();
   } catch (e) {
     toast((e as Error).message || "switch failed", "err", 8000);
