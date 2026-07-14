@@ -50,6 +50,60 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * Consume a one-shot token from the URL (agentsctl web).
+ *
+ * Supports:
+ *   #token=…  /  #access_token=…   (preferred — not sent to the server)
+ *   ?token=…                        (also accepted; stripped after read)
+ *
+ * Returns the token if one was applied (also writes localStorage).
+ */
+export function consumeAuthFromURL(): string | null {
+  if (typeof window === "undefined") return null;
+
+  let token: string | null = null;
+
+  // Hash fragment first
+  const hash = window.location.hash.replace(/^#/, "");
+  if (hash) {
+    const hp = new URLSearchParams(hash);
+    token =
+      hp.get("token") ||
+      hp.get("access_token") ||
+      hp.get("agents_token") ||
+      null;
+    // also allow bare #token=value without & pairs
+    if (!token && hash.startsWith("token=")) {
+      token = decodeURIComponent(hash.slice("token=".length));
+    }
+  }
+
+  // Query string fallback
+  if (!token) {
+    const sp = new URLSearchParams(window.location.search);
+    token = sp.get("token") || sp.get("access_token") || null;
+  }
+
+  if (!token) return null;
+  token = token.trim();
+  if (!token) return null;
+
+  setToken(token);
+
+  // Strip secrets from the address bar
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.delete("token");
+    u.searchParams.delete("access_token");
+    u.hash = "";
+    window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+  } catch {
+    /* ignore */
+  }
+  return token;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers = new Headers(init.headers);

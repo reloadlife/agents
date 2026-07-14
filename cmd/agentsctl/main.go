@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -119,6 +120,8 @@ cmd:
 		os.Exit(cmdStatus(c, cmdArgs))
 	case "tui", "ui":
 		os.Exit(cmdTUI(c, cmdArgs))
+	case "web", "browser", "ui-web":
+		os.Exit(cmdWeb(c, cmdArgs))
 	case "agents":
 		os.Exit(cmdAgents(c, cmdArgs))
 	case "workspaces", "ws":
@@ -166,6 +169,7 @@ func usage() {
 
 Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl tui                          # picker · a agent · w workspace · 1-9 start
+  agentsctl web                          # open browser UI (auto-login with client token)
   agentsctl doctor                       # health check
   agentsctl agents                       # list CLIs on server
   agentsctl workspaces                   # list allowlisted cwds
@@ -188,6 +192,100 @@ Other:  agentsctl status | version
 
 Docs: https://github.com/reloadlife/agents
 `)
+}
+
+// cmdWeb opens the agentsd browser UI and injects the client token for login.
+//
+// The SPA reads #token=… from the fragment (not sent to the server), stores it
+// in localStorage, then strips it from the address bar.
+func cmdWeb(c *client, args []string) int {
+	fs := flag.NewFlagSet("web", flag.ExitOnError)
+	printOnly := fs.Bool("print", false, "print the URL only (do not open a browser)")
+	noAuth := fs.Bool("no-auth", false, "open without embedding the token")
+	noOpen := fs.Bool("no-open", false, "alias for --print")
+	check := fs.Bool("check", true, "ping /healthz before opening (use --check=false to skip)")
+	path := fs.String("path", "/", "path under the web UI (default /)")
+	_ = fs.Parse(args)
+
+	if c.base == "" {
+		fatal("no agentsd URL — set url in ~/.config/agentsctl/config.toml or AGENTSCTL_URL")
+	}
+	if !*noAuth && strings.TrimSpace(c.token) == "" {
+		fatal("no token — set token in config, AGENTSCTL_TOKEN, or AGENTSD_TOKEN\n  or: agentsctl web --no-auth")
+	}
+
+	if *check {
+		hc := &http.Client{Timeout: 4 * time.Second}
+		res, err := hc.Get(c.base + "/healthz")
+		if err != nil {
+			fatal("agentsd not reachable at %s: %v\n  is agentsd running? try: agentsctl doctor", c.base, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode >= 300 {
+			fatal("agentsd healthz returned HTTP %d at %s", res.StatusCode, c.base)
+		}
+	}
+
+	p := strings.TrimSpace(*path)
+	if p == "" {
+		p = "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+
+	webURL := strings.TrimRight(c.base, "/") + p
+	if !*noAuth {
+		// Prefer hash fragment so the token is not sent to agentsd in the request line.
+		webURL = webURL + "#token=" + url.QueryEscape(c.token)
+	}
+
+	if *printOnly || *noOpen {
+		fmt.Println(webURL)
+		if !*noAuth {
+			fmt.Fprintln(os.Stderr, "note: URL contains your token — treat like a password; fragment is stripped after login")
+		}
+		return 0
+	}
+
+	fmt.Fprintf(os.Stderr, "opening %s\n", strings.TrimRight(c.base, "/")+p)
+	if err := openBrowser(webURL); err != nil {
+		fmt.Fprintf(os.Stderr, "could not open browser: %v\nopen manually:\n  %s\n", err, webURL)
+		return 1
+	}
+	if !*noAuth {
+		fmt.Fprintln(os.Stderr, "authenticated via one-shot URL fragment (stored in browser localStorage)")
+	}
+	return 0
+}
+
+func openBrowser(rawURL string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		// Linux / BSD — try common openers
+		for _, bin := range []string{"xdg-open", "gio", "gnome-open", "sensible-browser"} {
+			if p, err := exec.LookPath(bin); err == nil {
+				cmd = exec.Command(p, rawURL)
+				break
+			}
+		}
+		if cmd == nil {
+			// last resort: $BROWSER
+			if b := strings.TrimSpace(os.Getenv("BROWSER")); b != "" {
+				cmd = exec.Command(b, rawURL)
+			} else {
+				return fmt.Errorf("no browser opener found (install xdg-open or set $BROWSER)")
+			}
+		}
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func cmdUpdate(args []string) int {

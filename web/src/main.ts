@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   clearToken,
   cloneWorkspace,
+  consumeAuthFromURL,
   contextEnsure,
   contextPack,
   contextStatus,
@@ -3218,7 +3219,13 @@ function bindTabs(): void {
   });
 }
 
-// boot
+// boot — agentsctl web passes #token=… for one-shot login
+{
+  const fromURL = consumeAuthFromURL();
+  if (fromURL) {
+    state.token = fromURL;
+  }
+}
 if (state.token) {
   void bootstrapAuthed();
 } else {

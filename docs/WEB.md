@@ -37,6 +37,17 @@ enabled = true   # set false for API-only
 
 Open `http://<listen>/` (e.g. `http://127.0.0.1:8787/`).
 
+### Open from CLI (auto-login)
+
+```bash
+agentsctl web                 # open browser + inject token from config
+agentsctl web --print         # print login URL only
+agentsctl web --no-auth       # open without embedding token
+agentsctl -u http://agents:8787 web
+```
+
+The CLI builds `http://…/#token=…`. The SPA reads the **hash fragment** (not sent to the server), writes localStorage, then strips the fragment from the address bar.
+
 ## Auth
 
 | Path | Auth |
@@ -49,6 +60,8 @@ The SPA stores the token in **localStorage** and sends:
 
 - `Authorization: Bearer …` on REST
 - `?token=` on the PTY WebSocket
+
+One-shot login also accepts `#token=` / `#access_token=` / `?token=` (stripped after consume).
 
 Treat the token like shell access to agent tools on that host (see [SECURITY.md](../SECURITY.md)). Prefer localhost + Tailscale / tunnel, not a raw public bind.
 
