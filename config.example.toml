@@ -35,16 +35,21 @@ print_args = ["-p"]
 bin = "grok"
 args = []
 print_args = []
+# Optional overrides (defaults are built-in):
+# session_id_args = ["--session-id", "{id}"]
+# resume_args = ["--resume", "{id}"]
 
 [agents.codex]
 bin = "codex"
 args = []
 print_args = ["exec"]
+# resume_args = ["resume", "{id}"]
 
 [agents.opencode]
 bin = "opencode"
 args = []
 print_args = ["run"]
+# resume_args = ["--session", "{id}"]
 
 [agents.cursor]
 bin = "cursor-agent"

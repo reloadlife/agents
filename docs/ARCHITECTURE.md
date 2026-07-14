@@ -36,10 +36,14 @@ Browser and CLI share the same session API. Detaching a PTY (closing a tab or
 8. Server opens a PTY running `tmux attach -t la-<id>`
 9. Detach closes the **attach** process; session keeps running until `kill`
 10. Browser multi-tab UI attaches the **active** tab only; inactive tabs are UI state, not extra server processes
-11. `POST /v1/sessions/{id}/resume` — if tmux still alive, re-mark running; else restart agent with same id/agent/cwd (process restart, not in-agent chat restore)
+11. `POST /v1/sessions/{id}/resume` — if tmux still alive, re-mark running; else restart agent with same control-plane id/agent/cwd **and** native conversation resume when supported:
+    - **grok**: create with `--session-id <uuid>` (stored as `agent_session_id`); resume with `--resume <uuid>` (or `--continue` / discover last under `~/.grok/sessions/` for legacy)
+    - **claude**: resume with `--resume <id>` when known, else `--continue`
+    - **codex**: `codex resume <id>` or `resume --last`
+    - **opencode**: `--session <id>` or `--continue`
 12. **Terminal history:** each session uses a large tmux `history-limit`; PTY attach seeds the client with `tmux capture-pane -e -S -` (full scrollback). On kill/detach, a snapshot is written to `jobs_dir/sessions/<id>.pane`. After death, `GET /v1/sessions/{id}/history` serves that file; resume+attach prepends it above the new process output.
 
-Note: this is **terminal scrollback**, not Claude/Grok conversation memory. Agent-internal chat state dies with the process unless the agent CLI itself supports continue/resume.
+Chat memory is **agent-native** (CLI session store). Terminal scrollback is separate (tmux / `.pane` files).
 
 ### Surviving `agentsd` restart
 

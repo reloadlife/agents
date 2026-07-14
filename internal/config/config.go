@@ -178,6 +178,15 @@ type AgentConfig struct {
 	Args []string `toml:"args"`
 	// PrintArgs = non-interactive / API print mode (jobs with mode=print only). e.g. ["-p"]
 	PrintArgs []string `toml:"print_args"`
+	// ResumeArgs optional template for process resume after reboot. Use {id} for
+	// the native agent conversation id (AgentSessionID). Example for grok:
+	//   resume_args = ["--resume", "{id}"]
+	// When empty, agentsd uses built-in flags per agent family.
+	ResumeArgs []string `toml:"resume_args"`
+	// SessionIDArgs optional template to pin a conversation id on create.
+	// Use {id} for a newly generated UUID. Example for grok:
+	//   session_id_args = ["--session-id", "{id}"]
+	SessionIDArgs []string `toml:"session_id_args"`
 }
 
 type SessionsConfig struct {

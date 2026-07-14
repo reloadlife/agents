@@ -1612,7 +1612,7 @@ func cmdSessionResume(c *client, args []string) int {
 		fatal("%v", err)
 	}
 	printSessionSummary(s)
-	fmt.Println("(resume restarts the agent process if tmux was gone; terminal scrollback is restored from snapshot when available)")
+	fmt.Println("(resume re-attaches if tmux lives; else restarts agent with native --resume/--continue when supported, plus terminal scrollback from snapshot)")
 	if *doOpen {
 		return openSession(c, s, *useSSH)
 	}

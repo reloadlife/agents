@@ -24,8 +24,10 @@ This is the same lifecycle as the CLI: detach = leave running; kill = stop.
 **Resume** (UI ↻ or click a non-running session, or `agentsctl session resume ID`):
 
 - If tmux is still alive (e.g. after agentsd restart with `KillMode=process`): re-attach
-- If the agent is gone: start a **new** process with the same session id / agent / cwd  
-  (does **not** restore in-agent chat history)
+- If the agent is gone (host reboot, kill): restart under the same control-plane id/agent/cwd and pass the agent CLI’s own resume flags when we know the conversation id  
+  - **grok**: `grok --session-id <uuid>` on create → `grok --resume <uuid>` on resume  
+  - **claude** / **codex** / **opencode**: `--resume` / `resume` / `--session` when id known, else continue/last for that cwd  
+  - Terminal scrollback is still restored from the pane snapshot
 
 ## Enable / disable
 

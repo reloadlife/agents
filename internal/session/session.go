@@ -51,6 +51,10 @@ type Session struct {
 	Account     string `json:"account,omitempty"`      // profile id e.g. personal|work
 	AccountMode string `json:"account_mode,omitempty"` // isolated|global
 	AccountHome string `json:"account_home,omitempty"` // isolated HOME path
+	// AgentSessionID is the agent CLI's native conversation id (e.g. grok UUID).
+	// Used on resume so chat history survives host reboot (grok --resume, etc.).
+	// Distinct from ID (agentsd control-plane id / tmux name).
+	AgentSessionID string `json:"agent_session_id,omitempty"`
 	// How you attach (filled on create/get)
 	Attach     string `json:"attach"`
 	SSHAttach  string `json:"ssh_attach,omitempty"`
@@ -175,7 +179,13 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 		tmuxName = tmuxName[:50]
 	}
 
-	args := m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt)
+	// Pin a native conversation id when the CLI supports it (e.g. grok --session-id)
+	// so resume after reboot can restore chat, not just a blank process.
+	agentSessID := ""
+	if req.Mode != ModePrint && canPinSessionID(req.Agent) {
+		agentSessID = newNativeSessionID()
+	}
+	args := m.buildArgs(req.Agent, acfg, req.Mode, req.Prompt, agentSessID, false)
 	env := m.sessionEnv()
 	account := strings.TrimSpace(req.Account)
 	accountMode := strings.ToLower(strings.TrimSpace(req.AccountMode))
@@ -215,19 +225,20 @@ func (m *Manager) Create(req CreateRequest) (*Session, error) {
 	}
 
 	s := &Session{
-		ID:          id,
-		Name:        req.Name,
-		Agent:       req.Agent,
-		Mode:        req.Mode,
-		Cwd:         req.Cwd,
-		CwdAbs:      cwdAbs,
-		Tmux:        tmuxName,
-		State:       StateRunning,
-		Prompt:      req.Prompt,
-		CreatedAt:   time.Now().UTC(),
-		Account:     account,
-		AccountMode: accountMode,
-		AccountHome: accountHome,
+		ID:             id,
+		Name:           req.Name,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		Cwd:            req.Cwd,
+		CwdAbs:         cwdAbs,
+		Tmux:           tmuxName,
+		State:          StateRunning,
+		Prompt:         req.Prompt,
+		CreatedAt:      time.Now().UTC(),
+		Account:        account,
+		AccountMode:    accountMode,
+		AccountHome:    accountHome,
+		AgentSessionID: agentSessID,
 	}
 	m.fillAttach(s)
 	if err := m.save(s); err != nil {
@@ -376,30 +387,26 @@ func tmuxAlive(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
 }
 
-func (m *Manager) buildArgs(agentName string, acfg config.AgentConfig, mode Mode, prompt string) []string {
+// buildArgs constructs CLI args for print jobs or interactive TTY.
+// nativeID is the agent-native conversation id; resume selects resume/continue flags.
+func (m *Manager) buildArgs(agentName string, acfg config.AgentConfig, mode Mode, prompt, nativeID string, resume bool) []string {
 	name := strings.ToLower(agentName)
 	if mode == ModePrint {
-		// explicit API/print path only
+		// explicit API/print path only — no chat resume
 		args := append([]string{}, acfg.PrintArgs...)
 		if len(args) == 0 {
-			if name == "claude" {
+			if name == "claude" || strings.Contains(name, "claude") {
 				args = []string{"-p"}
 			}
 		}
 		if prompt != "" {
-			if name == "claude" && (hasFlag(args, "-p") || hasFlag(args, "--print")) {
-				args = append(args, prompt)
-			} else {
-				args = append(args, prompt)
-			}
+			args = append(args, prompt)
 		}
 		return args
 	}
-	// TTY / interactive: use args only (default empty for claude → pure interactive)
-	args := append([]string{}, acfg.Args...)
-	// do NOT pass prompt as CLI arg for interactive claude — that can force print-like behavior
-	// seed is sent via tmux send-keys instead
-	return args
+	// TTY / interactive: seed prompt via tmux send-keys, not CLI args.
+	// Resume/create flags restore agent chat across reboots when possible.
+	return ttyLaunchArgs(agentName, acfg, nativeID, resume)
 }
 
 func hasFlag(args []string, flag string) bool {
@@ -628,9 +635,10 @@ func (m *Manager) Delete(id string) error {
 //
 //   - If the tmux session is still alive (e.g. agentsd restarted but agents
 //     survived): mark running and return — client can attach as usual.
-//   - If the agent process is gone (exited/killed, or cgroup wipe): start a
-//     fresh tmux session with the same id/agent/cwd/name. This is a process
-//     restart, not a restore of in-agent chat history.
+//   - If the agent process is gone (host reboot, kill, cgroup wipe): start a
+//     new tmux session and ask the agent CLI to restore its conversation
+//     (e.g. grok --resume <id>, claude --resume <id>, codex resume <id>).
+//     Terminal scrollback is still restored from the pane snapshot on PTY attach.
 func (m *Manager) Resume(id string) (*Session, error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, fmt.Errorf("tmux required for TTY sessions: %w", err)
@@ -691,12 +699,22 @@ func (m *Manager) Resume(id string) (*Session, error) {
 	if st, err := os.Stat(cwdAbs); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("cwd does not exist or is not a directory: %s", s.Cwd)
 	}
+	s.CwdAbs = cwdAbs
 
 	mode := s.Mode
 	if mode == "" {
 		mode = ModeTTY
 	}
-	args := m.buildArgs(s.Agent, acfg, mode, "")
+
+	// Resolve native agent conversation id for chat restore.
+	nativeID := strings.TrimSpace(s.AgentSessionID)
+	if nativeID == "" {
+		if found := discoverNativeSessionID(&s); found != "" {
+			nativeID = found
+			m.log.Info("session resume: discovered agent conversation", "id", s.ID, "agent_session_id", nativeID)
+		}
+	}
+	args := m.buildArgs(s.Agent, acfg, mode, "", nativeID, true)
 	env := m.sessionEnv()
 	if s.Account != "" && s.AccountMode != "global" {
 		plat := agentacct.MapAgentToPlatform(s.Agent)
@@ -713,7 +731,7 @@ func (m *Manager) Resume(id string) (*Session, error) {
 			}
 		}
 	}
-	// Drop any leftover name collision, then start fresh.
+	// Drop any leftover name collision, then start with resume flags.
 	_ = exec.Command("tmux", "kill-session", "-t", s.Tmux).Run()
 	if err := m.startTmux(s.Tmux, cwdAbs, bin, args, env); err != nil {
 		return nil, err
@@ -729,11 +747,27 @@ func (m *Manager) Resume(id string) (*Session, error) {
 	live.State = StateRunning
 	live.CwdAbs = cwdAbs
 	live.Mode = mode
+	if nativeID != "" && live.AgentSessionID == "" {
+		live.AgentSessionID = nativeID
+	}
+	if s.AccountHome != "" {
+		live.AccountHome = s.AccountHome
+	}
 	_ = m.save(live)
 	out := *live
 	m.mu.Unlock()
 	m.fillAttach(&out)
-	m.log.Info("session resumed", "id", out.ID, "tmux", out.Tmux, "agent", out.Agent, "cwd", out.Cwd)
+	m.log.Info("session resumed",
+		"id", out.ID,
+		"tmux", out.Tmux,
+		"agent", out.Agent,
+		"cwd", out.Cwd,
+		"agent_session_id", out.AgentSessionID,
+		"args", strings.Join(args, " "),
+	)
+	if m.OnEvent != nil {
+		m.OnEvent("session.resumed", out.ID, out.Agent, out.Cwd, out.Name, "session resumed")
+	}
 	return &out, nil
 }
 

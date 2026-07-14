@@ -32,6 +32,10 @@ print_args = ["-p"]
 bin = "grok"
 args = []
 print_args = []
+# Chat survives reboot via agentsd resume → grok --resume <id>
+# (session_id_args / resume_args optional overrides)
+
+
 
 [agents.codex]
 bin = "codex"
