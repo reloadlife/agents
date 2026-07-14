@@ -889,12 +889,13 @@ function paintCommandPalette(): void {
           const head =
             it.group !== lastGroup
               ? ((lastGroup = it.group),
-                `<div class="palette-group">${esc(it.group)}</div>`)
+                `<div class="palette-group" role="presentation">${esc(it.group)}</div>`)
               : "";
+          const selected = i === 0;
           return `${head}
-          <button type="button" class="palette-item ${i === 0 ? "active" : ""}" data-palette-id="${esc(it.id)}">
-            <span>${esc(it.label)}</span>
-            ${it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ""}
+          <button type="button" class="palette-item${selected ? " active" : ""}" data-palette-id="${esc(it.id)}" role="option" aria-selected="${selected ? "true" : "false"}">
+            <span class="palette-item-label">${esc(it.label)}</span>
+            ${it.hint ? `<kbd class="palette-kbd">${esc(it.hint)}</kbd>` : ""}
           </button>`;
         })
         .join("")
@@ -903,10 +904,14 @@ function paintCommandPalette(): void {
     <div class="palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
       <div class="palette-input-row">
         ${iconSvg("search")}
-        <input id="palette-input" class="palette-input" placeholder="Search commands, sessions, settings…" value="${esc(state.paletteQuery)}" autocomplete="off" />
+        <input id="palette-input" class="palette-input" type="search" placeholder="Type a command or search…" value="${esc(state.paletteQuery)}" autocomplete="off" spellcheck="false" />
       </div>
-      <div class="palette-list">${listHtml}</div>
-      <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> run · <kbd>esc</kbd> close</div>
+      <div class="palette-list" role="listbox" aria-label="Commands">${listHtml}</div>
+      <div class="palette-foot">
+        <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+        <span><kbd>↵</kbd> run</span>
+        <span><kbd>esc</kbd> close</span>
+      </div>
     </div>`;
   const input = document.getElementById("palette-input") as HTMLInputElement | null;
   input?.addEventListener("input", () => {
@@ -1232,7 +1237,9 @@ async function paintToast(): Promise<void> {
   if (!el) {
     el = document.createElement("div");
     el.id = "app-toast";
-    el.className = "app-toast";
+    el.className = "app-toast toast";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
     el.hidden = true;
     document.body.appendChild(el);
   }
@@ -1242,12 +1249,12 @@ async function paintToast(): Promise<void> {
     }
     el.hidden = true;
     el.textContent = "";
-    el.className = "app-toast";
+    el.className = "app-toast toast";
     return;
   }
   el.hidden = false;
-  el.textContent = state.toast.msg;
-  el.className = `app-toast toast-${state.toast.kind}`;
+  el.innerHTML = `<span class="toast-msg">${esc(state.toast.msg)}</span>`;
+  el.className = `app-toast toast toast-${state.toast.kind}`;
   animateToastIn(el);
 }
 
@@ -1902,7 +1909,9 @@ function paintConn(): void {
     reconnecting: "reconnect…",
     error: "error",
   };
-  el.innerHTML = `<span class="conn-dot"></span>${labels[state.conn]}`;
+  const label = labels[state.conn];
+  el.title = `PTY ${label}`;
+  el.innerHTML = `<span class="conn-dot" aria-hidden="true"></span>${label}`;
 }
 
 async function attachActive(): Promise<void> {
@@ -2001,15 +2010,16 @@ function emptyTermHTML(): string {
     <div class="term-empty">
       <div class="term-empty-card">
         <div class="term-empty-mark" aria-hidden="true">a</div>
-        <h2>Ready when you are</h2>
-        <p>Open a session from the sidebar, or start a new agent. Closing this tab only detaches — agents keep running in tmux.</p>
+        <h2 class="term-empty-title">No session attached</h2>
+        <p class="term-empty-desc">Pick a session from the sidebar, or start something new. Closing a tab only detaches — agents keep running in tmux.</p>
         <div class="term-empty-actions">
           <button type="button" class="primary" data-action="new-session">${iconSvg("plus")} New session</button>
           <button type="button" class="ghost" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
           <button type="button" class="ghost" data-action="open-remote">${iconSvg("external")} Open remote</button>
+          <button type="button" class="ghost" data-action="git-changes">${iconSvg("git-branch")} Git changes</button>
         </div>
         <p class="term-empty-hint">
-          <kbd>n</kbd> new · <kbd>⌘</kbd><kbd>K</kbd> commands · <kbd>?</kbd> shortcuts
+          <kbd>n</kbd> new · <kbd>⌘</kbd><kbd>K</kbd> commands · <kbd>?</kbd> help
         </p>
       </div>
     </div>`;
@@ -2138,20 +2148,24 @@ function paintSettings(opts?: { animateIn?: boolean }): void {
 }
 
 function settingsHTML(): string {
-  const tabs: { id: SettingsTab; label: string; hint: string }[] = [
-    { id: "accounts", label: "Agent accounts", hint: "Cursor · Claude · Grok · Codex" },
-    { id: "github", label: "GitHub", hint: "gh CLI logins" },
-    { id: "ssh", label: "SSH keys", hint: "Host identities" },
-    { id: "workspace", label: "Workspace", hint: "Map · memory · browser" },
-    { id: "about", label: "About", hint: "Host & shortcuts" },
+  const tabs: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
+    { id: "accounts", label: "Agent accounts", hint: "Cursor · Claude · Grok · Codex", icon: "users" },
+    { id: "github", label: "GitHub", hint: "gh CLI logins", icon: "github" },
+    { id: "ssh", label: "SSH keys", hint: "Host identities", icon: "key" },
+    { id: "workspace", label: "Workspace", hint: "Map · memory · browser", icon: "layers" },
+    { id: "about", label: "About", hint: "Host & shortcuts", icon: "info" },
   ];
   const nav = tabs
     .map((t) => {
       const href = t.id === "accounts" ? "/profile" : `/profile/${t.id}`;
+      const active = state.settingsTab === t.id;
       return `
-      <a href="${href}" class="settings-nav-item ${state.settingsTab === t.id ? "active" : ""}" data-action="settings-tab" data-tab="${t.id}" data-nav>
-        <span class="settings-nav-label">${esc(t.label)}</span>
-        <span class="settings-nav-hint">${esc(t.hint)}</span>
+      <a href="${href}" class="settings-nav-item ${active ? "active" : ""}" data-action="settings-tab" data-tab="${t.id}" data-nav${active ? ' aria-current="page"' : ""}>
+        <span class="settings-nav-ico" aria-hidden="true">${iconSvg(t.icon)}</span>
+        <span class="settings-nav-text">
+          <span class="settings-nav-label">${esc(t.label)}</span>
+          <span class="settings-nav-hint">${esc(t.hint)}</span>
+        </span>
       </a>`;
     })
     .join("");
@@ -2182,9 +2196,12 @@ function settingsHTML(): string {
         <div class="settings-nav-head">
           <div class="eyebrow">Host</div>
           <h1 id="settings-title">Settings</h1>
+          <p class="settings-nav-sub">Profiles, keys &amp; host tools</p>
         </div>
-        <nav class="settings-nav-list">${nav}</nav>
-        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to desk</button>
+        <nav class="settings-nav-list" aria-label="Settings sections">${nav}</nav>
+        <div class="settings-nav-foot">
+          <button type="button" class="ghost settings-nav-close" data-action="close-settings">${iconSvg("panel")} Back to desk</button>
+        </div>
       </aside>
       <section class="settings-main">
         <header class="settings-main-head">
@@ -2262,20 +2279,25 @@ function formatSavedAt(iso?: string): string {
 function settingsAccountsHTML(): string {
   if (state.settingsAccountsError && !state.settingsPlatforms.length) {
     return `
-      <div class="settings-empty">
-        <p><strong>Could not load accounts</strong></p>
-        <p class="form-hint">${esc(state.settingsAccountsError)}</p>
-        <p class="form-hint">Install <code>cursor-switch</code> from
+      <div class="settings-empty settings-empty--error" role="alert">
+        <p class="settings-empty-title">Could not load accounts</p>
+        <p class="settings-empty-desc">${esc(state.settingsAccountsError)}</p>
+        <p class="settings-empty-desc">Install <code>cursor-switch</code> from
           <code>github.com/reloadlife/cursor-account-switcher</code> on this host.</p>
-        <button type="button" class="primary" data-action="settings-refresh">Retry</button>
+        <div class="settings-empty-actions">
+          <button type="button" class="primary btn-sm" data-action="settings-refresh">Retry</button>
+        </div>
       </div>`;
   }
   const plats = state.settingsPlatforms;
   if (!plats.length) {
     return `
       <div class="settings-empty">
-        <p><strong>cursor-switch</strong> found but no platforms returned.</p>
-        <button type="button" class="primary" data-action="settings-refresh">Retry</button>
+        <p class="settings-empty-title">No platforms</p>
+        <p class="settings-empty-desc"><code>cursor-switch</code> found but no platforms returned.</p>
+        <div class="settings-empty-actions">
+          <button type="button" class="primary btn-sm" data-action="settings-refresh">Retry</button>
+        </div>
       </div>`;
   }
 
@@ -2313,14 +2335,14 @@ function settingsAccountsHTML(): string {
       const switchBtn = isActive
         ? `<button type="button" class="primary btn-sm" disabled title="Already active">Active</button>`
         : a.saved
-          ? `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Restore saved credentials host-wide">Switch to</button>`
+          ? `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Restore saved credentials host-wide">Switch</button>`
           : `<button type="button" class="primary btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Clear live login so you can sign into a new account, then Save current">Use empty</button>`;
       return `
         <div class="settings-card acct-card ${isActive ? "acct-active" : ""} ${a.saved ? "acct-saved" : "acct-empty"}">
           <div class="settings-card-main">
             <div class="settings-card-title">
               <strong>${esc(a.label || a.id)}</strong>
-              <code>${esc(a.id)}</code>
+              <code class="settings-id">${esc(a.id)}</code>
               ${savedBadge}${activeBadge}
             </div>
             <div class="settings-card-meta">
@@ -2334,15 +2356,10 @@ function settingsAccountsHTML(): string {
               ${a.saved_at ? ` · saved ${esc(formatSavedAt(a.saved_at))}` : ""}
             </div>
           </div>
-          <div class="settings-card-actions">
+          <div class="settings-card-actions settings-btn-group">
             ${switchBtn}
-            <details class="menu">
-              <summary class="ghost btn-sm">More</summary>
-              <div class="menu-panel">
-                <button type="button" data-action="acct-save" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" data-label="${esc(a.label || a.id)}">Save current login</button>
-                <button type="button" class="danger-text" data-action="acct-remove" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}">Remove slot</button>
-              </div>
-            </details>
+            <button type="button" class="ghost btn-sm" data-action="acct-save" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" data-label="${esc(a.label || a.id)}" title="Capture live login into this slot">Save</button>
+            <button type="button" class="ghost btn-sm danger-text" data-action="acct-remove" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" title="Remove this slot">Remove</button>
           </div>
         </div>`;
     })
@@ -2354,22 +2371,32 @@ function settingsAccountsHTML(): string {
   return `
     <p class="settings-lede">
       Multi-account profiles via <code>cursor-switch</code>${state.settingsAccountsBin ? ` · <code class="pathish">${esc(state.settingsAccountsBin)}</code>` : ""}.
-      <strong>Switch to</strong> changes the host-wide login.
+      <strong>Switch</strong> changes the host-wide login.
       New sessions default to <strong>isolated</strong> mode (private HOME per account — parallel-safe).
     </p>
-    <div class="chip-row platform-chips">${platTabs}</div>
+    <div class="chip-row platform-chips" role="tablist" aria-label="Agent platforms">${platTabs}</div>
     <div class="settings-stat acct-live-bar">
-      <span>Platform: <strong>${esc(platformLabel(cur?.platform || ""))}</strong></span>
-      <span>Live login: <strong title="${esc(live)}">${esc(live)}</strong></span>
-      <span>Active profile: <strong>${esc(activeId)}</strong></span>
+      <div class="settings-stat-items">
+        <span>Platform <strong>${esc(platformLabel(cur?.platform || ""))}</strong></span>
+        <span>Live <strong title="${esc(live)}">${esc(live)}</strong></span>
+        <span>Profile <strong>${esc(activeId)}</strong></span>
+      </div>
       <button type="button" class="ghost btn-sm" data-action="settings-refresh" ${state.settingsBusy ? "disabled" : ""}>Refresh</button>
     </div>
     <div class="settings-cards acct-list">
-      ${rows || `<div class="settings-empty">No account slots for ${esc(cur?.platform || "")}. Add one below.</div>`}
+      ${
+        rows ||
+        `<div class="settings-empty settings-empty--inline">
+          <p class="settings-empty-title">No account slots</p>
+          <p class="settings-empty-desc">Add a slot for ${esc(cur?.platform || "this platform")} below.</p>
+        </div>`
+      }
     </div>
     <div class="settings-form-card">
-      <h3>Add account slot</h3>
-      <p class="form-hint" style="margin-top:0">Registers a profile name. Then log into the CLI as that user and click <strong>Save current</strong>.</p>
+      <div class="settings-form-head">
+        <h3>Add account slot</h3>
+        <p class="form-hint">Registers a profile name. Log into the CLI as that user, then <strong>Save</strong>.</p>
+      </div>
       <div class="field-grid">
         <div class="field">
           <label for="settings-acct-id">Id</label>
@@ -2380,8 +2407,8 @@ function settingsAccountsHTML(): string {
           <input id="settings-acct-label" value="${esc(state.settingsAcctLabel)}" placeholder="Personal" autocomplete="off" ${state.settingsBusy ? "disabled" : ""} />
         </div>
       </div>
-      <div class="modal-actions" style="justify-content:flex-start">
-        <button type="button" class="primary" data-action="acct-add" ${state.settingsBusy ? "disabled" : ""}>${state.settingsBusy ? "…" : "Add account"}</button>
+      <div class="settings-form-actions">
+        <button type="button" class="primary btn-sm" data-action="acct-add" ${state.settingsBusy ? "disabled" : ""}>${state.settingsBusy ? "…" : "Add account"}</button>
       </div>
     </div>
     <details class="details-block howto-card">
@@ -2390,8 +2417,8 @@ function settingsAccountsHTML(): string {
         <li>Add a slot (e.g. <code>work</code>).</li>
         <li>Click <strong>Use empty</strong> on that slot — clears the live login so you can sign in as a new user.</li>
         <li>On the host, log into the CLI for that tool as the new account.</li>
-        <li><strong>Save current</strong> on the slot (captures credentials).</li>
-        <li>Later: <strong>Switch to</strong> restores a saved profile; or pick the account when starting a session (isolated = parallel-safe).</li>
+        <li><strong>Save</strong> on the slot (captures credentials).</li>
+        <li>Later: <strong>Switch</strong> restores a saved profile; or pick the account when starting a session (isolated = parallel-safe).</li>
       </ol>
     </details>`;
 }
@@ -2400,15 +2427,23 @@ function settingsGitHubHTML(): string {
   return `
     <p class="settings-lede">GitHub CLI accounts on this host. Tokens are write-only — never shown back.</p>
     <div class="settings-stat">
-      <span>Active: <strong id="gh-active">${esc(state.ghStatus?.active || "—")}</strong></span>
+      <div class="settings-stat-items">
+        <span>Active <strong id="gh-active">${esc(state.ghStatus?.active || "—")}</strong></span>
+      </div>
     </div>
     <div id="gh-account-list" class="gh-account-list settings-stack">${ghAccountsHTML()}</div>
     <div class="settings-form-card">
-      <h3>Login with token</h3>
-      <div class="gh-login">
-        <input id="gh-login-token" type="password" placeholder="Paste PAT / fine-grained token" value="" autocomplete="off" />
-        <button type="button" class="primary" data-action="gh-login" ${state.ghBusy ? "disabled" : ""}>${state.ghBusy ? "…" : "Login"}</button>
-        <button type="button" class="ghost" data-action="gh-setup-git">Setup git</button>
+      <div class="settings-form-head">
+        <h3>Login with token</h3>
+        <p class="form-hint">Paste a PAT or fine-grained token. Stored only on the host via <code>gh</code>.</p>
+      </div>
+      <div class="field">
+        <label for="gh-login-token" class="sr-only">Token</label>
+        <input id="gh-login-token" type="password" placeholder="ghp_… or github_pat_…" value="" autocomplete="off" />
+      </div>
+      <div class="settings-form-actions">
+        <button type="button" class="ghost btn-sm" data-action="gh-setup-git">Setup git</button>
+        <button type="button" class="primary btn-sm" data-action="gh-login" ${state.ghBusy ? "disabled" : ""}>${state.ghBusy ? "…" : "Login"}</button>
       </div>
     </div>`;
 }
@@ -2417,14 +2452,27 @@ function settingsSSHHTML(): string {
   return `
     <p class="settings-lede">SSH identities under the agents host home. Public keys only — private keys never leave the server.</p>
     <div class="settings-stat">
-      <span>Dir: <code id="ssh-dir">${esc(state.sshDir || "—")}</code></span>
+      <div class="settings-stat-items">
+        <span>Dir <code id="ssh-dir">${esc(state.sshDir || "—")}</code></span>
+      </div>
     </div>
     <div class="settings-form-card">
-      <h3>Generate key</h3>
-      <div class="ssh-gen">
-        <input id="ssh-gen-name" placeholder="name e.g. id_github" value="${esc(state.sshGenName)}" autocomplete="off" />
-        <input id="ssh-gen-comment" placeholder="comment (optional)" value="${esc(state.sshGenComment)}" autocomplete="off" />
-        <button type="button" class="primary" data-action="ssh-gen" ${state.sshBusy ? "disabled" : ""}>${state.sshBusy ? "…" : "Generate"}</button>
+      <div class="settings-form-head">
+        <h3>Generate key</h3>
+        <p class="form-hint">Creates an ed25519 key pair in the host <code>~/.ssh</code> directory.</p>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label for="ssh-gen-name">Name</label>
+          <input id="ssh-gen-name" placeholder="id_github" value="${esc(state.sshGenName)}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="ssh-gen-comment">Comment</label>
+          <input id="ssh-gen-comment" placeholder="optional" value="${esc(state.sshGenComment)}" autocomplete="off" />
+        </div>
+      </div>
+      <div class="settings-form-actions">
+        <button type="button" class="primary btn-sm" data-action="ssh-gen" ${state.sshBusy ? "disabled" : ""}>${state.sshBusy ? "…" : "Generate"}</button>
       </div>
     </div>
     <div id="ssh-key-list" class="ssh-key-list settings-stack">${sshKeysHTML()}</div>`;
@@ -2440,29 +2488,45 @@ function settingsAboutHTML(): string {
   return `
     <div class="settings-about">
       <div class="settings-stat">
-        <span>Status: <strong>${esc(state.statusText)}</strong></span>
-        <span>API: <strong>${state.statusOk ? "ok" : "error"}</strong></span>
+        <div class="settings-stat-items">
+          <span>Status <strong>${esc(state.statusText)}</strong></span>
+          <span>API <strong class="${state.statusOk ? "ok-text" : "danger-text"}">${state.statusOk ? "ok" : "error"}</strong></span>
+        </div>
       </div>
       <div class="settings-form-card">
-        <h3>Appearance</h3>
-        <p class="form-hint" style="margin-top:0">Theme applies to this browser only.</p>
-        <button type="button" class="primary btn-sm" data-action="toggle-theme">
-          Switch to ${state.theme === "dark" ? "light" : "dark"} theme
-        </button>
+        <div class="settings-form-head">
+          <h3>Appearance</h3>
+          <p class="form-hint">Theme applies to this browser only.</p>
+        </div>
+        <div class="settings-form-actions">
+          <button type="button" class="primary btn-sm" data-action="toggle-theme">
+            Switch to ${state.theme === "dark" ? "light" : "dark"} theme
+          </button>
+        </div>
       </div>
-      <h3>Keyboard</h3>
-      <p class="form-hint">Bare keys outside the terminal · <kbd>Alt</kbd>+key while focused · <kbd>⌘</kbd><kbd>K</kbd> palette</p>
-      <dl class="keys">
-        <div><dt><kbd>j</kbd><kbd>k</kbd> · <kbd>⇧</kbd><kbd>j</kbd><kbd>k</kbd></dt><dd>List · step+open</dd></div>
-        <div><dt><kbd>h</kbd><kbd>l</kbd> · <kbd>Ctrl</kbd><kbd>Tab</kbd></dt><dd>Prev/next tab</dd></div>
-        <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab</dd></div>
-        <div><dt><kbd>n</kbd> · <kbd>⇧</kbd><kbd>n</kbd></dt><dd>New session / project</dd></div>
-        <div><dt><kbd>y</kbd></dt><dd>Copy session id</dd></div>
-        <div><dt><kbd>?</kbd></dt><dd>Full shortcuts</dd></div>
-      </dl>
-      <p class="form-hint"><button type="button" class="linkish" data-action="help">Open shortcuts sheet</button></p>
-      <h3>Security</h3>
-      <p class="form-hint">Bearer token is full host control. SSH private keys and GitHub tokens are never returned by the API.</p>
+      <div class="settings-form-card">
+        <div class="settings-form-head">
+          <h3>Keyboard</h3>
+          <p class="form-hint">Bare keys outside the terminal · <kbd>Alt</kbd>+key while focused · <kbd>⌘</kbd><kbd>K</kbd> palette</p>
+        </div>
+        <dl class="keys">
+          <div><dt><kbd>j</kbd><kbd>k</kbd> · <kbd>⇧</kbd><kbd>j</kbd><kbd>k</kbd></dt><dd>List · step+open</dd></div>
+          <div><dt><kbd>h</kbd><kbd>l</kbd> · <kbd>Ctrl</kbd><kbd>Tab</kbd></dt><dd>Prev/next tab</dd></div>
+          <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Jump tab</dd></div>
+          <div><dt><kbd>n</kbd> · <kbd>⇧</kbd><kbd>n</kbd></dt><dd>New session / project</dd></div>
+          <div><dt><kbd>y</kbd></dt><dd>Copy session id</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>Full shortcuts</dd></div>
+        </dl>
+        <div class="settings-form-actions">
+          <button type="button" class="ghost btn-sm" data-action="help">Open shortcuts sheet</button>
+        </div>
+      </div>
+      <div class="settings-form-card">
+        <div class="settings-form-head">
+          <h3>Security</h3>
+          <p class="form-hint">Bearer token is full host control. SSH private keys and GitHub tokens are never returned by the API.</p>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -4446,24 +4510,24 @@ function loginHTML(): string {
     <div class="login-card">
       <div class="login-brand">
         <span class="logo-mark" aria-hidden="true">a</span>
-        <div>
+        <div class="login-brand-text">
           <h1>agents</h1>
           <p class="sub">Session control plane</p>
         </div>
       </div>
       <p class="login-lede">Sign in with your host API token to open agent TTYs, workspaces, and tools.</p>
-      <form id="login-form">
+      <form id="login-form" class="login-form">
         <div class="field">
           <label for="token">API token</label>
           <input id="token" name="token" type="password" autocomplete="current-password" placeholder="AGENTSD_TOKEN" required autofocus />
         </div>
         ${state.loginError ? `<p class="error form-error" role="alert">${esc(state.loginError)}</p>` : ""}
         ${state.busy ? `<p class="login-busy" aria-live="polite">Connecting to host…</p>` : ""}
-        <button class="primary" type="submit" style="width:100%" ${state.busy ? "disabled" : ""}>
+        <button class="primary login-submit" type="submit" ${state.busy ? "disabled" : ""}>
           ${state.busy ? "Connecting…" : "Connect"}
         </button>
       </form>
-      <p class="hint">Same bearer as <code>agentsctl</code>. Run <code>agentsctl web</code> for one-click login. Token stays in this browser only.</p>
+      <p class="hint login-hint">Same bearer as <code>agentsctl</code>. Run <code>agentsctl web</code> for one-click login. Token stays in this browser only.</p>
     </div>
   </div>`;
 }
@@ -4502,9 +4566,18 @@ function iconSvg(name: string): string {
       return `<svg ${common}><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>`;
     case "trash":
       return `<svg ${common}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>`;
+    case "chevron-right":
+      return `<svg ${common}><path d="m9 18 6-6-6-6"/></svg>`;
+    case "x":
+      return `<svg ${common}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
     default:
       return "";
   }
+}
+
+/** Compact chevron separator for shadcn-style breadcrumbs. */
+function crumbSep(): string {
+  return `<span class="sep-chev" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>`;
 }
 
 function breadcrumbHTML(): string {
@@ -4512,22 +4585,24 @@ function breadcrumbHTML(): string {
   if (!tab) {
     return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
       <a href="/desk" data-nav data-route="desk">Desk</a>
-      <span class="sep-chev">/</span>
-      <strong>Sessions</strong>
+      ${crumbSep()}
+      <span class="current" aria-current="page"><strong>Sessions</strong></span>
     </nav>`;
   }
   const sessHref = sessionPath(tab.cwd, tab.id);
   const toolsHref = sessionPath(tab.cwd, tab.id, true);
   const toolsOpen = state.panel === "tools";
+  const sessionCurrent = toolsOpen ? "" : "current";
+  const sessionAria = toolsOpen ? "" : ` aria-current="page"`;
   return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
     <a href="/desk" data-nav data-route="desk">Desk</a>
-    <span class="sep-chev">/</span>
+    ${crumbSep()}
     <a href="${esc(sessHref)}" data-nav title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(basename(tab.cwd))}</a>
-    <span class="sep-chev">/</span>
-    <a href="${esc(sessHref)}" data-nav class="${toolsOpen ? "" : "current"}"><strong title="${esc(tab.id)}">${esc(tab.title)}</strong></a>
+    ${crumbSep()}
+    <a href="${esc(sessHref)}" data-nav class="${sessionCurrent}"${sessionAria} title="${esc(tab.id)}"><strong>${esc(tab.title)}</strong></a>
     ${
       toolsOpen
-        ? `<span class="sep-chev">/</span><a href="${esc(toolsHref)}" data-nav class="current"><strong>Tools</strong></a>`
+        ? `${crumbSep()}<a href="${esc(toolsHref)}" data-nav class="current" aria-current="page"><strong>Tools</strong></a>`
         : ""
     }
   </nav>`;
@@ -4603,23 +4678,23 @@ function shellHTML(): string {
         </div>
         <div class="tabs" id="tabs" role="tablist" aria-label="Open sessions">${tabsHTML()}</div>
         <div class="topbar-actions">
-          <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
+          <span class="conn-pill conn-${state.conn}" id="conn-pill" title="PTY connection" aria-live="polite"><span class="conn-dot" aria-hidden="true"></span>idle</span>
           <button type="button" class="ghost btn-icon sm" data-action="open-palette" title="Command palette (⌘K)" aria-label="Command palette">
             ${iconSvg("search")}
           </button>
           <details class="menu topbar-menu">
-            <summary class="ghost btn-icon sm" title="More" aria-label="More actions">${iconSvg("more")}</summary>
-            <div class="menu-panel">
-              <button type="button" data-action="new-session">New session <kbd>n</kbd></button>
-              <button type="button" data-action="new-project">New project <kbd>⇧n</kbd></button>
-              <button type="button" data-action="open-shell">Terminal <kbd>⇧t</kbd></button>
-              <button type="button" data-action="open-remote">Open remote…</button>
-              <button type="button" data-action="tools">Tools <kbd>t</kbd></button>
-              <button type="button" data-action="git-changes">Git changes <kbd>⇧g</kbd></button>
-              <button type="button" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
-              <button type="button" data-action="help">Shortcuts <kbd>?</kbd></button>
-              <button type="button" data-action="toggle-theme">Toggle theme</button>
-              <button type="button" data-action="prune">Clear stopped</button>
+            <summary class="ghost btn-icon sm" title="More actions" aria-label="More actions">${iconSvg("more")}</summary>
+            <div class="menu-panel" role="menu">
+              <button type="button" role="menuitem" data-action="new-session">New session <kbd>n</kbd></button>
+              <button type="button" role="menuitem" data-action="new-project">New project <kbd>⇧n</kbd></button>
+              <button type="button" role="menuitem" data-action="open-shell">Terminal <kbd>⇧t</kbd></button>
+              <button type="button" role="menuitem" data-action="open-remote">Open remote…</button>
+              <button type="button" role="menuitem" data-action="tools">Tools <kbd>t</kbd></button>
+              <button type="button" role="menuitem" data-action="git-changes">Git changes <kbd>⇧g</kbd></button>
+              <button type="button" role="menuitem" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
+              <button type="button" role="menuitem" data-action="help">Shortcuts <kbd>?</kbd></button>
+              <button type="button" role="menuitem" data-action="toggle-theme">Toggle theme</button>
+              <button type="button" role="menuitem" data-action="prune">Clear stopped</button>
             </div>
           </details>
         </div>
@@ -4705,7 +4780,7 @@ function showSessionCtx(id: string, x: number, y: number): void {
         : `<button type="button" role="menuitem" data-ctx-act="resume" data-ctx-id="${esc(id)}">Resume</button>`
     }
     <button type="button" role="menuitem" data-ctx-act="copy-id" data-ctx-id="${esc(id)}">Copy ID</button>
-    <hr class="ctx-sep" />
+    <div class="ctx-sep" role="separator"></div>
     <button type="button" role="menuitem" class="danger-text" data-ctx-act="delete" data-ctx-id="${esc(id)}">Delete</button>
   `;
   menu.hidden = false;
@@ -4755,7 +4830,7 @@ async function runSessionCtx(act: string, id: string): Promise<void> {
 
 function tabsHTML(): string {
   if (state.openTabs.length === 0) {
-    return `<div class="tabs-empty">Select a session to attach</div>`;
+    return `<div class="tabs-empty" role="presentation">No open tabs</div>`;
   }
   return state.openTabs
     .map((t, i) => {
@@ -4770,13 +4845,13 @@ function tabsHTML(): string {
       const tip = branch
         ? `${t.agent} · ${branch} · ${t.id}`
         : `${t.agent} · ${t.id}`;
-      return `
-      <a class="tab ${active} ${live} ${ag}" href="${esc(href)}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab="${esc(t.id)}" data-nav title="${esc(tip)}">
-        <span class="tab-dot" title="${esc(t.agent)}"></span>
-        <span class="tab-label">${esc(t.title)}</span>
-        ${i < 9 ? `<span class="tab-num">${i + 1}</span>` : ""}
-        <button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)" aria-label="Close tab">×</button>
-      </a>`;
+      const num =
+        i < 9
+          ? `<span class="tab-num" aria-hidden="true">${i + 1}</span>`
+          : "";
+      const closeIco =
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+      return `<a class="tab ${active} ${live} ${ag}" href="${esc(href)}" role="tab" aria-selected="${isActive}" tabindex="${isActive ? "0" : "-1"}" data-tab="${esc(t.id)}" data-nav title="${esc(tip)}"><span class="tab-dot" aria-hidden="true" title="${esc(t.agent)}"></span><span class="tab-label">${esc(t.title)}</span>${num}<button type="button" class="tab-close" data-close="${esc(t.id)}" title="Close tab (keeps agent running)" aria-label="Close tab">${closeIco}</button></a>`;
     })
     .join("");
 }
@@ -4784,13 +4859,18 @@ function tabsHTML(): string {
 function statusHTML(): string {
   const cls = state.statusOk ? "ok" : "err";
   const open = state.openTabs.length;
+  const total = state.sessions.length;
   const run = state.sessions.filter((s) => s.state === "running").length;
+  const host = (state.statusText || "").split("·")[0]?.trim() || "";
   return `
-    <span class="status-dot ${cls}"></span>
-    <span><strong>${run}</strong> live</span>
-    <span class="sep">·</span>
-    <span><strong>${open}</strong> open</span>
-    <span class="status-hint"> · close tab detaches · <kbd>s</kbd> stops</span>
+    <span class="status-dot ${cls}" title="${state.statusOk ? "Host ok" : "Host error"}" aria-hidden="true"></span>
+    <span class="status-metric"><strong>${run}</strong> live</span>
+    <span class="sep" aria-hidden="true">·</span>
+    <span class="status-metric"><strong>${open}</strong> open</span>
+    <span class="sep" aria-hidden="true">·</span>
+    <span class="status-metric"><strong>${total}</strong> total</span>
+    ${host ? `<span class="sep" aria-hidden="true">·</span><span class="status-metric status-host" title="${esc(state.statusText || "")}">${esc(host)}</span>` : ""}
+    <span class="status-hint">tab close detaches</span>
   `;
 }
 
