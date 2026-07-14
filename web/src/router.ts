@@ -6,7 +6,7 @@
  *   /project/new · /projects/new   → new project (clone) modal
  *   /desk                          → empty desk (no modal)
  *   /tools                         → global tools
- *   /git · /changes                → git changes panel
+ *   /git · /changes                → git changes full page
  *   /help                          → shortcuts help
  *   /profile[/:tab]                → profile / settings
  *   /settings[/:tab]               → alias for profile

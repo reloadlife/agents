@@ -199,6 +199,8 @@ type AppState = {
   listCursorId: string | null;
   commandPalette: boolean;
   paletteQuery: string;
+  /** highlighted index in spotlight results */
+  paletteIndex: number;
   templates: SessionTemplate[];
   tasks: WorkspaceTask[];
   tasksDraft: string;
@@ -283,6 +285,7 @@ const state: AppState = {
   listCursorId: null,
   commandPalette: false,
   paletteQuery: "",
+  paletteIndex: 0,
   templates: [],
   tasks: [],
   tasksDraft: "",
@@ -535,9 +538,22 @@ function openPanelOnly(p: Panel): void {
       state.formCwd = tab.cwd;
     }
   }
+  // Git is a full page — close any modal panel chrome
+  if (p === "changes") {
+    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+    document.getElementById("panel-overlay")?.remove();
+  } else {
+    // Opening a modal panel dismisses the git page shell
+    document.getElementById("git-page-root")?.remove();
+  }
   paintSidebarActive();
   window.queueMicrotask(async () => {
     if (state.panel !== p) return;
+    if (p === "changes") {
+      paintGitPage({ animateIn: true });
+      void refreshGitChanges();
+      return;
+    }
     if (p === "new") {
       await refreshAgentAccountsForForm(state.formAgent);
     }
@@ -562,15 +578,16 @@ function openPanelOnly(p: Panel): void {
       });
     }
     if (p === "tools") void refreshToolsStatus();
-    if (p === "changes") void refreshGitChanges();
   });
 }
 
 async function closePanelOnly(): Promise<void> {
   if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+  const wasGit = state.panel === "changes";
   state.panel = null;
   state.createError = "";
   document.getElementById("panel-overlay")?.remove();
+  if (wasGit) document.getElementById("git-page-root")?.remove();
   paintSidebarActive();
 }
 
@@ -579,9 +596,11 @@ function openSettingsOnly(tab?: SettingsTab): void {
   state.settingsOpen = true;
   state.sidebarOpen = false;
   if (state.panel) {
+    const wasGit = state.panel === "changes";
     state.panel = null;
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
+    if (wasGit) document.getElementById("git-page-root")?.remove();
   }
   paintSidebarActive();
   void loadSettingsData().then(() => paintSettings({ animateIn: true }));
@@ -644,15 +663,21 @@ function toggleTheme(): void {
 }
 
 function openCommandPalette(): void {
+  hideTopbarMore();
   state.commandPalette = true;
+  state.paletteIndex = 0;
   paintCommandPalette();
   window.requestAnimationFrame(() => {
-    (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
+    const input = document.getElementById("palette-input") as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
   });
 }
 
 function closeCommandPalette(): void {
   state.commandPalette = false;
+  state.paletteQuery = "";
+  state.paletteIndex = 0;
   document.getElementById("command-palette")?.remove();
 }
 
@@ -660,34 +685,60 @@ type PaletteItem = {
   id: string;
   label: string;
   hint?: string;
+  /** secondary mono meta (e.g. cwd / agent) */
+  meta?: string;
   group: string;
   run: () => void;
 };
 
 function paletteItems(): PaletteItem[] {
   const q = state.paletteQuery.trim().toLowerCase();
-  const items: PaletteItem[] = [
-    { id: "new", label: "New session", hint: "n", group: "Navigate", run: () => openPanel("new") },
+  const items: PaletteItem[] = [];
+
+  // Sessions first when searching — spotlight-style jump-to-session
+  const sessions = [...state.sessions].sort((a, b) => {
+    const ar = a.state === "running" ? 0 : 1;
+    const br = b.state === "running" ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return (b.created_at || "").localeCompare(a.created_at || "");
+  });
+  for (const s of sessions.slice(0, 40)) {
+    const label = s.name || shortId(s.id);
+    const branch = (s.git_branch || s.branch || "").trim();
+    const hay = [label, s.agent, s.cwd, s.id, branch, s.state].join(" ").toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    items.push({
+      id: `sess-${s.id}`,
+      label,
+      meta: `${s.agent}${branch ? ` · ${branch}` : ""} · ${basename(s.cwd)}`,
+      hint: s.state === "running" ? "live" : s.state,
+      group: "Sessions",
+      run: () => openTab(s),
+    });
+  }
+
+  const commands: PaletteItem[] = [
+    { id: "new", label: "New session", hint: "n", group: "Commands", run: () => openPanel("new") },
     {
       id: "new-project",
       label: "New project (clone repo)",
       hint: "⇧n",
-      group: "Navigate",
+      group: "Commands",
       run: () => openPanel("new-project"),
     },
-    { id: "tools", label: "Tools", hint: "t", group: "Navigate", run: () => openPanel("tools") },
+    { id: "tools", label: "Tools", hint: "t", group: "Commands", run: () => openPanel("tools") },
     {
       id: "changes",
       label: "Git changes",
       hint: "⇧g",
-      group: "Navigate",
+      group: "Commands",
       run: () => openPanel("changes"),
     },
     {
       id: "shell",
       label: "Terminal",
       hint: "⇧t",
-      group: "Navigate",
+      group: "Commands",
       run: () => {
         void openShellTerminal();
       },
@@ -695,7 +746,7 @@ function paletteItems(): PaletteItem[] {
     {
       id: "open-remote",
       label: "Open remote editor…",
-      group: "Navigate",
+      group: "Commands",
       run: () => {
         void showOpenRemoteDrawer();
       },
@@ -704,17 +755,17 @@ function paletteItems(): PaletteItem[] {
       id: "settings",
       label: "Settings",
       hint: ",",
-      group: "Navigate",
+      group: "Commands",
       run: () => openSettings("accounts"),
     },
     {
       id: "accounts",
       label: "Agent accounts",
       hint: "a",
-      group: "Navigate",
+      group: "Commands",
       run: () => openSettings("accounts"),
     },
-    { id: "help", label: "Shortcuts", hint: "?", group: "Navigate", run: () => openPanel("help") },
+    { id: "help", label: "Shortcuts", hint: "?", group: "Commands", run: () => openPanel("help") },
     {
       id: "ensure",
       label: "Ensure context (active cwd)",
@@ -802,47 +853,47 @@ function paletteItems(): PaletteItem[] {
     {
       id: "refresh",
       label: "Refresh sessions",
-      group: "Sessions",
+      group: "Navigation",
       run: () => void refreshSessionsManual(),
     },
     {
       id: "next-tab",
       label: "Next tab",
       hint: "l / ]",
-      group: "Sessions",
+      group: "Navigation",
       run: () => cycleTab(1),
     },
     {
       id: "prev-tab",
       label: "Previous tab",
       hint: "h / [",
-      group: "Sessions",
+      group: "Navigation",
       run: () => cycleTab(-1),
     },
     {
       id: "next-session",
       label: "Next session (open)",
       hint: "⇧j",
-      group: "Sessions",
+      group: "Navigation",
       run: () => stepSessionAndOpen(1),
     },
     {
       id: "prev-session",
       label: "Previous session (open)",
       hint: "⇧k",
-      group: "Sessions",
+      group: "Navigation",
       run: () => stepSessionAndOpen(-1),
     },
     {
       id: "copy-id",
       label: "Copy session id",
       hint: "y",
-      group: "Sessions",
+      group: "Navigation",
       run: () => void copyTargetSessionId(),
     },
   ];
   for (const t of state.templates.slice(0, 12)) {
-    items.push({
+    commands.push({
       id: `tpl-${t.id}`,
       label: `Template: ${t.name}`,
       hint: t.agent,
@@ -860,14 +911,38 @@ function paletteItems(): PaletteItem[] {
       },
     });
   }
-  if (!q) return items;
-  return items.filter(
-    (i) =>
+
+  for (const i of commands) {
+    if (!q) {
+      items.push(i);
+      continue;
+    }
+    if (
       i.label.toLowerCase().includes(q) ||
       i.group.toLowerCase().includes(q) ||
       (i.hint && i.hint.toLowerCase().includes(q)) ||
-      i.id.includes(q),
-  );
+      (i.meta && i.meta.toLowerCase().includes(q)) ||
+      i.id.includes(q)
+    ) {
+      items.push(i);
+    }
+  }
+
+  // When idle (no query), cap session noise — show a few recent then all commands
+  if (!q) {
+    const sess = items.filter((x) => x.group === "Sessions").slice(0, 6);
+    const rest = items.filter((x) => x.group !== "Sessions");
+    return [...sess, ...rest];
+  }
+  return items;
+}
+
+function runPaletteIndex(idx: number): void {
+  const items = paletteItems();
+  const item = items[idx];
+  if (!item) return;
+  closeCommandPalette();
+  item.run();
 }
 
 function paintCommandPalette(): void {
@@ -886,6 +961,8 @@ function paintCommandPalette(): void {
     });
   }
   const items = paletteItems();
+  if (state.paletteIndex >= items.length) state.paletteIndex = Math.max(0, items.length - 1);
+  if (state.paletteIndex < 0) state.paletteIndex = 0;
   let lastGroup = "";
   const listHtml = items.length
     ? items
@@ -895,42 +972,128 @@ function paintCommandPalette(): void {
               ? ((lastGroup = it.group),
                 `<div class="palette-group" role="presentation">${esc(it.group)}</div>`)
               : "";
-          const selected = i === 0;
+          const selected = i === state.paletteIndex;
           return `${head}
-          <button type="button" class="palette-item${selected ? " active" : ""}" data-palette-id="${esc(it.id)}" role="option" aria-selected="${selected ? "true" : "false"}">
+          <button type="button" class="palette-item${selected ? " active" : ""}" data-palette-id="${esc(it.id)}" data-palette-idx="${i}" role="option" aria-selected="${selected ? "true" : "false"}">
             <span class="palette-item-label">${esc(it.label)}</span>
+            ${it.meta ? `<span class="palette-item-meta">${esc(it.meta)}</span>` : ""}
             ${it.hint ? `<kbd class="palette-kbd">${esc(it.hint)}</kbd>` : ""}
           </button>`;
         })
         .join("")
     : `<div class="palette-empty">No matches</div>`;
   root.innerHTML = `
-    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="palette-card" role="dialog" aria-modal="true" aria-label="Spotlight search">
       <div class="palette-input-row">
         ${iconSvg("search")}
-        <input id="palette-input" class="palette-input" type="search" placeholder="Type a command or search…" value="${esc(state.paletteQuery)}" autocomplete="off" spellcheck="false" />
+        <input id="palette-input" class="palette-input" type="search" placeholder="Search sessions &amp; commands…" value="${esc(state.paletteQuery)}" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="palette-list" />
       </div>
-      <div class="palette-list" role="listbox" aria-label="Commands">${listHtml}</div>
+      <div id="palette-list" class="palette-list" role="listbox" aria-label="Results">${listHtml}</div>
       <div class="palette-foot">
         <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-        <span><kbd>↵</kbd> run</span>
+        <span><kbd>↵</kbd> open</span>
         <span><kbd>esc</kbd> close</span>
       </div>
     </div>`;
   const input = document.getElementById("palette-input") as HTMLInputElement | null;
   input?.addEventListener("input", () => {
     state.paletteQuery = input.value;
+    state.paletteIndex = 0;
     paintCommandPalette();
     (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
   });
   root.querySelectorAll<HTMLElement>("[data-palette-id]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const id = btn.getAttribute("data-palette-id");
-      const item = paletteItems().find((x) => x.id === id);
-      closeCommandPalette();
-      item?.run();
+      const idx = Number(btn.getAttribute("data-palette-idx") || "0");
+      runPaletteIndex(idx);
+    });
+    btn.addEventListener("mouseenter", () => {
+      const idx = Number(btn.getAttribute("data-palette-idx") || "0");
+      if (idx === state.paletteIndex) return;
+      state.paletteIndex = idx;
+      root!.querySelectorAll(".palette-item").forEach((el, i) => {
+        el.classList.toggle("active", i === idx);
+        el.setAttribute("aria-selected", i === idx ? "true" : "false");
+      });
     });
   });
+  // Keep selection in view
+  root.querySelector(".palette-item.active")?.scrollIntoView({ block: "nearest" });
+}
+
+/** Body-level topbar ⋮ menu (portaled so it stacks above the terminal). */
+function hideTopbarMore(): void {
+  const menu = document.getElementById("topbar-more-menu");
+  if (menu) {
+    menu.hidden = true;
+    menu.innerHTML = "";
+  }
+  document.querySelectorAll<HTMLElement>("[data-action='topbar-more']").forEach((b) => {
+    b.setAttribute("aria-expanded", "false");
+  });
+}
+
+function showTopbarMore(anchor: HTMLElement): void {
+  hideSessionCtx();
+  let menu = document.getElementById("topbar-more-menu");
+  if (!menu) {
+    menu = document.createElement("div");
+    menu.id = "topbar-more-menu";
+    menu.className = "topbar-more-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "More actions");
+    document.body.appendChild(menu);
+  }
+  const item = (action: string, icon: string, label: string, kbd?: string, extra = "") =>
+    `<button type="button" role="menuitem" data-action="${esc(action)}"${extra}>
+      ${iconSvg(icon)}
+      <span class="menu-item-label">${esc(label)}</span>
+      ${kbd ? `<kbd>${esc(kbd)}</kbd>` : ""}
+    </button>`;
+
+  menu.innerHTML = `
+    <div class="menu-section-label" role="presentation">Create</div>
+    ${item("new-session", "plus", "New session", "n")}
+    ${item("new-project", "folder-git", "New project", "⇧n")}
+    ${item("open-shell", "terminal", "Terminal", "⇧t")}
+    <div class="ctx-sep" role="separator"></div>
+    <div class="menu-section-label" role="presentation">Workspace</div>
+    ${item("open-remote", "external", "Open remote…")}
+    ${item("tools", "wrench", "Tools", "t")}
+    ${item("git-changes", "git-branch", "Git changes", "⇧g")}
+    <div class="ctx-sep" role="separator"></div>
+    <div class="menu-section-label" role="presentation">App</div>
+    ${item("open-settings", "settings", "Settings", ",", ' data-tab="accounts"')}
+    ${item("help", "help", "Shortcuts", "?")}
+    ${item("toggle-theme", "layers", "Toggle theme")}
+    <div class="ctx-sep" role="separator"></div>
+    ${item("prune", "trash", "Clear stopped")}
+  `;
+  menu.hidden = false;
+  anchor.setAttribute("aria-expanded", "true");
+
+  const pad = 8;
+  const r = anchor.getBoundingClientRect();
+  // measure after paint
+  const rect = menu.getBoundingClientRect();
+  const w = rect.width || 220;
+  const h = rect.height || 320;
+  let left = r.right - w;
+  let top = r.bottom + 6;
+  if (left < pad) left = pad;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, r.top - h - 6);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+}
+
+function toggleTopbarMore(anchor: HTMLElement): void {
+  const menu = document.getElementById("topbar-more-menu");
+  if (menu && !menu.hidden) {
+    hideTopbarMore();
+    return;
+  }
+  showTopbarMore(anchor);
 }
 
 /** Plain shell session in the current/default workspace (no AI agent). */
@@ -3583,10 +3746,19 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
     if (isAppDrawerOpen() && !state.drawer) {
       closeAppDrawer("programmatic");
     }
+    document.getElementById("git-page-root")?.remove();
     return;
   }
 
-  // Panels always use Vaul (shadcn drawer / dialog sheet) — desktop + mobile
+  // Git changes is a full page, not a modal sheet
+  if (state.panel === "changes") {
+    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+    paintGitPage();
+    return;
+  }
+
+  // Other panels use app modal (dialog sheet)
+  document.getElementById("git-page-root")?.remove();
   if (state.drawer) {
     state.drawer = null;
   }
@@ -3595,7 +3767,7 @@ async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
   openAppDrawer({
     title: panelTitle(p),
     html: panelBodyHTML(p),
-    // dialog = compact forms; tall = tools/help/changes (scrollable, not stretched)
+    // dialog = compact forms; tall = tools/help (scrollable, not stretched)
     variant: p === "new" || p === "new-project" ? "dialog" : "tall",
     onClose: (reason) => {
       if (reason === "user") {
@@ -3844,7 +4016,7 @@ function toolsHTML(): string {
     </div>`;
 }
 
-// ── Git Changes panel ────────────────────────────────────────────────────────
+// ── Git Changes full page ────────────────────────────────────────────────────
 
 function gitStatusLetter(f: GitFileEntry): string {
   if (f.status && f.status.trim()) {
@@ -3860,6 +4032,27 @@ function gitStatusLetter(f: GitFileEntry): string {
   return f.staged ? "M" : "?";
 }
 
+function gitStatusLabel(letter: string): string {
+  switch (letter) {
+    case "M":
+      return "Modified";
+    case "A":
+      return "Added";
+    case "D":
+      return "Deleted";
+    case "R":
+      return "Renamed";
+    case "C":
+      return "Copied";
+    case "U":
+      return "Unmerged";
+    case "?":
+      return "Untracked";
+    default:
+      return letter;
+  }
+}
+
 function gitFilePlusMinus(f: GitFileEntry): string {
   const ins = f.additions ?? f.insertions;
   const del = f.deletions;
@@ -3868,6 +4061,21 @@ function gitFilePlusMinus(f: GitFileEntry): string {
   if (ins != null && ins > 0) parts.push(`<span class="git-pm-add">+${ins}</span>`);
   if (del != null && del > 0) parts.push(`<span class="git-pm-del">−${del}</span>`);
   return parts.length ? `<span class="git-pm">${parts.join(" ")}</span>` : "";
+}
+
+function gitTotalsHTML(): string {
+  const files = state.gitStatus?.files ?? [];
+  let add = 0;
+  let del = 0;
+  for (const f of files) {
+    add += f.additions ?? f.insertions ?? 0;
+    del += f.deletions ?? 0;
+  }
+  if (!files.length && !add && !del) return "";
+  return `<span class="git-totals" title="Total line changes">
+    <span class="git-pm-add">+${add}</span>
+    <span class="git-pm-del">−${del}</span>
+  </span>`;
 }
 
 function gitBranchMetaHTML(): string {
@@ -3882,7 +4090,7 @@ function gitBranchMetaHTML(): string {
     return `<div class="git-branch-row"><span class="tool-status">—</span></div>`;
   }
   if (st.is_repo === false) {
-    return `<div class="git-branch-row"><span class="tool-status">Not a git repo</span></div>`;
+    return `<div class="git-branch-row"><span class="tool-status">Not a git repo in this workspace</span></div>`;
   }
   const branch = st.branch || st.head || "—";
   const dirty = st.dirty || (st.files && st.files.length > 0);
@@ -3896,24 +4104,30 @@ function gitBranchMetaHTML(): string {
     badges.push(`<span class="git-badge" title="Commits behind upstream">↓${st.behind}</span>`);
   }
   const n = st.files?.length ?? 0;
+  const upstream = st.upstream ? ` · ${st.upstream}` : "";
   return `<div class="git-branch-row">
-    <span class="git-branch" title="${esc(st.upstream || "")}">${iconSvg("git-branch")}<strong>${esc(branch)}</strong></span>
+    <span class="git-branch" title="${esc(st.upstream || branch)}">${iconSvg("git-branch")}<strong>${esc(branch)}</strong></span>
     ${badges.join("")}
-    <span class="tool-status">${n} file${n === 1 ? "" : "s"}</span>
+    <span class="tool-status">${n} file${n === 1 ? "" : "s"}${esc(upstream)}</span>
+    ${gitTotalsHTML()}
   </div>`;
 }
 
 function gitFileListHTML(): string {
   const files = state.gitStatus?.files ?? [];
   const allActive = state.gitSelectedPath == null;
-  const head = `<button type="button" class="git-file ${allActive ? "active" : ""}" data-action="git-select-all">
+  const head = `<button type="button" class="git-file git-file-all ${allActive ? "active" : ""}" data-action="git-select-all">
       <span class="git-file-letter">∗</span>
       <span class="git-file-path">All changes</span>
+      <span class="git-file-count">${files.length}</span>
     </button>`;
   if (!files.length) {
     return `<div class="git-file-list" data-git-files>
       ${head}
-      <div class="empty-soft">Working tree clean</div>
+      <div class="git-empty-files">
+        <p class="git-empty-title">Working tree clean</p>
+        <p class="git-empty-hint">No uncommitted changes in this workspace.</p>
+      </div>
     </div>`;
   }
   const rows = files
@@ -3930,13 +4144,18 @@ function gitFileListHTML(): string {
       ]
         .filter(Boolean)
         .join(" ");
+      const name = basename(path);
+      const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       return `<div class="${cls}" data-git-path="${esc(path)}">
         <label class="git-file-check" title="Include in commit">
           <input type="checkbox" data-action-change="git-check" data-path="${esc(path)}" ${checked ? "checked" : ""} />
         </label>
         <button type="button" class="git-file-btn" data-action="git-select-file" data-path="${esc(path)}">
-          <span class="git-file-letter" title="Status">${esc(letter)}</span>
-          <span class="git-file-path" title="${esc(path)}">${esc(path)}</span>
+          <span class="git-file-letter" title="${esc(gitStatusLabel(letter))}">${esc(letter)}</span>
+          <span class="git-file-text">
+            <span class="git-file-name" title="${esc(path)}">${esc(name)}</span>
+            ${dir ? `<span class="git-file-dir" title="${esc(dir)}">${esc(dir)}</span>` : ""}
+          </span>
           ${gitFilePlusMinus(f)}
         </button>
       </div>`;
@@ -3948,110 +4167,233 @@ function gitFileListHTML(): string {
 /** Escape + colorize unified diff lines (textContent-safe via esc). */
 function gitDiffLinesHTML(diff: string): string {
   if (!diff) {
-    return `<div class="empty-soft">${state.gitDiffLoading ? "Loading diff…" : "No diff"}</div>`;
+    if (state.gitDiffLoading) {
+      return `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`;
+    }
+    if (state.gitStatus?.is_repo === false) {
+      return `<div class="git-empty-diff">
+        <p class="git-empty-title">Not a git repository</p>
+        <p class="git-empty-hint">Pick a workspace that has a <code>.git</code> directory.</p>
+      </div>`;
+    }
+    if (!(state.gitStatus?.files?.length)) {
+      return `<div class="git-empty-diff">
+        <p class="git-empty-title">Nothing to show</p>
+        <p class="git-empty-hint">Working tree is clean — no unstaged diff.</p>
+      </div>`;
+    }
+    return `<div class="git-empty-diff">
+      <p class="git-empty-title">No diff for this selection</p>
+      <p class="git-empty-hint">Binary files, renames, or pure mode changes may not render here.</p>
+    </div>`;
   }
   const lines = diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  // drop trailing empty from final newline
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  let oldLn = 0;
+  let newLn = 0;
   const body = lines
     .map((line) => {
       let cls = "git-diff-line";
-      if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ")) {
+      let gutL = "";
+      let gutR = "";
+      if (
+        line.startsWith("+++") ||
+        line.startsWith("---") ||
+        line.startsWith("diff ") ||
+        line.startsWith("index ") ||
+        line.startsWith("new file") ||
+        line.startsWith("deleted file") ||
+        line.startsWith("similarity") ||
+        line.startsWith("rename ")
+      ) {
         cls += " git-diff-meta";
       } else if (line.startsWith("@@")) {
         cls += " git-diff-hunk";
+        const m = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)/.exec(line);
+        if (m) {
+          oldLn = Number(m[1]) - 1;
+          newLn = Number(m[2]) - 1;
+        }
       } else if (line.startsWith("+")) {
         cls += " git-diff-add";
+        newLn += 1;
+        gutR = String(newLn);
       } else if (line.startsWith("-")) {
         cls += " git-diff-del";
+        oldLn += 1;
+        gutL = String(oldLn);
+      } else if (line.startsWith("\\")) {
+        cls += " git-diff-meta";
+      } else {
+        oldLn += 1;
+        newLn += 1;
+        gutL = String(oldLn);
+        gutR = String(newLn);
+        if (line.startsWith(" ")) {
+          /* context */
+        } else {
+          cls += " git-diff-ctx";
+        }
       }
-      return `<span class="${cls}">${esc(line)}\n</span>`;
+      const mark =
+        line.startsWith("+") && !line.startsWith("+++")
+          ? "+"
+          : line.startsWith("-") && !line.startsWith("---")
+            ? "−"
+            : " ";
+      return `<div class="${cls}"><span class="git-diff-gutter" aria-hidden="true"><span class="git-ln">${esc(gutL)}</span><span class="git-ln">${esc(gutR)}</span><span class="git-mark">${mark}</span></span><span class="git-diff-code">${esc(line.length && (line[0] === "+" || line[0] === "-" || line[0] === " ") ? line.slice(1) : line)}</span></div>`;
     })
     .join("");
-  return `<pre class="git-diff" data-git-diff aria-label="Diff">${body}</pre>`;
+  return `<div class="git-diff" data-git-diff role="region" aria-label="Diff">${body}</div>`;
 }
 
-function gitChangesHTML(): string {
+function paintGitPage(opts?: { animateIn?: boolean }): void {
+  if (state.panel !== "changes" || !state.shellMounted) {
+    document.getElementById("git-page-root")?.remove();
+    return;
+  }
+  let root = document.getElementById("git-page-root");
+  const wasMissing = !root;
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "git-page-root";
+    root.className = "git-page-root";
+    document.body.appendChild(root);
+  }
+  root.innerHTML = gitPageHTML();
+  root.style.opacity = "";
+  root.style.transform = "";
+  if (opts?.animateIn || wasMissing) {
+    void animateSettingsIn(root);
+  }
+}
+
+function gitPageHTML(): string {
   const busy = state.gitBusy || state.gitLoading;
-  const selLabel = state.gitSelectedPath
-    ? state.gitSelectedPath
-    : "All changes";
+  const selLabel = state.gitSelectedPath || "All changes";
+  const files = state.gitStatus?.files ?? [];
   const checkedN = state.gitCheckedPaths.length;
   const commitScope =
-    checkedN > 0 ? `${checkedN} selected` : "all dirty files";
+    checkedN > 0
+      ? `${checkedN} of ${files.length} file${files.length === 1 ? "" : "s"}`
+      : files.length
+        ? `all ${files.length} dirty file${files.length === 1 ? "" : "s"}`
+        : "no files";
+  const commitDisabled = state.gitBusy || !files.length;
   return `
-    <div class="modal-body git-changes-body sheet-form">
-      <div class="field git-cwd-row">
-        <label for="git-cwd-select">Workspace</label>
-        <div class="git-cwd-controls">
-          <select id="git-cwd-select" data-action-change="git-cwd" ${busy ? "disabled" : ""}>
-            ${workspaceOptionsHTML()}
-          </select>
-          <button type="button" class="ghost btn-sm" data-action="git-refresh" title="Refresh" ${busy ? "disabled" : ""}>Refresh</button>
-        </div>
-      </div>
-      ${gitBranchMetaHTML()}
-      ${state.gitError && state.gitStatus ? `<p class="form-error" role="alert">${esc(state.gitError)}</p>` : ""}
-      <div class="git-split" role="group" aria-label="Files and diff">
-        <div class="git-files-col">
-          <div class="git-col-head">Files</div>
-          ${gitFileListHTML()}
-        </div>
-        <div class="git-diff-col">
-          <div class="git-col-head" title="${esc(selLabel)}">Diff · ${esc(selLabel)}</div>
-          <div class="git-diff-wrap" data-git-diff-wrap>
-            ${state.gitDiffLoading ? `<div class="empty-soft">Loading diff…</div>` : gitDiffLinesHTML(state.gitDiffText)}
+    <div class="git-page" role="main" aria-label="Git changes">
+      <header class="git-page-head">
+        <div class="git-page-head-lead">
+          <button type="button" class="ghost btn-icon" data-action="close-git-page" title="Back to desk (Esc)" aria-label="Back to desk">
+            ${iconSvg("panel")}
+          </button>
+          <div class="git-page-titles">
+            <div class="eyebrow">Workspace</div>
+            <h1>Changes</h1>
+            ${gitBranchMetaHTML()}
           </div>
         </div>
-      </div>
-      <div class="git-actions-stack">
-        <details class="details-block git-commit-block" open>
-          <summary>Commit <span class="opt">${esc(commitScope)}</span></summary>
-          <form class="git-commit-form" data-action-form="git-commit">
-            <div class="field">
-              <label for="git-commit-msg">Message</label>
-              <textarea id="git-commit-msg" name="message" rows="2" placeholder="Commit message" required ${state.gitBusy ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
-            </div>
-            <div class="btn-row">
-              <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
-            </div>
-          </form>
-        </details>
-        <details class="details-block git-pr-block">
-          <summary>Create pull request</summary>
-          <form class="git-pr-form" data-action-form="git-pr">
-            <div class="field">
-              <label for="git-pr-title">Title</label>
-              <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
-            </div>
-            <div class="field">
-              <label for="git-pr-body">Body <span class="opt">optional</span></label>
-              <textarea id="git-pr-body" name="body" rows="2" placeholder="Description" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
-            </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="git-pr-base">Base <span class="opt">optional</span></label>
-                <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
-              </div>
-              <div class="field field--check-end">
-                <label class="check">
-                  <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
-                  Draft PR
-                </label>
-              </div>
-            </div>
-            <div class="btn-row">
-              <button type="submit" class="primary btn-sm" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
-            </div>
+        <div class="git-page-head-actions">
+          <label class="git-cwd-label" for="git-cwd-select">
+            <span class="sr-only">Workspace</span>
+            <select id="git-cwd-select" class="git-cwd-select" data-action-change="git-cwd" ${busy ? "disabled" : ""} title="Workspace">
+              ${workspaceOptionsHTML()}
+            </select>
+          </label>
+          <button type="button" class="ghost btn-sm" data-action="git-refresh" title="Refresh status" ${busy ? "disabled" : ""}>
+            ${state.gitLoading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button type="button" class="ghost btn-icon sm" data-action="close-git-page" title="Close (Esc)" aria-label="Close">
+            ${iconSvg("x")}
+          </button>
+        </div>
+      </header>
+      ${
+        state.gitError
+          ? `<div class="git-page-banner" role="alert">${esc(state.gitError)}</div>`
+          : ""
+      }
+      <div class="git-page-body">
+        <aside class="git-page-files" aria-label="Changed files">
+          <div class="git-col-head">
+            <span>Files</span>
+            <span class="git-col-meta">${files.length}</span>
+          </div>
+          ${gitFileListHTML()}
+        </aside>
+        <section class="git-page-diff" aria-label="Diff viewer">
+          <div class="git-col-head git-diff-head" title="${esc(selLabel)}">
+            <span class="git-diff-head-label">Diff</span>
+            <code class="git-diff-head-path">${esc(selLabel)}</code>
+          </div>
+          <div class="git-diff-wrap" data-git-diff-wrap>
             ${
-              state.gitPrUrl
-                ? `<p class="form-hint git-pr-url">PR: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
-                : ""
+              state.gitDiffLoading
+                ? `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`
+                : gitDiffLinesHTML(state.gitDiffText)
             }
-          </form>
-        </details>
+          </div>
+        </section>
+        <aside class="git-page-side" aria-label="Commit and pull request">
+          <div class="git-side-card">
+            <div class="git-side-card-head">
+              <h2>Commit</h2>
+              <span class="opt">${esc(commitScope)}</span>
+            </div>
+            <form class="git-commit-form" data-action-form="git-commit">
+              <div class="field">
+                <label for="git-commit-msg">Message</label>
+                <textarea id="git-commit-msg" name="message" rows="4" placeholder="Describe why this change exists…" required ${commitDisabled ? "disabled" : ""}>${esc(state.gitCommitMsg)}</textarea>
+              </div>
+              <p class="form-hint">Checked files are included. Leave all checked to commit everything dirty.</p>
+              <div class="btn-row">
+                <button type="submit" class="primary" ${commitDisabled ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Commit"}</button>
+              </div>
+            </form>
+          </div>
+          <div class="git-side-card">
+            <div class="git-side-card-head">
+              <h2>Pull request</h2>
+            </div>
+            <form class="git-pr-form" data-action-form="git-pr">
+              <div class="field">
+                <label for="git-pr-title">Title</label>
+                <input id="git-pr-title" name="title" value="${esc(state.gitPrTitle)}" placeholder="PR title" required autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+              </div>
+              <div class="field">
+                <label for="git-pr-body">Body <span class="opt">optional</span></label>
+                <textarea id="git-pr-body" name="body" rows="3" placeholder="What should reviewers know?" ${state.gitBusy ? "disabled" : ""}>${esc(state.gitPrBody)}</textarea>
+              </div>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="git-pr-base">Base <span class="opt">optional</span></label>
+                  <input id="git-pr-base" name="base" value="${esc(state.gitPrBase)}" placeholder="main" autocomplete="off" ${state.gitBusy ? "disabled" : ""} />
+                </div>
+                <div class="field field--check-end">
+                  <label class="check">
+                    <input type="checkbox" id="git-pr-draft" ${state.gitPrDraft ? "checked" : ""} ${state.gitBusy ? "disabled" : ""} />
+                    Draft PR
+                  </label>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button type="submit" class="primary" ${state.gitBusy ? "disabled" : ""}>${state.gitBusy ? "Working…" : "Create PR"}</button>
+              </div>
+              ${
+                state.gitPrUrl
+                  ? `<p class="form-hint git-pr-url">Opened: <a href="${esc(state.gitPrUrl)}" target="_blank" rel="noopener noreferrer">${esc(state.gitPrUrl)}</a></p>`
+                  : ""
+              }
+            </form>
+          </div>
+        </aside>
       </div>
     </div>`;
+}
+
+/** Legacy modal body (kept for stripModalChrome / safety). */
+function gitChangesHTML(): string {
+  return gitPageHTML();
 }
 
 function syncGitFormFromDOM(): void {
@@ -4078,20 +4420,22 @@ function gitCwd(): string {
   return toolsCwd();
 }
 
+function gitPageScope(): string {
+  return "#git-page-root";
+}
+
 async function refreshGitChanges(): Promise<void> {
   const cwd = gitCwd();
   state.gitLoading = true;
   state.gitError = "";
   if (state.panel === "changes") {
-    // light status update in branch row without full wipe if possible
-    const row = document.querySelector(".app-modal-body .git-branch-row");
+    const row = document.querySelector(`${gitPageScope()} .git-branch-row`);
     if (row) row.innerHTML = `<span class="tool-status">Loading…</span>`;
   }
   try {
     const st = await gitStatus(cwd);
     state.gitStatus = st;
     if (st.error) state.gitError = st.error;
-    // drop checks for paths no longer present
     const paths = new Set((st.files || []).map((f) => f.path));
     state.gitCheckedPaths = state.gitCheckedPaths.filter((p) => paths.has(p));
     if (state.gitSelectedPath && !paths.has(state.gitSelectedPath)) {
@@ -4106,7 +4450,7 @@ async function refreshGitChanges(): Promise<void> {
   }
   if (state.panel === "changes") {
     syncGitFormFromDOM();
-    await paintPanel();
+    paintGitPage();
   }
   await loadGitDiff();
 }
@@ -4130,10 +4474,12 @@ async function loadGitDiff(): Promise<void> {
     });
     state.gitDiffText = out.diff || out.patch || "";
     if (out.error && !state.gitDiffText) {
-      state.gitDiffText = `// ${out.error}`;
+      state.gitDiffText = "";
+      if (out.error) state.gitError = out.error;
     }
   } catch (e) {
-    state.gitDiffText = `// ${(e as Error).message || "diff failed"}`;
+    state.gitDiffText = "";
+    state.gitError = (e as Error).message || "diff failed";
   } finally {
     state.gitDiffLoading = false;
     paintGitDiffOnly();
@@ -4141,23 +4487,26 @@ async function loadGitDiff(): Promise<void> {
 }
 
 function paintGitDiffOnly(): void {
-  const wrap = document.querySelector<HTMLElement>(".app-modal-body [data-git-diff-wrap]");
-  if (!wrap) return;
-  wrap.innerHTML = state.gitDiffLoading
-    ? `<div class="empty-soft">Loading diff…</div>`
-    : gitDiffLinesHTML(state.gitDiffText);
-  const head = document.querySelector(".app-modal-body .git-diff-col .git-col-head");
-  if (head) {
-    const label = state.gitSelectedPath || "All changes";
-    head.textContent = `Diff · ${label}`;
-    head.setAttribute("title", label);
+  const root = document.getElementById("git-page-root");
+  if (!root) return;
+  const wrap = root.querySelector<HTMLElement>("[data-git-diff-wrap]");
+  if (wrap) {
+    wrap.innerHTML = state.gitDiffLoading
+      ? `<div class="git-empty-diff"><p class="git-empty-title">Loading diff…</p></div>`
+      : gitDiffLinesHTML(state.gitDiffText);
   }
-  // file active states
-  document.querySelectorAll<HTMLElement>(".app-modal-body [data-git-path]").forEach((row) => {
+  const pathEl = root.querySelector(".git-diff-head-path");
+  if (pathEl) {
+    const label = state.gitSelectedPath || "All changes";
+    pathEl.textContent = label;
+  }
+  const head = root.querySelector(".git-diff-head");
+  if (head) head.setAttribute("title", state.gitSelectedPath || "All changes");
+  root.querySelectorAll<HTMLElement>("[data-git-path]").forEach((row) => {
     const path = row.getAttribute("data-git-path") || "";
     row.classList.toggle("active", state.gitSelectedPath === path);
   });
-  document.querySelectorAll<HTMLElement>(".app-modal-body [data-action='git-select-all']").forEach((btn) => {
+  root.querySelectorAll<HTMLElement>("[data-action='git-select-all']").forEach((btn) => {
     btn.classList.toggle("active", state.gitSelectedPath == null);
   });
 }
@@ -4165,6 +4514,8 @@ function paintGitDiffOnly(): void {
 async function onGitSelectFile(path: string | null): Promise<void> {
   syncGitFormFromDOM();
   state.gitSelectedPath = path;
+  // Update active styles immediately
+  paintGitDiffOnly();
   await loadGitDiff();
 }
 
@@ -4182,7 +4533,7 @@ async function onGitCommit(): Promise<void> {
     : `${state.gitStatus?.files?.length ?? 0} change(s)`;
   if (!confirm(`Commit ${scope} in ${cwd}?\n\n${message}`)) return;
   state.gitBusy = true;
-  await paintPanel();
+  paintGitPage();
   try {
     const out = await gitCommit({
       cwd,
@@ -4199,7 +4550,7 @@ async function onGitCommit(): Promise<void> {
     await refreshGitChanges();
   } catch (e) {
     state.gitBusy = false;
-    await paintPanel();
+    paintGitPage();
     toast((e as Error).message || "commit failed", "err", 6000);
   }
 }
@@ -4215,7 +4566,7 @@ async function onGitCreatePR(): Promise<void> {
   if (!confirm(`Create pull request “${title}” for ${cwd}?`)) return;
   state.gitBusy = true;
   state.gitPrUrl = "";
-  await paintPanel();
+  paintGitPage();
   try {
     const out = await gitPullRequest({
       cwd,
@@ -4227,12 +4578,16 @@ async function onGitCreatePR(): Promise<void> {
     const url = out.url || "";
     state.gitPrUrl = url;
     state.gitBusy = false;
-    await paintPanel();
+    paintGitPage();
     if (url) toast(`PR created`, "ok");
-    else toast(out.ok === false ? out.error || "PR create failed" : "PR created", out.ok === false ? "err" : "ok");
+    else
+      toast(
+        out.ok === false ? out.error || "PR create failed" : "PR created",
+        out.ok === false ? "err" : "ok",
+      );
   } catch (e) {
     state.gitBusy = false;
-    await paintPanel();
+    paintGitPage();
     toast((e as Error).message || "create PR failed", "err", 6000);
   }
 }
@@ -4346,6 +4701,9 @@ function paint(): void {
     lastStatusPaintSig = "";
     lastCrumbPaintSig = "";
     hideSessionCtx();
+    hideTopbarMore();
+    closeCommandPalette();
+    document.getElementById("git-page-root")?.remove();
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     app.innerHTML = loginHTML();
     bindLogin();
@@ -4736,24 +5094,14 @@ function shellHTML(): string {
         <div class="tabs" id="tabs" role="tablist" aria-label="Open sessions">${tabsHTML()}</div>
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill" title="PTY connection" aria-live="polite"><span class="conn-dot" aria-hidden="true"></span>idle</span>
-          <button type="button" class="ghost btn-icon sm" data-action="open-palette" title="Command palette (⌘K)" aria-label="Command palette">
+          <button type="button" class="topbar-spotlight" data-action="open-palette" title="Spotlight search (⌘K)" aria-label="Spotlight search">
             ${iconSvg("search")}
+            <span class="topbar-spotlight-label">Search…</span>
+            <kbd>⌘K</kbd>
           </button>
-          <details class="menu topbar-menu">
-            <summary class="ghost btn-icon sm" title="More actions" aria-label="More actions">${iconSvg("more")}</summary>
-            <div class="menu-panel" role="menu">
-              <button type="button" role="menuitem" data-action="new-session">New session <kbd>n</kbd></button>
-              <button type="button" role="menuitem" data-action="new-project">New project <kbd>⇧n</kbd></button>
-              <button type="button" role="menuitem" data-action="open-shell">Terminal <kbd>⇧t</kbd></button>
-              <button type="button" role="menuitem" data-action="open-remote">Open remote…</button>
-              <button type="button" role="menuitem" data-action="tools">Tools <kbd>t</kbd></button>
-              <button type="button" role="menuitem" data-action="git-changes">Git changes <kbd>⇧g</kbd></button>
-              <button type="button" role="menuitem" data-action="open-settings" data-tab="accounts">Settings <kbd>,</kbd></button>
-              <button type="button" role="menuitem" data-action="help">Shortcuts <kbd>?</kbd></button>
-              <button type="button" role="menuitem" data-action="toggle-theme">Toggle theme</button>
-              <button type="button" role="menuitem" data-action="prune">Clear stopped</button>
-            </div>
-          </details>
+          <button type="button" class="ghost btn-icon sm" data-action="topbar-more" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">
+            ${iconSvg("more")}
+          </button>
         </div>
       </header>
       <div class="term-wrap">
@@ -5444,12 +5792,19 @@ function bindKeys(): void {
         ev.preventDefault();
         return;
       }
+      const moreOpen = document.getElementById("topbar-more-menu");
+      if (moreOpen && !moreOpen.hidden) {
+        hideTopbarMore();
+        ev.preventDefault();
+        return;
+      }
       if (state.drawer) {
         state.drawer = null;
         void paintDrawer();
         ev.preventDefault();
         return;
       }
+      // Full-page git or any panel
       if (state.panel) {
         void closePanel();
         ev.preventDefault();
@@ -5475,13 +5830,43 @@ function bindKeys(): void {
       return;
     }
 
+    // Spotlight keyboard navigation (works while input is focused)
+    if (state.commandPalette) {
+      if (ev.key === "ArrowDown" || (ev.key === "n" && ev.ctrlKey)) {
+        ev.preventDefault();
+        const n = paletteItems().length;
+        if (n) {
+          state.paletteIndex = (state.paletteIndex + 1) % n;
+          paintCommandPalette();
+          (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
+        }
+        return;
+      }
+      if (ev.key === "ArrowUp" || (ev.key === "p" && ev.ctrlKey)) {
+        ev.preventDefault();
+        const n = paletteItems().length;
+        if (n) {
+          state.paletteIndex = (state.paletteIndex - 1 + n) % n;
+          paintCommandPalette();
+          (document.getElementById("palette-input") as HTMLInputElement | null)?.focus();
+        }
+        return;
+      }
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        runPaletteIndex(state.paletteIndex);
+        return;
+      }
+      // Ctrl/Cmd+K while open still toggles closed below
+    }
+
     const typing = isTypingTarget(ev.target);
     const inTerm = isXtermTarget(ev.target);
 
-    // Form fields: only Escape (above). Don't steal typing.
-    if (typing && !inTerm) return;
+    // Form fields: only Escape (above) + spotlight nav. Don't steal typing.
+    if (typing && !inTerm && !state.commandPalette) return;
 
-    // Command palette: Ctrl/Cmd+K (and Ctrl/Cmd+P)
+    // Spotlight: Ctrl/Cmd+K (and Ctrl/Cmd+P)
     if (
       (ev.metaKey || ev.ctrlKey) &&
       !ev.altKey &&
@@ -5492,6 +5877,9 @@ function bindKeys(): void {
       else openCommandPalette();
       return;
     }
+
+    // If spotlight is open, don't run bare shortcuts over the search field
+    if (state.commandPalette) return;
 
     // Tab switching with modifiers — works even over TTY (agent doesn't get these)
     if (ev.metaKey || ev.ctrlKey) {
@@ -5616,9 +6004,18 @@ function ensureUIDelegation(): void {
       return;
     }
 
-    // Click outside closes context menu
+    // Click outside closes context menu / topbar more
     if (ctxSessionId && !t.closest("#ctx-menu")) {
       hideSessionCtx();
+    }
+    const moreMenu = document.getElementById("topbar-more-menu");
+    if (
+      moreMenu &&
+      !moreMenu.hidden &&
+      !t.closest("#topbar-more-menu") &&
+      !t.closest("[data-action='topbar-more']")
+    ) {
+      hideTopbarMore();
     }
 
     // In-app <a data-nav> links (session list, breadcrumbs, etc.)
@@ -5653,6 +6050,9 @@ function ensureUIDelegation(): void {
     if (actionEl.hasAttribute("disabled") || (actionEl as HTMLButtonElement).disabled) return;
     const action = actionEl.getAttribute("data-action");
     if (!action) return;
+
+    // Any menu action closes the portaled ⋮ menu (except the toggle itself)
+    if (action !== "topbar-more") hideTopbarMore();
 
     switch (action) {
       case "new-session":
@@ -5705,6 +6105,11 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         ev.stopPropagation();
         closeSettings();
+        break;
+      case "close-git-page":
+        ev.preventDefault();
+        ev.stopPropagation();
+        void closePanel();
         break;
       case "settings-tab":
         ev.preventDefault();
@@ -5810,13 +6215,20 @@ function ensureUIDelegation(): void {
       case "open-palette":
         ev.preventDefault();
         ev.stopPropagation();
-        // close any open menus
         document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        hideTopbarMore();
         openCommandPalette();
+        break;
+      case "topbar-more":
+        ev.preventDefault();
+        ev.stopPropagation();
+        document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        toggleTopbarMore(actionEl);
         break;
       case "toggle-theme":
         ev.preventDefault();
         document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+        hideTopbarMore();
         toggleTheme();
         if (state.settingsOpen && state.settingsTab === "about") paintSettings();
         break;
@@ -5976,6 +6388,16 @@ function ensureUIDelegation(): void {
       }
       // collapse full selection back to "all"
       state.gitCheckedPaths = checked.length === files.length ? [] : checked;
+      const scopeEl = document.querySelector("#git-page-root .git-side-card-head .opt");
+      if (scopeEl) {
+        const n = state.gitCheckedPaths.length;
+        const total = files.length;
+        scopeEl.textContent = n > 0
+          ? `${n} of ${total} file${total === 1 ? "" : "s"}`
+          : total
+            ? `all ${total} dirty file${total === 1 ? "" : "s"}`
+            : "no files";
+      }
     }
     if (kind === "sess-agent" && el instanceof HTMLSelectElement) {
       state.formAgent = el.value;

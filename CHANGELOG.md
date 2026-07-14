@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] — 2026-07-14
+
+### Added
+
+- **Spotlight search** — topbar search pill opens a centered command palette
+  - Search sessions by name / agent / cwd / branch
+  - ↑↓ / ↵ / Esc keyboard navigation
+- **Git Changes full page** (`/changes`, `/git`) — replaces the modal sheet
+  - Files list · full-height diff with line gutters · commit & PR side cards
+  - Workspace switcher, branch badges, dirty/clean + totals
+
+### Fixed
+
+- **Topbar ⋮ menu under terminal** — portaled body-level menu with raised z-index
+- Restored command-palette and git panel CSS dropped in the Vaul→modal rewrite
+
+### Changed
+
+- Topbar more-menu: grouped Create / Workspace / App sections with icons
+
 ## [0.8.0] — 2026-07-14
 
 ### Changed
