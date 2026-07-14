@@ -27,6 +27,8 @@ import {
   listSessions,
   listSSHKeys,
   listWorkspaces,
+  saveAgentAccount,
+  switchAgentAccount,
   memoryIndex,
   memorySearch,
   memoryStats,
@@ -56,6 +58,7 @@ type OpenTab = {
 };
 
 type Panel = null | "new" | "tools" | "help";
+type SettingsTab = "accounts" | "github" | "ssh" | "workspace" | "about";
 type ConnState = "idle" | "connecting" | "live" | "reconnecting" | "error";
 type ToastKind = "info" | "ok" | "err";
 
@@ -109,6 +112,13 @@ type AppState = {
   ghStatus: GHStatus | null;
   ghLoginToken: string;
   ghBusy: boolean;
+  settingsOpen: boolean;
+  settingsTab: SettingsTab;
+  settingsPlatform: string;
+  settingsPlatforms: AgentPlatformStatus[];
+  settingsAcctId: string;
+  settingsAcctLabel: string;
+  settingsBusy: boolean;
 };
 
 const state: AppState = {
@@ -158,6 +168,13 @@ const state: AppState = {
   ghStatus: null,
   ghLoginToken: "",
   ghBusy: false,
+  settingsOpen: false,
+  settingsTab: "accounts",
+  settingsPlatform: "grok",
+  settingsPlatforms: [],
+  settingsAcctId: "personal",
+  settingsAcctLabel: "",
+  settingsBusy: false,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -386,6 +403,7 @@ function logout(): void {
   state.panel = null;
   state.conn = "idle";
   state.sidebarOpen = false;
+  state.settingsOpen = false;
   shellBound = false;
   paint();
 }
@@ -679,6 +697,377 @@ function closePanel(): void {
     document.getElementById("panel-overlay")?.remove();
   }
   term?.focus();
+}
+
+function openSettings(tab?: SettingsTab): void {
+  if (tab) state.settingsTab = tab;
+  state.settingsOpen = true;
+  state.sidebarOpen = false;
+  void loadSettingsData().then(() => paintSettings());
+}
+
+function closeSettings(): void {
+  state.settingsOpen = false;
+  document.getElementById("settings-root")?.remove();
+  term?.focus();
+}
+
+async function loadSettingsData(): Promise<void> {
+  const tasks: Promise<void>[] = [];
+  if (state.settingsTab === "accounts") {
+    tasks.push(
+      (async () => {
+        try {
+          const out = (await listAgentAccounts()) as {
+            platforms?: AgentPlatformStatus[];
+          };
+          state.settingsPlatforms = out.platforms || [];
+          if (
+            !state.settingsPlatforms.find((p) => p.platform === state.settingsPlatform)
+          ) {
+            state.settingsPlatform = state.settingsPlatforms[0]?.platform || "grok";
+          }
+        } catch (e) {
+          state.settingsPlatforms = [];
+          toast((e as Error).message || "Failed to load accounts", "err");
+        }
+      })(),
+    );
+  }
+  if (state.settingsTab === "github") {
+    tasks.push(refreshGHAccounts());
+  }
+  if (state.settingsTab === "ssh") {
+    tasks.push(refreshSSHKeys());
+  }
+  if (state.settingsTab === "workspace") {
+    tasks.push(refreshToolsStatus());
+  }
+  await Promise.all(tasks);
+}
+
+function paintSettings(): void {
+  if (!state.settingsOpen || !state.shellMounted) {
+    document.getElementById("settings-root")?.remove();
+    return;
+  }
+  let root = document.getElementById("settings-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "settings-root";
+    root.className = "settings-root";
+    document.body.appendChild(root);
+  }
+  root.innerHTML = settingsHTML();
+}
+
+function settingsHTML(): string {
+  const tabs: { id: SettingsTab; label: string; hint: string }[] = [
+    { id: "accounts", label: "Agent accounts", hint: "Cursor · Claude · Grok · Codex" },
+    { id: "github", label: "GitHub (gh)", hint: "CLI logins on this host" },
+    { id: "ssh", label: "SSH keys", hint: "Host identities" },
+    { id: "workspace", label: "Workspace tools", hint: "Map · memory · browser" },
+    { id: "about", label: "About", hint: "Host & shortcuts" },
+  ];
+  const nav = tabs
+    .map(
+      (t) => `
+      <button type="button" class="settings-nav-item ${state.settingsTab === t.id ? "active" : ""}" data-action="settings-tab" data-tab="${t.id}">
+        <span class="settings-nav-label">${esc(t.label)}</span>
+        <span class="settings-nav-hint">${esc(t.hint)}</span>
+      </button>`,
+    )
+    .join("");
+
+  let body = "";
+  switch (state.settingsTab) {
+    case "accounts":
+      body = settingsAccountsHTML();
+      break;
+    case "github":
+      body = settingsGitHubHTML();
+      break;
+    case "ssh":
+      body = settingsSSHHTML();
+      break;
+    case "workspace":
+      body = settingsWorkspaceHTML();
+      break;
+    case "about":
+      body = settingsAboutHTML();
+      break;
+  }
+
+  return `
+    <div class="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <aside class="settings-nav">
+        <div class="settings-nav-head">
+          <div class="eyebrow">Host</div>
+          <h1 id="settings-title">Settings</h1>
+        </div>
+        <nav class="settings-nav-list">${nav}</nav>
+        <button type="button" class="ghost settings-nav-close" data-action="close-settings">← Back to desk</button>
+      </aside>
+      <section class="settings-main">
+        <header class="settings-main-head">
+          <h2>${esc(tabs.find((t) => t.id === state.settingsTab)?.label || "Settings")}</h2>
+          <button type="button" class="ghost btn-sm" data-action="close-settings" title="Close (Esc)">✕</button>
+        </header>
+        <div class="settings-body">${body}</div>
+      </section>
+    </div>`;
+}
+
+function settingsAccountsHTML(): string {
+  const plats = state.settingsPlatforms;
+  if (!plats.length) {
+    return `
+      <div class="settings-empty">
+        <p><strong>cursor-switch</strong> is required for multi-account profiles.</p>
+        <p class="form-hint">Install from <code>github.com/reloadlife/cursor-account-switcher</code> on this host, then refresh.</p>
+        <button type="button" class="primary" data-action="settings-refresh">Retry</button>
+      </div>`;
+  }
+  const platTabs = plats
+    .map(
+      (p) =>
+        `<button type="button" class="chip ${state.settingsPlatform === p.platform ? "active" : ""}" data-action="settings-platform" data-platform="${esc(p.platform)}">${esc(p.platform)}</button>`,
+    )
+    .join("");
+  const cur =
+    plats.find((p) => p.platform === state.settingsPlatform) || plats[0];
+  const rows = (cur?.accounts || [])
+    .map((a) => {
+      const saved = a.saved
+        ? `<span class="badge running">saved</span>`
+        : `<span class="badge">empty</span>`;
+      const active = a.active ? `<span class="badge running">active</span>` : "";
+      return `
+        <div class="settings-card">
+          <div class="settings-card-main">
+            <div class="settings-card-title">
+              <strong>${esc(a.label || a.id)}</strong>
+              <code>${esc(a.id)}</code>
+              ${saved}${active}
+            </div>
+            <div class="settings-card-meta">
+              ${a.email ? esc(a.email) : "No profile saved yet"}
+              ${a.saved_at ? ` · ${esc(a.saved_at)}` : ""}
+            </div>
+          </div>
+          <div class="settings-card-actions">
+            <button type="button" class="ghost btn-sm" data-action="acct-save" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" data-label="${esc(a.label || a.id)}" title="Save current live login as this profile">Save current</button>
+            <button type="button" class="ghost btn-sm" data-action="acct-switch" data-platform="${esc(cur.platform)}" data-id="${esc(a.id)}" ${a.saved ? "" : "disabled"} title="Switch host-wide login">Global switch</button>
+          </div>
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <p class="settings-lede">
+      Profiles from <code>cursor-switch</code>. <strong>Isolated</strong> sessions (default in New session) run accounts in parallel via private HOME.
+      <strong>Global switch</strong> changes the host-wide login for that tool.
+    </p>
+    <div class="chip-row">${platTabs}</div>
+    <div class="settings-stat">
+      <span>Live: <strong>${esc(cur?.current || "—")}</strong></span>
+      <span>Active profile: <strong>${esc(cur?.active || "—")}</strong></span>
+    </div>
+    <div class="settings-cards">${rows || `<div class="settings-empty">No accounts for ${esc(cur?.platform || "")}</div>`}</div>
+    <div class="settings-form-card">
+      <h3>Add account slot</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="settings-acct-id">Id</label>
+          <input id="settings-acct-id" value="${esc(state.settingsAcctId)}" placeholder="personal" />
+        </div>
+        <div class="field">
+          <label for="settings-acct-label">Label</label>
+          <input id="settings-acct-label" value="${esc(state.settingsAcctLabel)}" placeholder="Personal" />
+        </div>
+      </div>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button type="button" class="primary" data-action="acct-add" ${state.settingsBusy ? "disabled" : ""}>Add</button>
+        <button type="button" class="ghost" data-action="settings-refresh">Refresh</button>
+      </div>
+      <p class="form-hint">After adding, log into that CLI on the host, then <strong>Save current</strong>.</p>
+    </div>`;
+}
+
+function settingsGitHubHTML(): string {
+  return `
+    <p class="settings-lede">GitHub CLI accounts on this host. Tokens are write-only — never shown back.</p>
+    <div class="settings-stat">
+      <span>Active: <strong id="gh-active">${esc(state.ghStatus?.active || "—")}</strong></span>
+    </div>
+    <div id="gh-account-list" class="gh-account-list settings-stack">${ghAccountsHTML()}</div>
+    <div class="settings-form-card">
+      <h3>Login with token</h3>
+      <div class="gh-login">
+        <input id="gh-login-token" type="password" placeholder="Paste PAT / fine-grained token" value="" autocomplete="off" />
+        <button type="button" class="primary" data-action="gh-login" ${state.ghBusy ? "disabled" : ""}>${state.ghBusy ? "…" : "Login"}</button>
+        <button type="button" class="ghost" data-action="gh-setup-git">Setup git</button>
+      </div>
+    </div>`;
+}
+
+function settingsSSHHTML(): string {
+  return `
+    <p class="settings-lede">SSH identities under the agents host home. Public keys only — private keys never leave the server.</p>
+    <div class="settings-stat">
+      <span>Dir: <code id="ssh-dir">${esc(state.sshDir || "—")}</code></span>
+    </div>
+    <div class="settings-form-card">
+      <h3>Generate key</h3>
+      <div class="ssh-gen">
+        <input id="ssh-gen-name" placeholder="name e.g. id_github" value="${esc(state.sshGenName)}" autocomplete="off" />
+        <input id="ssh-gen-comment" placeholder="comment (optional)" value="${esc(state.sshGenComment)}" autocomplete="off" />
+        <button type="button" class="primary" data-action="ssh-gen" ${state.sshBusy ? "disabled" : ""}>${state.sshBusy ? "…" : "Generate"}</button>
+      </div>
+    </div>
+    <div id="ssh-key-list" class="ssh-key-list settings-stack">${sshKeysHTML()}</div>`;
+}
+
+function settingsWorkspaceHTML(): string {
+  return `
+    <p class="settings-lede">Project map, workspace memory, and Playwright stack for a selected cwd.</p>
+    <div class="field">
+      <label for="tools-cwd-select">Target workspace</label>
+      <select id="tools-cwd-select" data-action-change="tools-cwd">
+        ${workspaceOptionsHTML()}
+      </select>
+    </div>
+    <div class="settings-cards">
+      <div class="settings-card col">
+        <div class="settings-card-title"><strong>Project map</strong> <span class="tool-status" id="map-status">${esc(state.mapStatus)}</span></div>
+        <p class="tool-desc">Orientation file at <code>.agents/PROJECT_MAP.md</code></p>
+        <div class="btn-row">
+          <button type="button" data-action="map-gen">Generate</button>
+          <button type="button" data-action="map-show">Show</button>
+        </div>
+      </div>
+      <div class="settings-card col">
+        <div class="settings-card-title"><strong>Memory</strong> <span class="tool-status" id="mem-status">${esc(state.memStatus)}</span></div>
+        <p class="tool-desc">FTS (and optional vector) index</p>
+        <div class="btn-row">
+          <button type="button" data-action="mem-index">Reindex</button>
+        </div>
+        <form class="mem-search" data-action-form="mem-search">
+          <input id="mem-query" name="q" placeholder="Search docs…" value="${esc(state.memQuery)}" autocomplete="off" />
+          <button type="submit" class="primary">Search</button>
+        </form>
+        <div id="mem-hits" class="mem-hits">${memHitsHTML()}</div>
+      </div>
+      <div class="settings-card col">
+        <div class="settings-card-title"><strong>Playwright</strong> <span class="tool-status" id="pw-status">${esc(state.pwStatus)}</span></div>
+        <p class="tool-desc">Headed browser stack</p>
+        <div class="btn-row">
+          <button type="button" data-action="pw-start">Start</button>
+          <button type="button" data-action="pw-stop">Stop</button>
+          <button type="button" data-action="pw-restart">Restart</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function settingsAboutHTML(): string {
+  return `
+    <div class="settings-about">
+      <div class="settings-stat">
+        <span>Status: <strong>${esc(state.statusText)}</strong></span>
+        <span>API: <strong>${state.statusOk ? "ok" : "error"}</strong></span>
+      </div>
+      <h3>Keyboard</h3>
+      <dl class="keys">
+        <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
+        <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
+        <div><dt><kbd>t</kbd></dt><dd>Workspace tools (quick)</dd></div>
+        <div><dt><kbd>/</kbd></dt><dd>Filter sessions</dd></div>
+        <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch tab</dd></div>
+        <div><dt><kbd>Esc</kbd></dt><dd>Close settings / modal</dd></div>
+      </dl>
+      <h3>Multi-account</h3>
+      <p class="form-hint">Save CLI logins with <code>cursor-switch --platform grok save personal</code>, then pick the profile when starting a session (isolated = parallel).</p>
+      <h3>Security</h3>
+      <p class="form-hint">Bearer token is full host control. SSH private keys and GitHub tokens are never returned by the API.</p>
+    </div>`;
+}
+
+async function onAcctSave(platform: string, id: string, label: string): Promise<void> {
+  try {
+    toast(`Saving ${platform}/${id}…`, "info", 8000);
+    await saveAgentAccount({ platform, id, label: label || undefined });
+    toast(`Saved ${id}`, "ok");
+    await loadSettingsData();
+    paintSettings();
+  } catch (e) {
+    toast((e as Error).message || "save failed", "err");
+  }
+}
+
+async function onAcctSwitch(platform: string, id: string): Promise<void> {
+  if (!confirm(`Switch host-wide ${platform} login to “${id}”?\n\nThis changes the global auth for that tool.`))
+    return;
+  try {
+    await switchAgentAccount({ platform, id });
+    toast(`Switched ${platform} → ${id}`, "ok");
+    await loadSettingsData();
+    paintSettings();
+  } catch (e) {
+    toast((e as Error).message || "switch failed", "err");
+  }
+}
+
+async function onAcctAdd(): Promise<void> {
+  const idEl = document.getElementById("settings-acct-id") as HTMLInputElement | null;
+  const labelEl = document.getElementById("settings-acct-label") as HTMLInputElement | null;
+  const id = (idEl?.value || "").trim().toLowerCase();
+  const label = (labelEl?.value || "").trim() || id;
+  if (!id) {
+    toast("Account id required", "err");
+    return;
+  }
+  state.settingsBusy = true;
+  paintSettings();
+  try {
+    await requestJSON("/v1/agent-accounts/add", {
+      platform: state.settingsPlatform,
+      id,
+      label,
+    });
+    toast(`Added ${id}`, "ok");
+    state.settingsAcctId = "personal";
+    state.settingsAcctLabel = "";
+    await loadSettingsData();
+    paintSettings();
+  } catch (e) {
+    toast((e as Error).message || "add failed", "err");
+  } finally {
+    state.settingsBusy = false;
+    paintSettings();
+  }
+}
+
+async function requestJSON(path: string, body: Record<string, unknown>): Promise<void> {
+  const token = getToken();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `${res.status}`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j.error) msg = j.error;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
 }
 
 function readCreateForm(): {
@@ -1090,6 +1479,8 @@ function paintTools(): void {
     ghLoginBtn.disabled = state.ghBusy;
     ghLoginBtn.textContent = state.ghBusy ? "…" : "Login";
   }
+  // keep settings page live if open
+  if (state.settingsOpen) paintSettings();
 }
 
 async function refreshSSHKeys(): Promise<void> {
@@ -1554,33 +1945,10 @@ function toolsHTML(): string {
           </div>
         </section>
 
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>GitHub accounts</h3>
-            <span class="tool-status" id="gh-active" title="Active account">${esc(state.ghStatus?.active || "—")}</span>
-          </div>
-          <p class="tool-desc">Server <code>gh</code> logins (tokens never returned). Used for clone/fork and GitHub API.</p>
-          <div id="gh-account-list" class="gh-account-list">${ghAccountsHTML()}</div>
-          <div class="gh-login">
-            <input id="gh-login-token" type="password" placeholder="Paste PAT / fine-grained token" value="" autocomplete="off" />
-            <button type="button" class="primary" data-action="gh-login" ${state.ghBusy ? "disabled" : ""}>${state.ghBusy ? "…" : "Login"}</button>
-            <button type="button" class="ghost" data-action="gh-setup-git" title="gh auth setup-git">Setup git</button>
-          </div>
-        </section>
-
-        <section class="tool-block">
-          <div class="tool-block-head">
-            <h3>SSH keys</h3>
-            <span class="tool-status" id="ssh-dir" title="Server SSH directory">${esc(state.sshDir || "—")}</span>
-          </div>
-          <p class="tool-desc">Identities on the agents host (public keys only — private keys never leave the server)</p>
-          <div class="ssh-gen">
-            <input id="ssh-gen-name" placeholder="name e.g. id_github" value="${esc(state.sshGenName)}" autocomplete="off" />
-            <input id="ssh-gen-comment" placeholder="comment (optional)" value="${esc(state.sshGenComment)}" autocomplete="off" />
-            <button type="button" class="primary" data-action="ssh-gen" ${state.sshBusy ? "disabled" : ""}>${state.sshBusy ? "…" : "Generate"}</button>
-          </div>
-          <div id="ssh-key-list" class="ssh-key-list">${sshKeysHTML()}</div>
-        </section>
+        <p class="form-hint" style="margin-top:1rem">
+          Manage GitHub logins, SSH keys, and multi-account agent profiles in
+          <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Settings</button>.
+        </p>
       </div>
     </div>`;
 }
@@ -1598,7 +1966,8 @@ function helpHTML(): string {
       <div class="modal-body">
         <dl class="keys">
           <div><dt><kbd>n</kbd></dt><dd>New session</dd></div>
-          <div><dt><kbd>t</kbd></dt><dd>Tools panel</dd></div>
+          <div><dt><kbd>t</kbd></dt><dd>Quick tools</dd></div>
+          <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
           <div><dt><kbd>/</kbd></dt><dd>Focus session filter</dd></div>
           <div><dt><kbd>f</kbd></dt><dd>Fit terminal</dd></div>
           <div><dt><kbd>?</kbd></dt><dd>This help</dd></div>
@@ -1737,7 +2106,7 @@ function shellHTML(): string {
 
       <div class="sidebar-foot">
         <button type="button" class="ghost btn-sm" data-action="prune" title="Delete all stopped sessions">Clear stopped</button>
-        <button type="button" class="ghost btn-sm" data-action="tools">Tools</button>
+        <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts">Settings</button>
       </div>
     </aside>
 
@@ -1748,7 +2117,8 @@ function shellHTML(): string {
         <div class="topbar-actions">
           <span class="conn-pill conn-${state.conn}" id="conn-pill"><span class="conn-dot"></span>idle</span>
           <button type="button" class="primary btn-sm" data-action="new-session" title="New session (n)">New</button>
-          <button type="button" class="ghost btn-sm" data-action="tools" title="Tools (t)">Tools</button>
+          <button type="button" class="ghost btn-sm" data-action="open-settings" data-tab="accounts" title="Settings (,)">Settings</button>
+          <button type="button" class="ghost btn-sm" data-action="tools" title="Quick tools (t)">Tools</button>
           <button type="button" class="ghost btn-sm" data-action="help" title="Shortcuts (?)">?</button>
         </div>
       </header>
@@ -1899,6 +2269,11 @@ function bindKeys(): void {
         ev.preventDefault();
         return;
       }
+      if (state.settingsOpen) {
+        closeSettings();
+        ev.preventDefault();
+        return;
+      }
       if (state.sidebarOpen) {
         state.sidebarOpen = false;
         paintChrome();
@@ -1919,6 +2294,11 @@ function bindKeys(): void {
     if (k === "t" || k === "T") {
       ev.preventDefault();
       openPanel("tools");
+      return;
+    }
+    if (k === "," || k === "<") {
+      ev.preventDefault();
+      openSettings("accounts");
       return;
     }
     if (k === "?" || (k === "/" && ev.shiftKey)) {
@@ -1984,6 +2364,57 @@ function ensureUIDelegation(): void {
         ev.stopPropagation();
         if (!state.token) return;
         openPanel("tools");
+        break;
+      case "open-settings":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!state.token) return;
+        openSettings(
+          (actionEl.getAttribute("data-tab") as SettingsTab) || "accounts",
+        );
+        break;
+      case "close-settings":
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeSettings();
+        break;
+      case "settings-tab":
+        ev.preventDefault();
+        {
+          const tab = actionEl.getAttribute("data-tab") as SettingsTab | null;
+          if (tab) {
+            state.settingsTab = tab;
+            void loadSettingsData().then(() => paintSettings());
+          }
+        }
+        break;
+      case "settings-platform":
+        ev.preventDefault();
+        state.settingsPlatform = actionEl.getAttribute("data-platform") || "grok";
+        paintSettings();
+        break;
+      case "settings-refresh":
+        ev.preventDefault();
+        void loadSettingsData().then(() => paintSettings());
+        break;
+      case "acct-save": {
+        ev.preventDefault();
+        const platform = actionEl.getAttribute("data-platform") || "";
+        const id = actionEl.getAttribute("data-id") || "";
+        const label = actionEl.getAttribute("data-label") || id;
+        if (platform && id) void onAcctSave(platform, id, label);
+        break;
+      }
+      case "acct-switch": {
+        ev.preventDefault();
+        const platform = actionEl.getAttribute("data-platform") || "";
+        const id = actionEl.getAttribute("data-id") || "";
+        if (platform && id) void onAcctSwitch(platform, id);
+        break;
+      }
+      case "acct-add":
+        ev.preventDefault();
+        void onAcctAdd();
         break;
       case "help":
         ev.preventDefault();

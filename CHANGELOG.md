@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — 2026-07-14
+
+### Added
+
+- **Full Settings page** in the Web UI (`, ` or **Settings**):
+  - Agent accounts (save / global switch / add slots per platform)
+  - GitHub CLI logins
+  - SSH keys
+  - Workspace tools (map / memory / Playwright)
+  - About + shortcuts
+
 ## [0.3.6] — 2026-07-14
 
 ### Added
