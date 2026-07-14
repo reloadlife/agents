@@ -8,7 +8,10 @@ import {
   clearToken,
   cloneWorkspace,
   createSession,
+  deleteSSHKey,
+  deleteSession,
   generateMap,
+  generateSSHKey,
   getMap,
   getMapStatus,
   getStatus,
@@ -16,6 +19,7 @@ import {
   killSession,
   listAgents,
   listSessions,
+  listSSHKeys,
   listWorkspaces,
   memoryIndex,
   memorySearch,
@@ -24,12 +28,12 @@ import {
   playwrightStart,
   playwrightStatus,
   playwrightStop,
-  deleteSession,
   pruneSessions,
   resumeSession,
   setToken,
   type MemoryHit,
   type Session,
+  type SSHKey,
 } from "./api";
 import { PtyClient } from "./pty";
 
@@ -83,6 +87,11 @@ type AppState = {
   conn: ConnState;
   sidebarOpen: boolean;
   pwStatus: string;
+  sshKeys: SSHKey[];
+  sshDir: string;
+  sshGenName: string;
+  sshGenComment: string;
+  sshBusy: boolean;
 };
 
 const state: AppState = {
@@ -120,6 +129,11 @@ const state: AppState = {
   conn: "idle",
   sidebarOpen: false,
   pwStatus: "—",
+  sshKeys: [],
+  sshDir: "",
+  sshGenName: "id_agents",
+  sshGenComment: "",
+  sshBusy: false,
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -620,7 +634,10 @@ function openPanel(p: Panel): void {
         (name ?? agent)?.focus();
       });
     }
-    if (p === "tools") void refreshToolsStatus();
+      if (p === "tools") {
+      void refreshToolsStatus();
+      void refreshSSHKeys();
+    }
   });
 }
 
@@ -957,6 +974,123 @@ function paintTools(): void {
   if (pwEl) pwEl.textContent = state.pwStatus;
   const hits = document.getElementById("mem-hits");
   if (hits) hits.innerHTML = memHitsHTML();
+  const sshDir = document.getElementById("ssh-dir");
+  if (sshDir) sshDir.textContent = state.sshDir || "—";
+  const sshList = document.getElementById("ssh-key-list");
+  if (sshList) sshList.innerHTML = sshKeysHTML();
+  const genBtn = document.querySelector(
+    '[data-action="ssh-gen"]',
+  ) as HTMLButtonElement | null;
+  if (genBtn) {
+    genBtn.disabled = state.sshBusy;
+    genBtn.textContent = state.sshBusy ? "…" : "Generate";
+  }
+}
+
+async function refreshSSHKeys(): Promise<void> {
+  try {
+    const out = await listSSHKeys();
+    state.sshDir = out.dir || "";
+    state.sshKeys = out.keys ?? [];
+    paintTools();
+  } catch (e) {
+    state.sshDir = "error";
+    state.sshKeys = [];
+    paintTools();
+    toast((e as Error).message || "ssh keys list failed", "err");
+  }
+}
+
+function sshKeysHTML(): string {
+  if (!state.sshKeys.length) {
+    return `<div class="empty-soft">No keys in server ~/.ssh yet</div>`;
+  }
+  return state.sshKeys
+    .map((k) => {
+      const kind = k.has_private && k.has_public ? "pair" : k.has_public ? "pub" : "priv";
+      const fp = k.fingerprint ? esc(k.fingerprint) : "";
+      return `<div class="ssh-key-row">
+        <div class="ssh-key-main">
+          <div class="ssh-key-name"><code>${esc(k.name)}</code>
+            <span class="badge">${esc(k.type || "?")}</span>
+            <span class="badge">${esc(kind)}</span>
+          </div>
+          ${fp ? `<div class="ssh-key-fp">${fp}</div>` : ""}
+          ${k.comment ? `<div class="ssh-key-comment">${esc(k.comment)}</div>` : ""}
+        </div>
+        <div class="ssh-key-actions">
+          <button type="button" class="ghost btn-sm" data-action="ssh-copy" data-name="${esc(k.name)}" ${k.public_key ? "" : "disabled"}>Copy pub</button>
+          <button type="button" class="ghost btn-sm danger-text" data-action="ssh-delete" data-name="${esc(k.name)}" ${k.protected ? "disabled" : ""}>Delete</button>
+        </div>
+        ${k.public_key ? `<pre class="ssh-key-pub" data-pub="${esc(k.name)}">${esc(k.public_key)}</pre>` : ""}
+      </div>`;
+    })
+    .join("");
+}
+
+async function onSSHGenerate(): Promise<void> {
+  if (state.sshBusy) return;
+  const nameEl = document.getElementById("ssh-gen-name") as HTMLInputElement | null;
+  const commentEl = document.getElementById("ssh-gen-comment") as HTMLInputElement | null;
+  const name = (nameEl?.value || state.sshGenName || "").trim();
+  const comment = (commentEl?.value || state.sshGenComment || "").trim();
+  if (!name) {
+    toast("Key name required", "err");
+    return;
+  }
+  state.sshBusy = true;
+  state.sshGenName = name;
+  state.sshGenComment = comment;
+  paintTools();
+  try {
+    const k = await generateSSHKey({
+      name,
+      type: "ed25519",
+      comment: comment || undefined,
+    });
+    toast(`Generated ${k.name}`, "ok");
+    if (k.public_key) {
+      try {
+        await navigator.clipboard.writeText(k.public_key);
+        toast("Public key copied", "ok", 2000);
+      } catch {
+        /* ignore */
+      }
+    }
+    state.sshGenName = "id_agents";
+    await refreshSSHKeys();
+  } catch (e) {
+    toast((e as Error).message || "generate failed", "err");
+  } finally {
+    state.sshBusy = false;
+    paintTools();
+  }
+}
+
+async function onSSHCopy(name: string): Promise<void> {
+  const k = state.sshKeys.find((x) => x.name === name);
+  const pub = k?.public_key;
+  if (!pub) {
+    toast("No public key", "err");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(pub);
+    toast("Public key copied", "ok", 1500);
+  } catch {
+    toast(pub, "info", 8000);
+  }
+}
+
+async function onSSHDelete(name: string): Promise<void> {
+  if (!confirm(`Delete SSH key “${name}” from the server?\n\nRemoves private + public files. Cannot undo.`)) return;
+  try {
+    await deleteSSHKey(name);
+    toast(`Deleted ${name}`, "ok");
+    await refreshSSHKeys();
+  } catch (e) {
+    toast((e as Error).message || "delete failed", "err");
+  }
 }
 
 function paintDrawer(): void {
@@ -1191,6 +1325,20 @@ function toolsHTML(): string {
             <button type="button" data-action="pw-stop">Stop</button>
             <button type="button" data-action="pw-restart">Restart</button>
           </div>
+        </section>
+
+        <section class="tool-block">
+          <div class="tool-block-head">
+            <h3>SSH keys</h3>
+            <span class="tool-status" id="ssh-dir" title="Server SSH directory">${esc(state.sshDir || "—")}</span>
+          </div>
+          <p class="tool-desc">Identities on the agents host (public keys only — private keys never leave the server)</p>
+          <div class="ssh-gen">
+            <input id="ssh-gen-name" placeholder="name e.g. id_github" value="${esc(state.sshGenName)}" autocomplete="off" />
+            <input id="ssh-gen-comment" placeholder="comment (optional)" value="${esc(state.sshGenComment)}" autocomplete="off" />
+            <button type="button" class="primary" data-action="ssh-gen" ${state.sshBusy ? "disabled" : ""}>${state.sshBusy ? "…" : "Generate"}</button>
+          </div>
+          <div id="ssh-key-list" class="ssh-key-list">${sshKeysHTML()}</div>
         </section>
       </div>
     </div>`;
@@ -1655,6 +1803,22 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         void onPwAction("restart");
         break;
+      case "ssh-gen":
+        ev.preventDefault();
+        void onSSHGenerate();
+        break;
+      case "ssh-copy": {
+        ev.preventDefault();
+        const n = actionEl.getAttribute("data-name");
+        if (n) void onSSHCopy(n);
+        break;
+      }
+      case "ssh-delete": {
+        ev.preventDefault();
+        const n = actionEl.getAttribute("data-name");
+        if (n) void onSSHDelete(n);
+        break;
+      }
       default:
         break;
     }

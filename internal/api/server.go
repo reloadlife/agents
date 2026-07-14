@@ -20,6 +20,7 @@ import (
 	"github.com/reloadlife/agents/internal/playwrightctl"
 	"github.com/reloadlife/agents/internal/projmap"
 	"github.com/reloadlife/agents/internal/session"
+	"github.com/reloadlife/agents/internal/sshkeys"
 	"github.com/reloadlife/agents/internal/status"
 	"github.com/reloadlife/agents/internal/webui"
 	"github.com/reloadlife/agents/internal/workspaces"
@@ -49,6 +50,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces/clone", s.handleCloneWorkspace)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
+
+	// SSH identity keys (public only; private never served)
+	mux.HandleFunc("GET /v1/ssh-keys", s.handleListSSHKeys)
+	mux.HandleFunc("POST /v1/ssh-keys", s.handleGenerateSSHKey)
+	mux.HandleFunc("GET /v1/ssh-keys/{name}", s.handleGetSSHKey)
+	mux.HandleFunc("DELETE /v1/ssh-keys/{name}", s.handleDeleteSSHKey)
+	mux.HandleFunc("POST /v1/ssh-keys/{name}/delete", s.handleDeleteSSHKey)
 
 	// Playwright / headed browser stack
 	mux.HandleFunc("GET /v1/playwright", s.handlePlaywrightStatus)
@@ -152,6 +160,84 @@ func (s *Server) handleCloneWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) sshKeys() (*sshkeys.Manager, error) {
+	return sshkeys.New("") // agentsd user's ~/.ssh
+}
+
+func (s *Server) handleListSSHKeys(w http.ResponseWriter, r *http.Request) {
+	m, err := s.sshKeys()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	list, err := m.List()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dir":  m.Dir(),
+		"keys": list,
+	})
+}
+
+func (s *Server) handleGetSSHKey(w http.ResponseWriter, r *http.Request) {
+	m, err := s.sshKeys()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	k, err := m.Get(r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !k.HasPrivate && !k.HasPublic {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("key not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, k)
+}
+
+func (s *Server) handleGenerateSSHKey(w http.ResponseWriter, r *http.Request) {
+	m, err := s.sshKeys()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var req sshkeys.GenerateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	k, err := m.Generate(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("ssh key generated", "name", k.Name, "type", k.Type)
+	writeJSON(w, http.StatusCreated, k)
+}
+
+func (s *Server) handleDeleteSSHKey(w http.ResponseWriter, r *http.Request) {
+	m, err := s.sshKeys()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	name := r.PathValue("name")
+	if err := m.Delete(name); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("ssh key deleted", "name", name)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": name, "deleted": true})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

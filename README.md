@@ -140,6 +140,7 @@ agentsctl session kill id
 agentsctl session delete id   # stop + remove from list
 agentsctl session resume id   # re-attach if alive, else restart agent (same id)
 agentsctl session history id  # dump terminal scrollback / last snapshot
+agentsctl ssh-keys list|gen NAME|show NAME|delete NAME
 ```
 
 ## HTTP API (v1)
@@ -158,6 +159,8 @@ agentsctl session history id  # dump terminal scrollback / last snapshot
 | DELETE | `/v1/sessions/{id}` | Same as delete |
 | POST | `/v1/sessions/{id}/resume` | Re-attach if tmux alive; else restart agent |
 | POST | `/v1/workspaces/clone` | `git clone` / `gh fork` into workspace |
+| GET/POST | `/v1/ssh-keys` | List / generate SSH identities (public only) |
+| GET/DELETE | `/v1/ssh-keys/{name}` | Show public key / delete pair |
 | GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 

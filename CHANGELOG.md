@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] — 2026-07-14
+
+### Added
+
+- **SSH key manager** for the agents host: `GET/POST /v1/ssh-keys`, `GET/DELETE /v1/ssh-keys/{name}`, `agentsctl ssh-keys list|gen|show|delete`, Tools panel UI
+  - Lists identities under server `~/.ssh`, generates ed25519/rsa, copies public keys
+  - **Private keys are never returned over the API**
+
 ## [0.3.3] — 2026-07-14
 
 ### Changed

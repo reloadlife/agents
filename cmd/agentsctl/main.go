@@ -123,6 +123,8 @@ cmd:
 		os.Exit(cmdAgents(c, cmdArgs))
 	case "workspaces", "ws":
 		os.Exit(cmdWorkspaces(c, cmdArgs))
+	case "ssh-keys", "sshkeys", "keys":
+		os.Exit(cmdSSHKeys(c, cmdArgs))
 	case "doctor":
 		os.Exit(cmdDoctor(c))
 	case "playwright", "pw":
@@ -164,6 +166,7 @@ Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
   agentsctl agents                       # list CLIs on server
   agentsctl workspaces                   # list allowlisted cwds
   agentsctl workspaces clone URL [-name DIR] [--fork] [--branch B]
+  agentsctl ssh-keys list|gen|show|delete   # manage server ~/.ssh identities
   agentsctl playwright status|start|stop|restart|install
   agentsctl session start -a claude|grok|codex|opencode|cursor --open
   agentsctl session open [SESSION_ID]
@@ -566,6 +569,131 @@ func cmdWorkspaces(c *client, args []string) int {
 	}
 	fmt.Println("\nclone: agentsctl workspaces clone owner/repo [--name DIR] [--fork]")
 	fmt.Println("start: agentsctl session start -r <path> -a claude --open")
+	return 0
+}
+
+func cmdSSHKeys(c *client, args []string) int {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	switch args[0] {
+	case "list", "ls":
+		return cmdSSHKeysList(c, args[1:])
+	case "gen", "generate", "new", "create":
+		return cmdSSHKeysGen(c, args[1:])
+	case "show", "get", "pub", "public":
+		return cmdSSHKeysShow(c, args[1:])
+	case "delete", "rm", "remove":
+		return cmdSSHKeysDelete(c, args[1:])
+	case "help", "-h", "--help":
+		fmt.Fprintln(os.Stderr, "usage: agentsctl ssh-keys list|gen NAME|show NAME|delete NAME")
+		return 2
+	default:
+		fmt.Fprintf(os.Stderr, "unknown ssh-keys command: %s\n", args[0])
+		return 2
+	}
+}
+
+func cmdSSHKeysList(c *client, args []string) int {
+	var out struct {
+		Dir  string `json:"dir"`
+		Keys []struct {
+			Name        string `json:"name"`
+			Type        string `json:"type"`
+			Fingerprint string `json:"fingerprint"`
+			Comment     string `json:"comment"`
+			HasPrivate  bool   `json:"has_private"`
+			HasPublic   bool   `json:"has_public"`
+		} `json:"keys"`
+	}
+	if err := c.json(http.MethodGet, "/v1/ssh-keys", nil, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("dir: %s\n\n", out.Dir)
+	if len(out.Keys) == 0 {
+		fmt.Println("(no keys)")
+		fmt.Println("create: agentsctl ssh-keys gen id_agents --comment you@host")
+		return 0
+	}
+	for _, k := range out.Keys {
+		priv := "pub-only"
+		if k.HasPrivate && k.HasPublic {
+			priv = "pair"
+		} else if k.HasPrivate {
+			priv = "private"
+		}
+		fmt.Printf("  %-20s  %-8s  %s\n", k.Name, k.Type, priv)
+		if k.Fingerprint != "" {
+			fmt.Printf("    %s\n", k.Fingerprint)
+		}
+		if k.Comment != "" {
+			fmt.Printf("    %s\n", k.Comment)
+		}
+	}
+	return 0
+}
+
+func cmdSSHKeysGen(c *client, args []string) int {
+	fs := flag.NewFlagSet("ssh-keys gen", flag.ExitOnError)
+	typ := fs.String("type", "ed25519", "ed25519 or rsa")
+	comment := fs.String("comment", "", "key comment (default agents@hostname)")
+	overwrite := fs.Bool("overwrite", false, "replace existing key")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fatal("usage: agentsctl ssh-keys gen NAME [--type ed25519|rsa] [--comment TEXT] [--overwrite]")
+	}
+	body := map[string]any{
+		"name":      fs.Arg(0),
+		"type":      *typ,
+		"overwrite": *overwrite,
+	}
+	if *comment != "" {
+		body["comment"] = *comment
+	}
+	var k map[string]any
+	if err := c.json(http.MethodPost, "/v1/ssh-keys", body, &k); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("generated %v (%v)\n", k["name"], k["type"])
+	if fp, _ := k["fingerprint"].(string); fp != "" {
+		fmt.Println(fp)
+	}
+	if pub, _ := k["public_key"].(string); pub != "" {
+		fmt.Println()
+		fmt.Println(pub)
+	}
+	return 0
+}
+
+func cmdSSHKeysShow(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl ssh-keys show NAME")
+	}
+	var k map[string]any
+	if err := c.json(http.MethodGet, "/v1/ssh-keys/"+args[0], nil, &k); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("name:        %v\n", k["name"])
+	fmt.Printf("type:        %v\n", k["type"])
+	fmt.Printf("fingerprint: %v\n", k["fingerprint"])
+	fmt.Printf("comment:     %v\n", k["comment"])
+	if pub, _ := k["public_key"].(string); pub != "" {
+		fmt.Println()
+		fmt.Println(pub)
+	}
+	return 0
+}
+
+func cmdSSHKeysDelete(c *client, args []string) int {
+	if len(args) < 1 {
+		fatal("usage: agentsctl ssh-keys delete NAME")
+	}
+	name := args[0]
+	var out map[string]any
+	if err := c.json(http.MethodPost, "/v1/ssh-keys/"+name+"/delete", map[string]any{}, &out); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Printf("deleted %s\n", name)
 	return 0
 }
 

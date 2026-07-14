@@ -1314,6 +1314,91 @@ label.check input {
   font-size: 0.78rem;
 }
 
+.ssh-gen {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.ssh-gen input {
+  min-width: 0;
+  font-size: 0.84rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.ssh-key-list {
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.ssh-key-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.65rem;
+  background: var(--ink-2);
+}
+
+.ssh-key-main {
+  margin-bottom: 0.4rem;
+}
+
+.ssh-key-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.2rem;
+}
+
+.ssh-key-name code {
+  font-size: 0.82rem;
+}
+
+.ssh-key-fp {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--paper-dim);
+  word-break: break-all;
+}
+
+.ssh-key-comment {
+  font-size: 0.72rem;
+  color: var(--paper-faint);
+  margin-top: 0.15rem;
+}
+
+.ssh-key-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.ssh-key-pub {
+  margin: 0.25rem 0 0;
+  padding: 0.45rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  line-height: 1.35;
+  color: var(--paper-dim);
+  background: var(--ink);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 4.5rem;
+  overflow: auto;
+}
+
+@media (max-width: 840px) {
+  .ssh-gen {
+    grid-template-columns: 1fr;
+  }
+}
+
 .drawer-body {
   margin: 0;
   padding: 1.1rem 1.2rem;

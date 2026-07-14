@@ -9,7 +9,7 @@
 - Start sessions via modal (agent / workspace / optional name + seed prompt)
 - **Clone / fork git** into the workspace from the new-session modal (`owner/repo` or full URL)
 - Multi-tab **xterm.js** over PTY WebSocket (`/v1/sessions/{id}/pty`) with live connection pill
-- **Tools** panel: project map, memory index/search, Playwright start/stop/restart
+- **Tools** panel: project map, memory index/search, Playwright, **SSH key manager** (list/generate/copy pub/delete; private keys never leave the server)
 - Keyboard shortcuts (`n` new, `t` tools, `/` filter, `1`–`9` tabs, `?` help, `Esc` close)
 
 ### Background sessions

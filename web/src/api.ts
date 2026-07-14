@@ -200,6 +200,47 @@ export function listWorkspaces(): Promise<{
   return request("/v1/workspaces");
 }
 
+export type SSHKey = {
+  name: string;
+  path?: string;
+  public_path?: string;
+  has_private?: boolean;
+  has_public?: boolean;
+  public_key?: string;
+  fingerprint?: string;
+  comment?: string;
+  type?: string;
+  bits?: string;
+  protected?: boolean;
+};
+
+export function listSSHKeys(): Promise<{ dir: string; keys: SSHKey[] }> {
+  return request("/v1/ssh-keys");
+}
+
+export function getSSHKey(name: string): Promise<SSHKey> {
+  return request(`/v1/ssh-keys/${encodeURIComponent(name)}`);
+}
+
+export function generateSSHKey(body: {
+  name: string;
+  type?: string;
+  comment?: string;
+  overwrite?: boolean;
+}): Promise<SSHKey> {
+  return request("/v1/ssh-keys", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSSHKey(name: string): Promise<{ ok: boolean; name: string; deleted: boolean }> {
+  return request(`/v1/ssh-keys/${encodeURIComponent(name)}/delete`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function cloneWorkspace(body: {
   url: string;
   name?: string;
