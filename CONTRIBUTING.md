@@ -9,9 +9,9 @@ Thanks for considering a contribution.
 ```bash
 git clone https://github.com/reloadlife/agents.git
 cd agents
+make web                # when changing web/ (CI always builds web)
 make test
 make test-integration   # needs tmux
-make web                # only when changing web/ (committed dist is enough for Go-only)
 make build
 ```
 
@@ -47,13 +47,20 @@ By contributing, you agree that your contributions are licensed under the
 
 ## Feature ideas that fit
 
-- Project maps (`.agents/PROJECT_MAP.md` + skill)
-- Embedded vector memory / RAG
-- Web UI polish (map/memory panels)
 - Homebrew packaging
-- Optional mTLS / Tailscale identity auth
+- Optional mTLS / Tailscale identity as primary auth
 - Structured metrics / Prometheus
-- Session recording (with clear privacy docs)
+- Recording retention TTL / optional redaction on archive
+- Web UI polish (recordings browser, more project tooling)
+
+## Already shipped (prefer fix/polish over re-implement)
+
+- Project maps (`.agents/PROJECT_MAP.md` + skill)
+- Embedded workspace memory (FTS + optional embeddings)
+- Web UI map/memory/tools/git/projects surfaces
+- Session recording (opt-in) + [docs/RECORDING.md](docs/RECORDING.md)
+- Multi-token auth + trusted header
+- Git worktrees for sessions
 
 ## Feature ideas that need design first
 

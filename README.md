@@ -20,7 +20,7 @@ No SSH required for day-to-day use (SSH remains an optional fallback).
 | **`agentsd`** | Daemon: HTTP API, session supervisor, PTY WebSocket |
 | **`agentsctl`** | CLI + TUI client |
 
-> **Status:** early public preview (`v0.2.x`). Useful today for a dedicated “agent box”; not multi-tenant hardened yet. See [SECURITY.md](SECURITY.md).
+> **Status:** public preview (`v0.8.x`, latest intent **v0.8.11+**). Useful today for a dedicated “agent box”; not multi-tenant hardened yet. See [SECURITY.md](SECURITY.md).
 
 ## Why
 
@@ -40,7 +40,7 @@ Interactive agent tools want a real TTY (subscription login, full UI). Headless 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
 # → ~/.local/bin/agentsd  ~/.local/bin/agentsctl
-# pin: VERSION=v0.2.0 bash …
+# pin: VERSION=v0.8.11 bash …
 # force source build: SOURCE=1 bash …
 ```
 
@@ -52,7 +52,7 @@ Or grab `agents_${ver}_${os}_${arch}.tar.gz` from [Releases](https://github.com/
 agentsctl update              # latest agentsctl
 agentsd update                # latest agentsd (restart the service after)
 agentsctl update --check      # dry-run
-agentsctl update --version v0.2.2
+agentsctl update --version v0.8.11
 ```
 
 ### From source
@@ -150,16 +150,36 @@ agentsctl gh status|login|switch|logout|setup-git
 |--------|------|---------|
 | GET | `/healthz` | Liveness (no auth) |
 | GET | `/v1/status` | Host / docker / optional GKE / agents |
+| GET | `/v1/version` | Daemon version |
 | GET | `/v1/agents` | Configured CLIs + availability |
-| POST | `/v1/sessions` | Start interactive session |
-| GET | `/v1/sessions` | List |
-| GET | `/v1/sessions/{id}` | Detail (`pty_path`, attach hints) |
-| GET | `/v1/sessions/{id}/pty` | **WebSocket full PTY** |
+| GET | `/v1/dashboard` | Workspace dashboard (session counts, chips) |
+| POST | `/v1/sessions` | Start interactive session (optional worktree fields) |
+| GET | `/v1/sessions` | List (includes `git_branch`, worktree badges) |
+| GET | `/v1/sessions/{id}` | Detail (`pty_path`, attach hints, worktree paths) |
+| GET | `/v1/sessions/{id}/pty` | **WebSocket full PTY** (`?token=` allowed) |
 | POST | `/v1/sessions/{id}/kill` | Stop agent (session stays in list) |
 | POST | `/v1/sessions/{id}/delete` | Stop agent and remove session |
 | DELETE | `/v1/sessions/{id}` | Same as delete |
 | POST | `/v1/sessions/{id}/resume` | Re-attach if tmux alive; else restart with agent-native resume |
+| GET | `/v1/sessions/{id}/history` | Session preview / scrollback (live or last `.pane`) |
+| POST | `/v1/sessions/{id}/record` | Manual recording snap (if recording enabled) |
+| POST | `/v1/sessions/prune` | Prune exited sessions from list |
+| GET | `/v1/workspaces` | Allowlisted workspaces |
+| POST | `/v1/workspaces` | Create a new directory under workspace root |
 | POST | `/v1/workspaces/clone` | `git clone` / `gh fork` into workspace |
+| POST | `/v1/workspaces/open` | Open remote editor path/line hints |
+| GET | `/v1/git/status` | Git status for a cwd |
+| GET | `/v1/git/diff` | Diff (optional path / staged / base) |
+| GET | `/v1/git/file` | Blob at ref |
+| GET | `/v1/git/worktrees` | List git worktrees for a cwd |
+| POST | `/v1/git/commit` | Local commit (no push) |
+| POST | `/v1/git/pull-request` | Open PR via `gh` |
+| GET/POST | `/v1/maps` | Get / generate project map |
+| GET | `/v1/maps/status` | Map freshness |
+| POST | `/v1/memory/index` · `/search` | Workspace memory index / search |
+| GET | `/v1/memory/stats` | Memory stats |
+| GET | `/v1/recordings` · `/{id}` | List / fetch opt-in pane archives |
+| GET | `/v1/history/search` | Search archived scrollback |
 | GET/POST | `/v1/ssh-keys` | List / generate SSH identities (public only) |
 | GET/DELETE | `/v1/ssh-keys/{name}` | Show public key / delete pair |
 | GET | `/v1/gh/accounts` | List GitHub CLI accounts on server (no tokens) |
@@ -168,10 +188,14 @@ agentsctl gh status|login|switch|logout|setup-git
 | POST | `/v1/gh/logout` | Logout local gh account |
 | GET | `/v1/agent-accounts` | Multi-account profiles (`?platform=grok` or `all`) |
 | POST | `/v1/agent-accounts/save\|switch\|add\|remove` | Save / global-switch / register / remove profiles |
-| GET | `/v1/sessions/{id}/history` | Terminal scrollback (live or last snapshot) |
+| GET/POST | `/v1/tasks` … | Workspace tasks (`todo`/`doing`/`done`) |
+| GET/POST | `/v1/templates` … | Session templates |
+| GET | `/v1/audit` | Audit tail |
+| POST | `/v1/backup` · `/restore` | Backup / restore jobs data |
 | POST | `/v1/jobs` … | Optional print/API job queue |
 
-Auth: `Authorization: Bearer <token>` on all `/v1/*` routes (including WebSocket).
+Auth: `Authorization: Bearer <token>` on all `/v1/*` (including WebSocket). WebSocket
+clients may use `?token=`. Multi-token + trusted header: [SECURITY.md](SECURITY.md).
 
 ## Configuration
 
@@ -211,18 +235,21 @@ See [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md).
 - The token is effectively **remote interactive access** to agent tools on that host.
 - Prefer **localhost + Tailscale / Cloudflare Tunnel + Access**, not raw public ports.
 - Keep the workspace **allowlist** tight.
-- Details: [SECURITY.md](SECURITY.md)
+- Session recording is **opt-in** and stores full TTY scrollback — see [docs/RECORDING.md](docs/RECORDING.md).
+- Details: [SECURITY.md](SECURITY.md) · ops checklist: [docs/SECURITY-OPS.md](docs/SECURITY-OPS.md)
 
 ## Docs
 
 | Doc | Contents |
 |-----|----------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions + PTY work |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions, PTY, worktrees, recording work |
 | [docs/WEB.md](docs/WEB.md) | Embedded multi-tab browser UI |
 | [docs/PROJECT-MAP.md](docs/PROJECT-MAP.md) | Project maps for agent orientation |
 | [docs/CONTEXT.md](docs/CONTEXT.md) | Context manager (ensure / pack / session seed) |
 | [docs/MEMORY.md](docs/MEMORY.md) | Workspace FTS memory for agents |
+| [docs/RECORDING.md](docs/RECORDING.md) | Session recording privacy |
 | [docs/INSTALL.md](docs/INSTALL.md) | Install & deploy |
+| [docs/SECURITY-OPS.md](docs/SECURITY-OPS.md) | Single-admin hardening checklist |
 | [docs/REMOTE-TTY.md](docs/REMOTE-TTY.md) | Client remote TTY guide |
 | [docs/OPEN-SOURCE.md](docs/OPEN-SOURCE.md) | Public preview status |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev workflow |
@@ -264,6 +291,8 @@ scripts/install.sh    release-tarball installer (source fallback)
 - [x] Multi-token auth + trusted header (Tailscale / CF Access)  
 - [x] Audit log, backup/restore, dashboard, skills install  
 - [x] Command palette + light/dark theme  
+- [x] Git worktrees for agentic sessions + projects list UI  
+- [x] Workspaces create + git status/diff/commit/PR API  
 - [ ] Homebrew packaging  
 - [ ] Full multi-user isolation (workspaces per principal)  
 - [ ] Collaborative multi-viewer PTY  

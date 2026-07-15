@@ -6,14 +6,14 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
-#   VERSION=v0.2.0 bash scripts/install.sh
+#   VERSION=v0.8.11 bash scripts/install.sh
 #   PREFIX=/usr/local sudo bash scripts/install.sh
 #   SOURCE=1 bash scripts/install.sh          # force go build from git
 set -euo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local}"
 REPO="${REPO:-reloadlife/agents}"
-VERSION="${VERSION:-latest}"   # latest | v0.2.0 | ...
+VERSION="${VERSION:-latest}"   # latest | v0.8.11 | ...
 SOURCE="${SOURCE:-0}"
 BIN_DIR="${PREFIX}/bin"
 

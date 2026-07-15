@@ -26,6 +26,9 @@ jobs:
       - name: Build embedded web UI
         run: make web
 
+      - name: Quick tests
+        run: go test ./...
+
       - name: Build multi-arch
         run: |
           set -euo pipefail

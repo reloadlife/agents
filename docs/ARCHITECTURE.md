@@ -8,16 +8,18 @@
 │  agentsctl — REST + WS PTY + Bubble Tea TUI                 │
 │  browser   — embedded SPA (xterm.js multi-tab) at GET /     │
 └───────────────────────────┬─────────────────────────────────┘
-                            │ HTTP + WebSocket + Bearer token
+                            │ HTTP + WebSocket + Bearer token(s)
 ┌───────────────────────────▼─────────────────────────────────┐
 │ agentsd (server)                                            │
-│  auth middleware (/v1/*); static web UI public              │
+│  auth middleware (/v1/*): multi-token + optional trusted hdr│
 │  session manager → tmux new-session -d -c <cwd> -- <agent>  │
+│  optional git worktree per session                          │
 │  PTY handler → pty.Start(tmux attach) ↔ WebSocket           │
 │  optional job queue → headless print runners                │
 │  go:embed web UI (internal/webui/dist)                      │
 │  project maps → <cwd>/.agents/PROJECT_MAP.md                │
 │  memory (SQLite FTS5 under jobs_dir/memory)                 │
+│  optional recordings under jobs_dir/recordings              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -26,7 +28,9 @@ Browser and CLI share the same session API. Detaching a PTY (closing a tab or
 
 ## Session lifecycle
 
-1. `POST /v1/sessions` with `{ agent, cwd, mode: "tty" }`
+1. `POST /v1/sessions` with `{ agent, cwd, mode: "tty", … }`  
+   - Optional **worktree**: create/checkout an isolated git worktree under the repo (branch often `agents/<short-id>` or a client-supplied name). Session records `worktree`, `worktree_path`, `base_cwd`, `branch`.  
+   - Optional **new workspace directory** via prior `POST /v1/workspaces` `{ "name" }`.
 2. Server resolves `cwd` under `workspace_root` via allowlist
 3. Resolves agent binary (`LookPath` + common install dirs)
 4. `tmux new-session -d -s la-<id> -c <abs> -- <bin> <args…>` (setsid; outside agentsd process group)
@@ -41,9 +45,10 @@ Browser and CLI share the same session API. Detaching a PTY (closing a tab or
     - **claude**: resume with `--resume <id>` when known, else `--continue`
     - **codex**: `codex resume <id>` or `resume --last`
     - **opencode**: `--session <id>` or `--continue`
-12. **Terminal history:** each session uses a large tmux `history-limit`; PTY attach seeds the client with `tmux capture-pane -e -S -` (full scrollback). On kill/detach, a snapshot is written to `jobs_dir/sessions/<id>.pane`. After death, `GET /v1/sessions/{id}/history` serves that file; resume+attach prepends it above the new process output.
+12. **Terminal history / session preview:** each session uses a large tmux `history-limit`; PTY attach seeds the client with `tmux capture-pane -e -S -` (full scrollback). On kill/detach, a snapshot is written to `jobs_dir/sessions/<id>.pane`. After death, `GET /v1/sessions/{id}/history` serves that file (plain text or `?format=json`); resume+attach prepends it above the new process output.
+13. **Opt-in recording:** if `sessions.recording = true`, pane data is also archived under `jobs_dir/recordings/` for multi-id list/search. Default **off**. See [RECORDING.md](./RECORDING.md).
 
-Chat memory is **agent-native** (CLI session store). Terminal scrollback is separate (tmux / `.pane` files).
+Chat memory is **agent-native** (CLI session store). Terminal scrollback is separate (tmux / `.pane` files / optional recording store).
 
 ### Surviving `agentsd` restart
 
@@ -53,6 +58,15 @@ Agent processes live in **tmux**, not as children of the PTY attach. Metadata is
 
 If tmux was wiped anyway (old unit, manual `tmux kill-server`, host reboot), sessions show as `exited` — use **resume** to start a fresh agent under the same session id.
 
+## Worktrees
+
+When a session requests a worktree (UI default for git repos; API fields on create):
+
+- agentsd creates a linked worktree for an agent branch (or uses an existing path)
+- The agent `cwd` becomes the worktree path; `base_cwd` remains the main workspace
+- `GET /v1/git/worktrees?cwd=` lists worktrees for the Git UI
+- Isolation is **filesystem/git**, not multi-tenant security — same API token still owns all sessions
+
 ## Why tmux
 
 - Survives client disconnects  
@@ -60,6 +74,18 @@ If tmux was wiped anyway (old unit, manual `tmux kill-server`, host reboot), ses
 - Multiple attaches possible  
 - Mature terminal multiplexing  
 - Agent CLIs already assume a real TTY  
+
+## Auth model
+
+| Mechanism | Role |
+|-----------|------|
+| Primary bearer (`auth.bearer_env` → label `default`) | Required by default on all `/v1/*` |
+| `extra_tokens` (label → env var) | Additional accepted bearers; labels appear in audit actor |
+| `?token=` query | Same as bearer (WebSocket-friendly) |
+| `trusted_header` | Identity for audit; can authenticate alone only if `require_bearer = false` |
+| Public paths | `/healthz` + non-`/v1` static web shell |
+
+Details: [SECURITY.md](../SECURITY.md).
 
 ## Print jobs (secondary)
 
@@ -70,6 +96,7 @@ If tmux was wiped anyway (old unit, manual `tmux kill-server`, host reboot), ses
 | Boundary | Mechanism |
 |----------|-----------|
 | Network | bind address + reverse proxy / tunnel |
-| API | shared bearer token |
+| API | bearer token map (+ optional trusted header) |
 | Filesystem | `workspace_root` + allowlist |
 | Process | agent binary only; no free-form shell API in v0 |
+| Recordings | same API auth as sessions; default off |

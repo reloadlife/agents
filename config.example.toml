@@ -1,5 +1,16 @@
 # agentsd example config — copy to config.toml or ~/.config/agentsd/config.toml
 # See also: deploy/config.server.example.toml
+#
+# --- Security knobs (read first) ---
+#   listen              Prefer 127.0.0.1 + Tailscale/tunnel; avoid 0.0.0.0 on untrusted nets
+#   AGENTSD_TOKEN       From auth.bearer_env; store in env file mode 600 (openssl rand -hex 32)
+#   auth.extra_tokens   Optional map label → env var name for additional bearers (ops/CI)
+#   auth.trusted_header e.g. Tailscale-User-Login (audit actor; auth only if require_bearer=false)
+#   auth.require_bearer Default true. false only behind a proxy that strips spoofed headers
+#   allow.paths         Tight allowlist under workspace_root
+#   sessions.recording  Default off — pane archives under jobs_dir/recordings (see docs/RECORDING.md)
+#   web.enabled         Static shell is public; all control is /v1/* + token
+# Full policy: SECURITY.md · ops checklist: docs/SECURITY-OPS.md · privacy: docs/RECORDING.md
 
 listen = "127.0.0.1:8787"
 jobs_dir = "./.jobs"
@@ -10,7 +21,14 @@ default_timeout = "30m"
 max_timeout = "2h"
 
 [auth]
+# Primary token: env var name (value must be set before agentsd start).
 bearer_env = "AGENTSD_TOKEN"
+# Extra bearers: label → env var name (not the raw secret). Any matching token authenticates.
+# Labels show up in audit actor only — not multi-tenant isolation.
+#   export AGENTS_TOKEN_OPS="$(openssl rand -hex 32)"
+# extra_tokens = { ops = "AGENTS_TOKEN_OPS", guest = "AGENTS_TOKEN_GUEST" }
+# trusted_header = "Tailscale-User-Login"   # or Cf-Access-Authenticated-User-Email
+# require_bearer = true                    # false = header-only auth behind trusted proxy
 
 [sessions]
 # SSH Host alias for remote TTY (agentsctl session open --ssh).
@@ -21,6 +39,14 @@ display = ":99"
 # playwright_server = "ws://127.0.0.1:9333"  # optional docker compose service
 # [sessions.env]
 # CUSTOM = "value"
+#
+# Session recording — archives pane snapshots under {jobs_dir}/recordings (privacy: default off).
+# Secrets are redacted line-by-line on archive. Prune runs after each archive.
+# recording = true
+# recording_max_per_session = 20  # keep newest N per session (0 = default 20, <0 unlimited)
+# recording_max_age_days = 0      # drop older than N days on archive (0 = disabled)
+# max_concurrent = 8   # cap running TTY sessions (0 = unlimited)
+# auto_note = true     # write a memory note when a session is killed/stopped
 
 # --- Agents ---
 # Interactive TTY (default for `agentsctl session start`): uses Args only.
@@ -110,20 +136,7 @@ seed_orientation = true
 auto_index = true
 write_files = true
 
-# Session recording archives pane snapshots under jobs_dir/recordings (privacy: default off)
-# [sessions]
-# recording = true
-# max_concurrent = 8
-# auto_note = true
-
 # Webhooks (JSON POST Event) — ntfy, Discord, Slack-compatible, etc.
 # [notify]
 # webhook_url = "https://ntfy.sh/my-agents-topic"
 # events = ["session.started", "session.stopped", "session.deleted"]
-
-# Multi-token auth: map label → env var name
-# [auth]
-# bearer_env = "AGENTSD_TOKEN"
-# extra_tokens = { ops = "AGENTS_TOKEN_OPS" }
-# trusted_header = "Tailscale-User-Login"   # audit actor / optional auth
-# require_bearer = true

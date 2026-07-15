@@ -5,7 +5,7 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reloadlife/agents/main/scripts/install.sh | bash
 # → ~/.local/bin/{agentsd,agentsctl}
-# pin a tag:  VERSION=v0.2.0 bash …
+# pin a tag:  VERSION=v0.8.11 bash …
 # force build: SOURCE=1 bash …
 ```
 
@@ -13,13 +13,24 @@ Release assets: `agents_${ver}_${os}_${arch}.tar.gz` on
 [GitHub Releases](https://github.com/reloadlife/agents/releases)
 (legacy `local-agents_*` names still published for older scripts).
 
+## Install paths
+
+| Layout | Binaries | Config / env | Unit |
+|--------|----------|--------------|------|
+| **User (recommended)** | `~/.local/bin` | `~/.config/agentsd/config.toml` + `env` | `deploy/agentsd.user.service` → `~/.config/systemd/user/` |
+| **System** | `/usr/local/bin` | `/etc/agentsd/config.toml` + `/etc/agentsd/env` | `deploy/agentsd.service` → `/etc/systemd/system/` |
+
+User install needs no root for the daemon. System install is for a dedicated
+service account or multi-host packaging; still prefer a non-root `User=` in the unit.
+
 ## From source
 
 ```bash
 git clone https://github.com/reloadlife/agents.git
 cd agents
+make web          # if changing web/; committed dist is enough for Go-only
 make test && make build
-make install   # → ~/.local/bin (non-root)
+make install      # → ~/.local/bin (non-root)
 # or: sudo install -m 755 bin/agentsd bin/agentsctl /usr/local/bin/
 ```
 
@@ -77,6 +88,8 @@ sudo chmod 600 /etc/agentsd/env
 4. Run:
 
 ```bash
+# package install example
+sudo install -m 755 bin/agentsd bin/agentsctl /usr/local/bin/
 set -a; source /etc/agentsd/env; set +a
 agentsd serve --config /etc/agentsd/config.toml
 ```
@@ -91,6 +104,9 @@ sudo systemctl enable --now agentsd
 ```
 
 Prefer a **dedicated user** (or the non-root user unit above) and `workspace_root` under that user’s home for anything beyond a single-admin lab box.
+
+Units ship with **`KillMode=process`** so restarting agentsd does not kill agent tmux sessions. After upgrading units: `systemctl daemon-reload`.
+
 ## Client config
 
 ```bash
@@ -121,7 +137,7 @@ Both binaries can self-update from [GitHub Releases](https://github.com/reloadli
 # Mac / laptop client
 agentsctl update              # install latest agentsctl over itself
 agentsctl update --check      # only print whether an update exists
-agentsctl update --version v0.2.2
+agentsctl update --version v0.8.11
 agentsctl update --all        # also agentsd if sitting next to agentsctl
 
 # Server daemon
@@ -143,3 +159,9 @@ agentsctl status
 agentsctl agents
 agentsctl session start -a claude --open
 ```
+
+## Security ops
+
+Single-admin checklist (bind, token `600`, allowlist, recording off, Playwright
+localhost, `KillMode=process`) and lab host pattern:
+[SECURITY-OPS.md](./SECURITY-OPS.md). Policy overview: [SECURITY.md](../SECURITY.md).

@@ -66,7 +66,7 @@ func cmdUpdate(args []string) int {
 	check := fs.Bool("check", false, "only check for a newer release")
 	force := fs.Bool("force", false, "reinstall even if already on latest")
 	all := fs.Bool("all", false, "also update agentsctl if installed next to this binary")
-	ver := fs.String("version", "", "install a specific tag (e.g. v0.2.2); default latest")
+	ver := fs.String("version", "", "install a specific tag (e.g. v0.8.11); default latest")
 	_ = fs.Parse(args)
 
 	_, err := selfupdate.Run(selfupdate.Options{
@@ -95,6 +95,11 @@ func cmdServe(args []string) int {
 	if err != nil {
 		log.Error("config", "err", err)
 		return 1
+	}
+	for label, tok := range cfg.TokenMap {
+		if tok != "" && len(tok) < 16 {
+			log.Warn("auth token is short; prefer openssl rand -hex 32", "label", label, "len", len(tok))
+		}
 	}
 	store, err := job.OpenStore(cfg.JobsDir)
 	if err != nil {

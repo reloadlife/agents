@@ -184,7 +184,7 @@ func usage() {
   agentsctl                              # default: open TUI session picker
 
 Primary — full remote PTY (WebSocket, no SSH; NOT print/-p):
-  agentsctl tui                          # picker · a agent · w workspace · 1-9 start
+  agentsctl tui                          # picker · enter open/resume · n new · t worktree · a agent · w cwd · p filter · D delete · s status · ? help
   agentsctl web                          # open browser UI (auto-login with client token)
   agentsctl doctor                       # health check
   agentsctl agents                       # list CLIs on server
@@ -317,7 +317,7 @@ func cmdUpdate(args []string) int {
 	check := fs.Bool("check", false, "only check for a newer release")
 	force := fs.Bool("force", false, "reinstall even if already on latest")
 	all := fs.Bool("all", false, "also update agentsd if installed next to this binary")
-	ver := fs.String("version", "", "install a specific tag (e.g. v0.2.2); default latest")
+	ver := fs.String("version", "", "install a specific tag (e.g. v0.8.11); default latest")
 	_ = fs.Parse(args)
 
 	_, err := selfupdate.Run(selfupdate.Options{
