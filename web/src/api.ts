@@ -368,6 +368,21 @@ export function listWorkspaces(): Promise<{
   return request("/v1/workspaces");
 }
 
+/** Create a new directory under the workspace root (allowlisted). */
+export function createWorkspace(body: {
+  name: string;
+}): Promise<{
+  ok?: boolean;
+  cwd?: string;
+  abs?: string;
+  workspace?: WorkspaceEntry;
+}> {
+  return request("/v1/workspaces", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export type SSHKey = {
   name: string;
   path?: string;

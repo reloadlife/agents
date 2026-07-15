@@ -61,6 +61,7 @@ import {
   listAgents,
   listSessions,
   listSSHKeys,
+  createWorkspace,
   listWorkspaces,
   removeAgentAccount,
   saveAgentAccount,
@@ -146,6 +147,9 @@ type AppState = {
   defaultCwd: string;
   formAgent: string;
   formCwd: string;
+  /** When true, new session form creates a folder instead of using the select */
+  formCwdNew: boolean;
+  formCwdNewName: string;
   formName: string;
   formPrompt: string;
   /** New project from git */
@@ -244,6 +248,8 @@ const state: AppState = {
   defaultCwd: ".",
   formAgent: "claude",
   formCwd: ".",
+  formCwdNew: false,
+  formCwdNewName: "",
   formName: "",
   formPrompt: "",
   formGitUrl: "",
@@ -2932,6 +2938,8 @@ async function onAcctRemove(platform: string, id: string): Promise<void> {
 function readCreateForm(): {
   agent: string;
   cwd: string;
+  cwdNew: boolean;
+  cwdNewName: string;
   name: string;
   prompt: string;
   gitUrl: string;
@@ -2945,6 +2953,10 @@ function readCreateForm(): {
 } {
   const agentEl = document.getElementById("sess-agent") as HTMLSelectElement | null;
   const cwdEl = document.getElementById("sess-cwd") as HTMLSelectElement | null;
+  const cwdNewNameEl = document.getElementById("sess-cwd-new-name") as HTMLInputElement | null;
+  const cwdModeEl = document.querySelector(
+    'input[name="sess-cwd-mode"]:checked',
+  ) as HTMLInputElement | null;
   const nameEl = document.getElementById("sess-name") as HTMLInputElement | null;
   const promptEl = document.getElementById("sess-prompt") as HTMLTextAreaElement | null;
   const gitUrlEl = document.getElementById("sess-git-url") as HTMLInputElement | null;
@@ -2958,7 +2970,10 @@ function readCreateForm(): {
     'input[name="sess-account-mode"]:checked',
   ) as HTMLInputElement | null;
   const agent = (agentEl?.value || state.formAgent || state.agents[0] || "claude").trim();
-  const cwd = (cwdEl?.value || state.formCwd || state.defaultCwd || ".").trim();
+  const cwdNew = (cwdModeEl?.value || (state.formCwdNew ? "new" : "existing")) === "new";
+  const cwdNewName = (cwdNewNameEl?.value ?? state.formCwdNewName).trim().replace(/^\/+|\/+$/g, "");
+  const cwdExisting = (cwdEl?.value || state.formCwd || state.defaultCwd || ".").trim();
+  const cwd = cwdNew ? cwdNewName : cwdExisting;
   const name = (nameEl?.value ?? state.formName).trim();
   const prompt = (promptEl?.value ?? state.formPrompt).trim();
   const gitUrl = (gitUrlEl?.value ?? state.formGitUrl).trim();
@@ -2970,7 +2985,9 @@ function readCreateForm(): {
   const account = (accountEl?.value ?? state.formAccount).trim();
   const accountMode = (modeEl?.value || state.formAccountMode || "isolated").trim();
   state.formAgent = agent;
-  state.formCwd = cwd;
+  state.formCwdNew = cwdNew;
+  state.formCwdNewName = cwdNewName;
+  if (!cwdNew) state.formCwd = cwdExisting;
   state.formName = name;
   state.formPrompt = prompt;
   state.formGitUrl = gitUrl;
@@ -2983,6 +3000,8 @@ function readCreateForm(): {
   return {
     agent,
     cwd,
+    cwdNew,
+    cwdNewName,
     name,
     prompt,
     gitUrl,
@@ -3048,11 +3067,42 @@ async function onCreateSession(ev?: Event): Promise<void> {
     paintPanel();
     return;
   }
+  if (form.cwdNew) {
+    const n = (form.cwdNewName || "").trim();
+    if (!n) {
+      state.createError = "Enter a folder name for the new directory";
+      paintPanel();
+      return;
+    }
+    if (n.includes("..") || n.startsWith("/") || n.startsWith(".")) {
+      state.createError = "Folder name must be relative (no .., absolute, or hidden segments)";
+      paintPanel();
+      return;
+    }
+  } else if (!form.cwd) {
+    state.createError = "Pick a workspace";
+    paintPanel();
+    return;
+  }
   state.creating = true;
   state.createError = "";
   paintPanel();
   try {
-    const cwd = form.cwd || ".";
+    let cwd = form.cwd || ".";
+    if (form.cwdNew) {
+      const created = await createWorkspace({ name: form.cwdNewName });
+      cwd = created.cwd || created.workspace?.path || form.cwdNewName;
+      // Refresh workspace list so the new dir shows up next time
+      try {
+        const wsRes = await listWorkspaces();
+        state.workspaces = normalizeWorkspacePaths(wsRes);
+      } catch {
+        if (!state.workspaces.includes(cwd)) state.workspaces = [...state.workspaces, cwd];
+      }
+      state.formCwd = cwd;
+      state.formCwdNew = false;
+      state.formCwdNewName = "";
+    }
     const sess = await createSession({
       agent: form.agent,
       cwd,
@@ -3072,7 +3122,8 @@ async function onCreateSession(ev?: Event): Promise<void> {
       ? ` · account ${form.account} (${form.accountMode || "isolated"})`
       : "";
     const wtNote = form.worktree || sess.worktree ? " · worktree" : "";
-    toast(`Started ${sess.agent} in ${sess.cwd || cwd}${accNote}${wtNote}`, "ok");
+    const dirNote = form.cwdNew ? " · new dir" : "";
+    toast(`Started ${sess.agent} in ${sess.cwd || cwd}${dirNote}${accNote}${wtNote}`, "ok");
   } catch (e) {
     state.creating = false;
     const msg = (e as Error).message || "create failed";
@@ -3900,28 +3951,45 @@ function newSessionPageHTML(): string {
         </div>
       </div>`
     : "";
+  const cwdExisting = !state.formCwdNew;
   return `
-    ${pageHeroHTML("Create", "New session", "Start an agent TTY in a workspace.")}
+    ${pageHeroHTML("Create", "New session", "Start an agent TTY in an existing workspace or a brand-new folder.")}
     <div class="page-body page-body--narrow">
       <form id="create-form" class="page-form" data-action-form="create-session">
         <div class="page-card">
           <div class="page-card-head"><h2>Session</h2></div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="sess-agent">Agent</label>
-              <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
-                ${agentSwatchHTML(state.formAgent)}
-                <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
-                  ${agentOptionsHTML()}
-                </select>
-              </div>
-            </div>
-            <div class="field">
-              <label for="sess-cwd">Workspace</label>
-              <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
-                ${workspaceOptionsHTML()}
+          <div class="field">
+            <label for="sess-agent">Agent</label>
+            <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
+              ${agentSwatchHTML(state.formAgent)}
+              <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
+                ${agentOptionsHTML()}
               </select>
             </div>
+          </div>
+          <div class="field">
+            <span class="field-label">Workspace</span>
+            <div class="cwd-mode-row" role="radiogroup" aria-label="Workspace mode">
+              <label class="check">
+                <input type="radio" name="sess-cwd-mode" value="existing" data-action-change="sess-cwd-mode" ${cwdExisting ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+                Existing
+              </label>
+              <label class="check">
+                <input type="radio" name="sess-cwd-mode" value="new" data-action-change="sess-cwd-mode" ${!cwdExisting ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+                New directory
+              </label>
+            </div>
+          </div>
+          <div class="field" id="sess-cwd-existing" ${cwdExisting ? "" : "hidden"}>
+            <label for="sess-cwd">Directory</label>
+            <select id="sess-cwd" name="cwd" ${cwdExisting ? "required" : ""} ${state.creating ? "disabled" : ""}>
+              ${workspaceOptionsHTML()}
+            </select>
+          </div>
+          <div class="field" id="sess-cwd-new" ${cwdExisting ? "hidden" : ""}>
+            <label for="sess-cwd-new-name">New folder name</label>
+            <input id="sess-cwd-new-name" name="cwd_new" value="${esc(state.formCwdNewName)}" placeholder="my-project or clients/acme" autocomplete="off" spellcheck="false" ${!cwdExisting ? "required" : ""} ${state.creating ? "disabled" : ""} />
+            <p class="form-hint">Created under the host workspace root. Letters, numbers, <code>.</code> <code>_</code> <code>-</code>, and <code>/</code> for nesting.</p>
           </div>
           <div class="field">
             <label for="sess-name">Label <span class="opt">optional</span></label>
@@ -3939,12 +4007,12 @@ function newSessionPageHTML(): string {
           </div>
         </div>
         ${accountBlock}
-        <p class="form-hint">Need a repo first? <a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a></p>
+        <p class="form-hint">Cloning a git repo? <a href="/project/new" data-nav data-action="new-project" class="linkish">New project</a></p>
         ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
         <div class="page-actions">
           <button type="button" class="ghost" data-action="close-panel">Cancel</button>
           <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-            ${state.creating ? "Starting…" : "Start session"}
+            ${state.creating ? "Starting…" : state.formCwdNew ? "Create dir & start" : "Start session"}
           </button>
         </div>
       </form>
@@ -6680,6 +6748,33 @@ function ensureUIDelegation(): void {
     if (kind === "remote-cwd" && el instanceof HTMLSelectElement) {
       state.formCwd = el.value;
       void loadRemotePage();
+    }
+    if (kind === "sess-cwd-mode" && el instanceof HTMLInputElement) {
+      state.formCwdNew = el.value === "new";
+      const nameEl = document.getElementById("sess-cwd-new-name") as HTMLInputElement | null;
+      if (nameEl) state.formCwdNewName = nameEl.value;
+      // Toggle fields without wiping the rest of the form
+      const existing = document.getElementById("sess-cwd-existing");
+      const neu = document.getElementById("sess-cwd-new");
+      const sel = document.getElementById("sess-cwd") as HTMLSelectElement | null;
+      const nameInput = document.getElementById("sess-cwd-new-name") as HTMLInputElement | null;
+      if (existing) existing.hidden = state.formCwdNew;
+      if (neu) neu.hidden = !state.formCwdNew;
+      if (sel) {
+        if (state.formCwdNew) sel.removeAttribute("required");
+        else sel.setAttribute("required", "");
+      }
+      if (nameInput) {
+        if (state.formCwdNew) nameInput.setAttribute("required", "");
+        else nameInput.removeAttribute("required");
+        if (state.formCwdNew) nameInput.focus();
+      }
+      const submit = document.querySelector(
+        '#create-form button[type="submit"]',
+      ) as HTMLButtonElement | null;
+      if (submit && !state.creating) {
+        submit.textContent = state.formCwdNew ? "Create dir & start" : "Start session";
+      }
     }
     if (kind === "git-check" && el instanceof HTMLInputElement) {
       const path = el.getAttribute("data-path") || "";

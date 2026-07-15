@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/agents", s.handleListAgents)
 	mux.HandleFunc("GET /v1/workspaces", s.handleListWorkspaces)
+	mux.HandleFunc("POST /v1/workspaces", s.handleCreateWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/clone", s.handleCloneWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/open", s.handleOpenWorkspace)
 	// Read-only git inspection (status / diff / blob at ref)
@@ -260,6 +261,39 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		"default_cwd":    s.cfg.DefaultCwd,
 		"workspaces":     list,
 		"paths":          paths,
+	})
+}
+
+func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
+	var req workspaces.CreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := workspaces.Create(s.cfg, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// Best-effort context seed so the first session is ready.
+	if s.cfg.ContextEnsureOnSession() && out != nil && out.Path != "" {
+		if abs, rel, err := s.resolveMapCwd(out.Path); err == nil {
+			autoIndex := s.cfg.ContextAutoIndex()
+			writeFiles := s.cfg.ContextWriteFiles()
+			if _, err := ctxmgr.New(s.mem).Ensure(abs, rel, ctxmgr.Options{
+				AutoIndex:  &autoIndex,
+				WriteFiles: &writeFiles,
+				PackBudget: s.cfg.ContextPackBudget(),
+			}); err != nil {
+				s.log.Warn("context ensure after workspace create", "cwd", rel, "err", err)
+			}
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"ok":        true,
+		"workspace": out,
+		"cwd":       out.Path,
+		"abs":       out.Abs,
 	})
 }
 

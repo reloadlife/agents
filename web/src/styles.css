@@ -4989,6 +4989,25 @@ button.git-file-row {
   min-width: 8rem;
 }
 
+.cwd-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.1rem;
+  margin-top: 0.25rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 550;
+  color: hsl(var(--muted-foreground));
+}
+
+#sess-cwd-new .form-hint {
+  margin-top: 0.35rem;
+}
+
 .check-row--wrap {
   flex-wrap: wrap;
   gap: 0.55rem 1rem;
