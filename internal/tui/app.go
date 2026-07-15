@@ -1,13 +1,9 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -17,10 +13,13 @@ import (
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	previewStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Border(lipgloss.NormalBorder(), true, false, false, false).BorderForeground(lipgloss.Color("238")).PaddingTop(0)
+	overlayStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("63")).Padding(0, 1)
 )
 
 // Config for the TUI client.
@@ -31,15 +30,14 @@ type Config struct {
 	DefaultCwd   string
 }
 
-type sessionItem struct {
-	id, agent, cwd, state, tmux string
+// persisted prefs across PTY detach → picker re-entry
+type prefs struct {
+	agent, cwd string
+	worktree   bool
+	filterCwd  bool
+	wsIdx      int
+	agentIdx   int
 }
-
-func (s sessionItem) Title() string { return fmt.Sprintf("%s  [%s]", s.id, s.state) }
-func (s sessionItem) Description() string {
-	return fmt.Sprintf("%s · %s · %s", s.agent, s.cwd, s.tmux)
-}
-func (s sessionItem) FilterValue() string { return s.id + " " + s.cwd + " " + s.agent }
 
 type model struct {
 	cfg          Config
@@ -50,55 +48,54 @@ type model struct {
 	loading      bool
 	attachID     string
 	quitting     bool
-	agents       []string // available TTY agents
+	agents       []string
 	agentIdx     int
 	currentAgent string
-	workspaces   []string // allowlisted cwd paths
+	workspaces   []string
 	wsIdx        int
 	currentCwd   string
-}
-
-type sessionsMsg struct {
-	items []sessionItem
-	err   error
-}
-type agentsMsg struct {
-	names []string
-	err   error
-}
-type workspacesMsg struct {
-	paths   []string
-	defPath string
-	err     error
-}
-type createdMsg struct {
-	id  string
-	err error
-}
-type statusMsg struct {
-	text string
-	err  error
-}
-type killedMsg struct {
-	err error
+	formWorktree bool
+	showHelp     bool
+	showStatus   bool
+	statusPanel  string
+	preview      string
+	previewID    string
+	filterCwd    bool
+	allItems     []sessionItem
+	width        int
+	height       int
 }
 
 func New(cfg Config) model {
+	return newWithPrefs(cfg, prefs{worktree: true})
+}
+
+func newWithPrefs(cfg Config, p prefs) model {
 	if cfg.DefaultAgent == "" {
 		cfg.DefaultAgent = "claude"
 	}
 	if cfg.DefaultCwd == "" {
-		cfg.DefaultCwd = "." // workspace root (~/workspace on agents)
+		cfg.DefaultCwd = "."
 	}
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	l := list.New([]list.Item{}, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "agents · remote TTY"
+	l.Title = "sessions"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = titleStyle
+	l.SetShowHelp(false) // we render our own footer / ? overlay
+
+	agent := cfg.DefaultAgent
+	if p.agent != "" {
+		agent = p.agent
+	}
+	cwd := cfg.DefaultCwd
+	if p.cwd != "" {
+		cwd = p.cwd
+	}
 
 	return model{
 		cfg:          cfg,
@@ -106,8 +103,12 @@ func New(cfg Config) model {
 		spin:         sp,
 		loading:      true,
 		status:       "loading…",
-		currentAgent: cfg.DefaultAgent,
-		currentCwd:   cfg.DefaultCwd,
+		currentAgent: agent,
+		currentCwd:   cwd,
+		agentIdx:     p.agentIdx,
+		wsIdx:        p.wsIdx,
+		formWorktree: p.worktree, // default true from New / Run
+		filterCwd:    p.filterCwd,
 	}
 }
 
@@ -115,14 +116,75 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(m.spin.Tick, fetchSessions(m.cfg), fetchAgents(m.cfg), fetchWorkspaces(m.cfg))
 }
 
+func (m *model) setListItems(items []sessionItem) {
+	m.allItems = items
+	filtered := m.applyFilter(items)
+	listItems := make([]list.Item, len(filtered))
+	for i := range filtered {
+		listItems[i] = filtered[i]
+	}
+	m.list.SetItems(listItems)
+}
+
+func (m model) applyFilter(items []sessionItem) []sessionItem {
+	if !m.filterCwd || m.currentCwd == "" || m.currentCwd == "." {
+		return items
+	}
+	want := strings.TrimRight(m.currentCwd, "/")
+	base := cwdBase(want)
+	out := make([]sessionItem, 0, len(items))
+	for _, it := range items {
+		cwd := strings.TrimRight(it.cwd, "/")
+		if cwd == want || strings.HasPrefix(cwd, want+"/") {
+			out = append(out, it)
+			continue
+		}
+		// worktree / relative labels: match project basename segment
+		if base != "" && base != "." && (strings.Contains(cwd, "/"+base+"/") || strings.HasSuffix(cwd, "/"+base) || cwdBase(cwd) == base) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func (m *model) layout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	// header ~5, footer 1, preview ~7 when visible
+	chrome := 6
+	previewH := 0
+	if !m.showHelp && !m.showStatus {
+		previewH = 8
+	}
+	h := m.height - chrome - previewH
+	if h < 5 {
+		h = 5
+	}
+	m.list.SetSize(m.width-2, h)
+}
+
+func (m model) selectedID() string {
+	if it, ok := m.list.SelectedItem().(sessionItem); ok {
+		return it.id
+	}
+	return ""
+}
+
+func (m model) maybePreviewCmd() tea.Cmd {
+	id := m.selectedID()
+	if id == "" || id == m.previewID {
+		return nil
+	}
+	return fetchPreview(m.cfg, id)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		h := msg.Height - 6
-		if h < 5 {
-			h = 5
-		}
-		m.list.SetSize(msg.Width-2, h)
+		m.width = msg.Width
+		m.height = msg.Height
+		m.layout()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -138,21 +200,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = ""
-		items := make([]list.Item, len(msg.items))
-		for i := range msg.items {
-			items[i] = msg.items[i]
+		m.setListItems(msg.items)
+		filt := ""
+		if m.filterCwd {
+			filt = " · filter=cwd"
 		}
-		m.list.SetItems(items)
-		m.status = fmt.Sprintf("%d sessions · agent=%s · cwd=%s", len(msg.items), m.currentAgent, m.currentCwd)
-		return m, nil
+		m.status = fmt.Sprintf("%d sessions · agent=%s · cwd=%s · wt=%s%s",
+			len(m.list.Items()), m.currentAgent, cwdBase(m.currentCwd), onOff(m.formWorktree), filt)
+		m.layout()
+		return m, m.maybePreviewCmd()
 
 	case agentsMsg:
 		if msg.err != nil {
-			// keep defaults
 			return m, nil
 		}
 		m.agents = msg.names
-		// snap current agent index
 		for i, n := range m.agents {
 			if n == m.currentAgent {
 				m.agentIdx = i
@@ -160,7 +222,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(m.agents) > 0 {
-			// if default missing, use first available
 			found := false
 			for _, n := range m.agents {
 				if n == m.currentAgent {
@@ -183,7 +244,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.workspaces) == 0 {
 			return m, nil
 		}
-		// prefer cfg default / server default if present
 		want := m.currentCwd
 		if want == "" || want == "." {
 			if msg.defPath != "" {
@@ -200,13 +260,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if !found {
-			// keep current if it was explicit; else first workspace
 			if m.currentCwd == "" || m.currentCwd == "." {
 				m.wsIdx = 0
 				m.currentCwd = m.workspaces[0]
 			}
 		}
 		m.status = fmt.Sprintf("cwd → %s", m.currentCwd)
+		if m.filterCwd {
+			m.setListItems(m.allItems)
+		}
 		return m, nil
 
 	case createdMsg:
@@ -225,41 +287,119 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err.Error()
 			return m, nil
 		}
+		m.previewID = ""
 		return m, fetchSessions(m.cfg)
 
-	case statusMsg:
+	case deletedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.preview = ""
+		m.previewID = ""
+		m.status = "deleted"
+		return m, fetchSessions(m.cfg)
+
+	case resumedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = "resume: " + msg.err.Error()
+			return m, fetchSessions(m.cfg)
+		}
+		if msg.state != "" && msg.state != "running" {
+			m.err = fmt.Sprintf("session still %s after resume", msg.state)
+			return m, fetchSessions(m.cfg)
+		}
+		m.attachID = msg.id
+		m.quitting = true
+		return m, tea.Quit
+
+	case statusMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			m.showStatus = false
+			return m, nil
+		}
+		m.statusPanel = msg.text
+		m.showStatus = true
+		m.showHelp = false
+		m.err = ""
+		m.layout()
+		return m, nil
+
+	case previewMsg:
+		if msg.id != m.selectedID() {
+			// stale
+			return m, nil
+		}
+		m.previewID = msg.id
+		if msg.err != nil {
+			m.preview = helpStyle.Render("(preview error: " + msg.err.Error() + ")")
 		} else {
-			m.status = msg.text
-			m.err = ""
+			m.preview = msg.text
 		}
 		return m, nil
 
 	case tea.KeyMsg:
+		// overlays first
+		if m.showHelp {
+			switch msg.String() {
+			case "?", "esc", "q", "enter":
+				m.showHelp = false
+				m.layout()
+				return m, nil
+			}
+			return m, nil
+		}
+		if m.showStatus {
+			switch msg.String() {
+			case "s", "esc", "q", "enter":
+				m.showStatus = false
+				m.layout()
+				return m, nil
+			}
+			return m, nil
+		}
+
 		if m.list.FilterState() == list.Filtering {
 			break
 		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
+			m.attachID = ""
 			return m, tea.Quit
+		case "?":
+			m.showHelp = true
+			m.showStatus = false
+			m.layout()
+			return m, nil
 		case "enter", "o":
 			if it, ok := m.list.SelectedItem().(sessionItem); ok {
-				if it.state != "running" {
-					m.err = "session not running"
-					return m, nil
+				if it.state == "running" {
+					m.attachID = it.id
+					m.quitting = true
+					return m, tea.Quit
 				}
-				m.attachID = it.id
-				m.quitting = true
-				return m, tea.Quit
+				// non-running → resume then attach
+				m.loading = true
+				m.status = "resuming " + shortID(it.id) + "…"
+				m.err = ""
+				return m, resumeSession(m.cfg, it.id)
 			}
 		case "n":
 			m.loading = true
-			m.status = fmt.Sprintf("creating %s in %s…", m.currentAgent, m.currentCwd)
-			return m, createSession(m.cfg, m.currentCwd, m.currentAgent)
+			wt := onOff(m.formWorktree)
+			m.status = fmt.Sprintf("creating %s in %s (wt=%s)…", m.currentAgent, m.currentCwd, wt)
+			return m, createSession(m.cfg, m.currentCwd, m.currentAgent, m.formWorktree)
+		case "t":
+			m.formWorktree = !m.formWorktree
+			m.status = fmt.Sprintf("worktree → %s  (press n to start)", onOff(m.formWorktree))
+			m.err = ""
+			return m, nil
 		case "a", "tab":
-			// cycle agent
 			if len(m.agents) == 0 {
 				m.err = "no agents loaded yet"
 				return m, fetchAgents(m.cfg)
@@ -270,7 +410,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			return m, nil
 		case "w", "W":
-			// cycle workspace / cwd
 			if len(m.workspaces) == 0 {
 				m.err = "no workspaces loaded yet"
 				return m, fetchWorkspaces(m.cfg)
@@ -279,9 +418,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentCwd = m.workspaces[m.wsIdx]
 			m.status = fmt.Sprintf("cwd → %s  (press n to start)", m.currentCwd)
 			m.err = ""
-			return m, nil
+			if m.filterCwd {
+				m.setListItems(m.allItems)
+			}
+			return m, m.maybePreviewCmd()
+		case "p":
+			m.filterCwd = !m.filterCwd
+			m.setListItems(m.allItems)
+			if m.filterCwd {
+				m.status = fmt.Sprintf("filter cwd → %s  (%d shown)", m.currentCwd, len(m.list.Items()))
+			} else {
+				m.status = fmt.Sprintf("filter off  (%d sessions)", len(m.list.Items()))
+			}
+			m.previewID = ""
+			return m, m.maybePreviewCmd()
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			// quick-pick agent by number and start
 			idx := int(msg.String()[0] - '1')
 			if len(m.agents) == 0 {
 				return m, fetchAgents(m.cfg)
@@ -290,33 +441,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.agentIdx = idx
 				m.currentAgent = m.agents[idx]
 				m.loading = true
-				m.status = fmt.Sprintf("creating %s in %s…", m.currentAgent, m.currentCwd)
-				return m, createSession(m.cfg, m.currentCwd, m.currentAgent)
+				m.status = fmt.Sprintf("creating %s in %s (wt=%s)…", m.currentAgent, m.currentCwd, onOff(m.formWorktree))
+				return m, createSession(m.cfg, m.currentCwd, m.currentAgent, m.formWorktree)
 			}
 		case "r":
 			m.loading = true
+			m.previewID = ""
 			return m, tea.Batch(fetchSessions(m.cfg), fetchAgents(m.cfg), fetchWorkspaces(m.cfg))
 		case "x", "d":
 			if it, ok := m.list.SelectedItem().(sessionItem); ok {
 				m.loading = true
+				m.status = "killing " + shortID(it.id) + "…"
 				return m, killSession(m.cfg, it.id)
 			}
+		case "D":
+			if it, ok := m.list.SelectedItem().(sessionItem); ok {
+				m.loading = true
+				m.status = "deleting " + shortID(it.id) + "…"
+				return m, deleteSession(m.cfg, it.id)
+			}
 		case "s":
+			m.loading = true
+			m.status = "fetching status…"
 			return m, fetchStatus(m.cfg)
 		}
 	}
 
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	// selection may have changed — refresh preview
+	if prev := m.maybePreviewCmd(); prev != nil {
+		return m, tea.Batch(cmd, prev)
+	}
 	return m, cmd
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }
 
 func (m model) View() string {
 	if m.quitting && m.attachID == "" {
 		return ""
 	}
+	if m.showHelp {
+		return m.viewHelp()
+	}
+	if m.showStatus {
+		return overlayStyle.Render(m.statusPanel)
+	}
+
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(" agents ") + helpStyle.Render(" full PTY · no SSH ") + "\n")
+
 	agentLine := "agent: " + okStyle.Render(m.currentAgent)
 	if len(m.agents) > 0 {
 		var parts []string
@@ -330,16 +510,24 @@ func (m model) View() string {
 		agentLine += "  " + helpStyle.Render("["+strings.Join(parts, " ")+"]")
 	}
 	b.WriteString(agentLine + "\n")
-	cwdLine := "cwd:   " + okStyle.Render(m.currentCwd)
+
+	wtBadge := okStyle.Render("wt:"+onOff(m.formWorktree))
+	if !m.formWorktree {
+		wtBadge = helpStyle.Render("wt:off")
+	}
+	cwdLine := "cwd:   " + okStyle.Render(m.currentCwd) + "  " + wtBadge
+	if m.filterCwd {
+		cwdLine += "  " + warnStyle.Render("filter:cwd")
+	}
 	if len(m.workspaces) > 1 {
-		// show a short neighbour preview
 		prev := m.workspaces[(m.wsIdx-1+len(m.workspaces))%len(m.workspaces)]
 		next := m.workspaces[(m.wsIdx+1)%len(m.workspaces)]
-		cwdLine += "  " + helpStyle.Render(fmt.Sprintf("(w cycle · %d · …%s | %s…)", len(m.workspaces), shortPath(prev), shortPath(next)))
+		cwdLine += "  " + helpStyle.Render(fmt.Sprintf("(w · %d · …%s | %s…)", len(m.workspaces), shortPath(prev), shortPath(next)))
 	} else if len(m.workspaces) == 1 {
 		cwdLine += "  " + helpStyle.Render("(1 workspace)")
 	}
 	b.WriteString(cwdLine + "\n")
+
 	if m.loading {
 		b.WriteString(m.spin.View() + " " + m.status + "\n")
 	} else {
@@ -349,186 +537,94 @@ func (m model) View() string {
 		b.WriteString(errStyle.Render("✗ "+m.err) + "\n")
 	}
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + helpStyle.Render("enter open · n new · a/tab agent · w cwd · 1-9 quick start · x kill · r refresh · q quit"))
+	b.WriteString("\n")
+	b.WriteString(m.viewPreview())
+	b.WriteString("\n" + helpStyle.Render("enter open/resume · n new · t worktree · a agent · w cwd · p filter · x kill · D delete · s status · ? help · q quit"))
 	return b.String()
 }
 
-func shortPath(p string) string {
-	if len(p) <= 18 {
-		return p
+func (m model) viewPreview() string {
+	title := "preview"
+	if id := m.selectedID(); id != "" {
+		title = "preview " + shortID(id)
 	}
-	return "…" + p[len(p)-16:]
+	body := m.preview
+	if body == "" {
+		body = helpStyle.Render("select a session…")
+	}
+	// cap height visually
+	lines := strings.Split(body, "\n")
+	if len(lines) > 12 {
+		lines = lines[len(lines)-12:]
+	}
+	body = strings.Join(lines, "\n")
+	block := helpStyle.Render(title) + "\n" + body
+	return previewStyle.Width(max(20, m.width-2)).Render(block)
 }
 
-// Run launches the session picker TUI; on selection, attaches full remote PTY.
+func (m model) viewHelp() string {
+	keys := []string{
+		"enter / o     open session (resume if not running)",
+		"n             new session with current agent/cwd/wt",
+		"t             toggle worktree for create (default on)",
+		"a / tab       cycle agent",
+		"w             cycle workspace cwd",
+		"p             filter list to current cwd",
+		"1-9           quick-pick agent + start",
+		"x / d         kill session (keep in list)",
+		"D             delete session (remove)",
+		"r             refresh sessions / agents / workspaces",
+		"s             host status panel",
+		"/             filter list (built-in)",
+		"?             this help",
+		"q             quit (after detach returns to picker)",
+		"",
+		"detach from PTY returns here — q only exits the TUI",
+	}
+	body := titleStyle.Render(" keys ") + "\n\n" + strings.Join(keys, "\n")
+	body += "\n\n" + helpStyle.Render("press ? or esc to close")
+	return overlayStyle.Render(body)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// Run launches the session picker TUI; after PTY detach, re-enters the picker
+// until the user quits with q (no attach pending).
 func Run(cfg Config) error {
-	m := New(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	final, err := p.Run()
-	if err != nil {
-		return err
-	}
-	fm, ok := final.(model)
-	if !ok || fm.attachID == "" {
-		return nil
-	}
-	fmt.Fprintln(os.Stderr, okStyle.Render("→ PTY attach"), fm.attachID)
-	return clientpty.Attach(cfg.BaseURL, cfg.Token, fm.attachID)
-}
-
-func fetchSessions(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		var out struct {
-			Sessions []struct {
-				ID    string `json:"id"`
-				Agent string `json:"agent"`
-				Cwd   string `json:"cwd"`
-				State string `json:"state"`
-				Tmux  string `json:"tmux"`
-			} `json:"sessions"`
-		}
-		if err := apiGet(cfg, "/v1/sessions", &out); err != nil {
-			return sessionsMsg{err: err}
-		}
-		items := make([]sessionItem, 0, len(out.Sessions))
-		for _, s := range out.Sessions {
-			items = append(items, sessionItem{id: s.ID, agent: s.Agent, cwd: s.Cwd, state: s.State, tmux: s.Tmux})
-		}
-		return sessionsMsg{items: items}
-	}
-}
-
-func fetchAgents(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		var out struct {
-			Available []string `json:"available"`
-		}
-		if err := apiGet(cfg, "/v1/agents", &out); err != nil {
-			// fallback fixed list
-			return agentsMsg{names: []string{"claude", "grok", "codex", "opencode", "cursor"}}
-		}
-		if len(out.Available) == 0 {
-			return agentsMsg{names: []string{"claude", "grok", "codex", "opencode", "cursor"}}
-		}
-		return agentsMsg{names: out.Available}
-	}
-}
-
-func fetchWorkspaces(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		var out struct {
-			Default    string `json:"default_cwd"`
-			Workspaces []struct {
-				Path    string `json:"path"`
-				Default bool   `json:"default"`
-			} `json:"workspaces"`
-		}
-		if err := apiGet(cfg, "/v1/workspaces", &out); err != nil {
-			// fallback: only configured default
-			return workspacesMsg{paths: []string{cfg.DefaultCwd}, defPath: cfg.DefaultCwd}
-		}
-		paths := make([]string, 0, len(out.Workspaces))
-		def := out.Default
-		if def == "" {
-			def = cfg.DefaultCwd
-		}
-		for _, w := range out.Workspaces {
-			paths = append(paths, w.Path)
-			if w.Default {
-				def = w.Path
-			}
-		}
-		if len(paths) == 0 {
-			paths = []string{"."}
-		}
-		return workspacesMsg{paths: paths, defPath: def}
-	}
-}
-
-func createSession(cfg Config, cwd, agent string) tea.Cmd {
-	return func() tea.Msg {
-		body := map[string]any{"agent": agent, "cwd": cwd, "mode": "tty"}
-		var out struct {
-			ID string `json:"id"`
-		}
-		if err := apiPost(cfg, "/v1/sessions", body, &out); err != nil {
-			return createdMsg{err: err}
-		}
-		return createdMsg{id: out.ID}
-	}
-}
-
-func killSession(cfg Config, id string) tea.Cmd {
-	return func() tea.Msg {
-		if err := apiPost(cfg, "/v1/sessions/"+id+"/kill", map[string]any{}, nil); err != nil {
-			return killedMsg{err: err}
-		}
-		return killedMsg{}
-	}
-}
-
-func fetchStatus(cfg Config) tea.Cmd {
-	return func() tea.Msg {
-		var raw map[string]any
-		if err := apiGet(cfg, "/v1/status", &raw); err != nil {
-			return statusMsg{err: err}
-		}
-		host, _ := raw["host"].(string)
-		return statusMsg{text: fmt.Sprintf("host=%s · %s", host, time.Now().Format("15:04:05"))}
-	}
-}
-
-func apiGet(cfg Config, path string, out any) error {
-	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.BaseURL, "/")+path, nil)
-	if err != nil {
-		return err
-	}
-	if cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	b, _ := io.ReadAll(res.Body)
-	if res.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(b, out)
-}
-
-func apiPost(cfg Config, path string, body any, out any) error {
-	var rdr io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
+	pstate := prefs{worktree: true}
+	for {
+		m := newWithPrefs(cfg, pstate)
+		prog := tea.NewProgram(m, tea.WithAltScreen())
+		final, err := prog.Run()
 		if err != nil {
 			return err
 		}
-		rdr = strings.NewReader(string(b))
+		fm, ok := final.(model)
+		if !ok {
+			return nil
+		}
+		// stash prefs for next picker entry
+		pstate = prefs{
+			agent:     fm.currentAgent,
+			cwd:       fm.currentCwd,
+			worktree:  fm.formWorktree,
+			filterCwd: fm.filterCwd,
+			wsIdx:     fm.wsIdx,
+			agentIdx:  fm.agentIdx,
+		}
+		if fm.attachID == "" {
+			return nil
+		}
+		fmt.Fprintln(os.Stderr, okStyle.Render("→ PTY attach"), fm.attachID)
+		if err := clientpty.Attach(cfg.BaseURL, cfg.Token, fm.attachID); err != nil {
+			fmt.Fprintln(os.Stderr, errStyle.Render("PTY: "+err.Error()))
+		}
+		fmt.Fprintln(os.Stderr, helpStyle.Render("… back to session picker"))
+		// loop → new picker
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cfg.BaseURL, "/")+path, rdr)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	b, _ := io.ReadAll(res.Body)
-	if res.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(b, out)
 }
