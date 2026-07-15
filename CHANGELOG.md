@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.12] — 2026-07-15
+
+### Added
+
+- **Session preview / activity** — `GET /v1/sessions/{id}/preview`, `GET /v1/sessions/activity`
+  - Last N pane lines (live tmux or snapshot), optional ANSI strip, busy/idle heuristic
+  - Web sidebar shows terminal tail + activity chip; TUI shows selection preview
+- **Recordings product surface** — retention + secret redaction on archive, `DELETE /v1/recordings/{id}`, real search snippets
+  - Web: `/recordings` stage with list, search, viewer, snap; privacy note when disabled
+  - Privacy policy: [docs/RECORDING.md](docs/RECORDING.md)
+- **Memory re-embed** — `POST /v1/memory/reembed` (+ index `reembed: true`); richer stats (`embed_enabled`, `embedded`, `docs_missing`)
+  - Tools UI: mode auto/fts/vector, include_code, clear, stats chips
+- **Project map** — full skill install content; web stale/missing CTAs (Generate / Ensure / Install skill)
+- **TUI overhaul** — richer rows, resume on enter, delete, worktree toggle, post-detach picker loop, help, host status, pane preview
+- **Docs / security / CI**
+  - Version line documented as **v0.8.x** (README, SECURITY, INSTALL, OPEN-SOURCE, WEB, ARCHITECTURE)
+  - [docs/SECURITY-OPS.md](docs/SECURITY-OPS.md) single-admin checklist
+  - Auth multi-token + trusted-header tests; short-token boot warning
+  - CI: `make web` before tests; release runs `go test` before multi-arch
+
+### Changed
+
+- Recording archives redact secrets and strip ANSI before write; default max 20 snapshots per session
+
 ## [0.8.11] — 2026-07-14
 
 ### Changed
