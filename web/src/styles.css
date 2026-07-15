@@ -1342,6 +1342,22 @@ a.session-item {
   line-height: 1.5;
 }
 
+.empty-list-ico {
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  margin-bottom: 0.15rem;
+  background: hsl(var(--sidebar-accent) / 0.65);
+  border: 1px solid hsl(var(--sidebar-border) / 0.7);
+  color: hsl(var(--sidebar-foreground) / 0.75);
+}
+.empty-list-ico .menu-ico {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
 .empty-list-title {
   font-weight: 550;
   color: hsl(var(--sidebar-foreground) / 0.92);
@@ -2066,11 +2082,21 @@ a.tab {
   height: var(--status-h);
   padding: 0 1rem;
   border-top: 1px solid hsl(var(--border));
-  background: hsl(var(--background));
+  background: hsl(var(--background) / 0.96);
   color: var(--muted-fg);
   font-size: 0.7rem;
   font-family: var(--mono);
   flex-shrink: 0;
+}
+.status-bar .status-metric strong {
+  color: hsl(var(--foreground) / 0.88);
+  font-weight: 600;
+}
+.status-bar .status-host {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -4882,6 +4908,24 @@ button.git-file-row {
     hsl(var(--background));
 }
 
+/* Subtle polish on interactive stage cards */
+.remote-cmd {
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+}
+.remote-cmd:hover {
+  border-color: hsl(var(--border) / 1);
+  box-shadow: var(--shadow-xs);
+  background: hsl(var(--card));
+}
+.page-card {
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
 .page-hero {
   display: flex;
   align-items: flex-start;
@@ -5033,6 +5077,67 @@ button.git-file-row {
   padding: 3rem 1rem;
   text-align: center;
   color: hsl(var(--muted-foreground));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 12rem;
+  justify-content: center;
+}
+.page-empty .git-empty-title {
+  margin-top: 0.15rem;
+}
+.page-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: center;
+  margin-top: 0.55rem;
+}
+.page-empty--loading .git-empty-title {
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+.git-empty-icon--err {
+  color: hsl(var(--error-fg));
+  border-color: hsl(var(--error-border));
+  background: hsl(var(--error-bg));
+}
+
+/* Shared spinner (buttons, empty states, refresh) */
+.ui-spinner {
+  display: inline-block;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 2px solid hsl(var(--muted-foreground) / 0.25);
+  border-top-color: hsl(var(--foreground) / 0.85);
+  border-radius: 999px;
+  animation: ui-spin 0.65s linear infinite;
+  vertical-align: -0.15em;
+  flex-shrink: 0;
+}
+.ui-spinner--sm {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-width: 1.5px;
+  vertical-align: -0.1em;
+}
+button .ui-spinner,
+button .ui-spinner--sm {
+  margin-right: 0.15rem;
+}
+button.is-busy {
+  cursor: wait;
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+button.is-copied {
+  color: hsl(var(--success-fg)) !important;
+  border-color: hsl(var(--success-border) / 0.6) !important;
 }
 
 /* Remote page */
@@ -5400,6 +5505,12 @@ button.git-file-row {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .ui-spinner,
+  .ui-spinner--sm {
+    animation: none !important;
+    border-top-color: hsl(var(--muted-foreground) / 0.5);
+    opacity: 0.7;
+  }
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -5741,46 +5852,100 @@ button.git-file-row {
   z-index: 1600;
   display: flex;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: 0.55rem;
   max-width: min(22rem, calc(100vw - 2rem));
-  padding: 0.65rem 0.85rem;
-  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.55rem 0.7rem 0.75rem;
+  border-radius: var(--radius-md);
   border: 1px solid hsl(var(--border));
   background: hsl(var(--popover));
   color: hsl(var(--popover-foreground));
   box-shadow:
     0 0 0 1px hsl(var(--border) / 0.4),
-    0 8px 24px -6px rgba(0, 0, 0, 0.5);
+    0 12px 32px -8px rgba(0, 0, 0, 0.55),
+    0 4px 12px -4px rgba(0, 0, 0, 0.35);
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.4;
   will-change: transform, opacity;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.app-toast.toast .toast-ico,
+.toast.app-toast .toast-ico {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 0.05rem;
+  opacity: 0.9;
+}
+.app-toast.toast .toast-ico .menu-ico,
+.toast.app-toast .toast-ico .menu-ico {
+  width: 1rem;
+  height: 1rem;
 }
 
 .app-toast.toast .toast-msg,
 .toast.app-toast .toast-msg {
   flex: 1;
   min-width: 0;
+  padding-top: 0.05rem;
+}
+
+.app-toast.toast .toast-dismiss,
+.toast.app-toast .toast-dismiss {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  min-width: 1.5rem;
+  padding: 0;
+  margin: -0.15rem -0.05rem -0.15rem 0;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  box-shadow: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    opacity 0.12s ease,
+    background 0.12s ease;
+}
+.app-toast.toast .toast-dismiss:hover,
+.toast.app-toast .toast-dismiss:hover {
+  opacity: 1;
+  background: hsl(var(--foreground) / 0.08);
+  border: none;
+  color: inherit;
+}
+.app-toast.toast .toast-dismiss .menu-ico,
+.toast.app-toast .toast-dismiss .menu-ico {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .app-toast.toast.toast-ok,
 .toast.app-toast.toast-ok {
   border-color: hsl(var(--success-border));
-  background: hsl(var(--success-bg));
+  background: hsl(var(--success-bg) / 0.95);
   color: hsl(var(--success-fg));
 }
 
 .app-toast.toast.toast-err,
 .toast.app-toast.toast-err {
   border-color: hsl(var(--error-border));
-  background: hsl(var(--error-bg));
+  background: hsl(var(--error-bg) / 0.95);
   color: hsl(var(--error-fg));
 }
 
 .app-toast.toast.toast-info,
 .toast.app-toast.toast-info {
   border-color: hsl(var(--border));
-  background: hsl(var(--popover));
+  background: hsl(var(--popover) / 0.96);
   color: hsl(var(--popover-foreground));
 }
 

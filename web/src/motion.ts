@@ -242,3 +242,47 @@ export function animateLoginIn(root: HTMLElement): void {
     springSoft,
   );
 }
+
+/** Soft fade/lift when an in-shell stage mounts (git, projects, forms…). */
+export function animateStageIn(stage: HTMLElement): void {
+  if (prefersReducedMotion()) return;
+  const hero = stage.querySelector<HTMLElement>(".page-hero, .git-hero");
+  const body = stage.querySelector<HTMLElement>(".page-body, .git-body, .git-split");
+  stage.style.opacity = "0";
+  void animate(stage, { opacity: [0, 1] }, { duration: 0.16, ease: "easeOut" }).then(
+    () => {
+      stage.style.opacity = "";
+    },
+    () => {
+      stage.style.opacity = "";
+    },
+  );
+  if (hero) {
+    hero.style.opacity = "0";
+    hero.style.transform = "translateY(8px)";
+    void animate(hero, { opacity: [0, 1], y: [8, 0] }, { ...springSoft, delay: 0.02 }).then(
+      () => {
+        hero.style.opacity = "";
+        hero.style.transform = "";
+      },
+      () => {
+        hero.style.opacity = "";
+        hero.style.transform = "";
+      },
+    );
+  }
+  if (body) {
+    body.style.opacity = "0";
+    body.style.transform = "translateY(10px)";
+    void animate(body, { opacity: [0, 1], y: [10, 0] }, { ...springSoft, delay: 0.05 }).then(
+      () => {
+        body.style.opacity = "";
+        body.style.transform = "";
+      },
+      () => {
+        body.style.opacity = "";
+        body.style.transform = "";
+      },
+    );
+  }
+}

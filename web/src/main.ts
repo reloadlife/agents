@@ -108,6 +108,7 @@ import {
   animateSettingsIn,
   animateSettingsOut,
   animateShellIn,
+  animateStageIn,
   animateToastIn,
   animateToastOut,
   bindPressMotion,
@@ -1291,14 +1292,19 @@ function remotePageHTML(): string {
       </select>
     </label>
     <button type="button" class="ghost btn-sm" data-action="remote-refresh" ${state.remoteLoading ? "disabled" : ""}>
-      ${state.remoteLoading ? "Loading…" : "Refresh"}
+      ${state.remoteLoading ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Loading…` : "Refresh"}
     </button>`;
 
   let body = "";
   if (state.remoteLoading && !info) {
-    body = `<div class="page-empty"><p class="git-empty-title">Loading commands…</p></div>`;
+    body = pageEmptyHTML({ title: "Loading commands…", kind: "loading", hint: "Fetching remote open commands for this workspace." });
   } else if (state.remoteError && !info) {
-    body = `<div class="page-empty"><p class="git-empty-title">Failed to load</p><p class="git-empty-hint">${esc(state.remoteError)}</p></div>`;
+    body = pageEmptyHTML({
+      title: "Failed to load",
+      kind: "error",
+      hint: state.remoteError,
+      actions: `<button type="button" class="primary btn-sm" data-action="remote-refresh">Retry</button>`,
+    });
   } else if (info) {
     const c = info.commands || {};
     body = `
@@ -1328,7 +1334,13 @@ function remotePageHTML(): string {
         </div>
       </div>`;
   } else {
-    body = `<div class="page-empty"><p class="git-empty-title">No data</p></div>`;
+    body = pageEmptyHTML({
+      title: "No data yet",
+      kind: "empty",
+      icon: "external",
+      hint: "Pick a workspace and refresh to generate remote open commands.",
+      actions: `<button type="button" class="primary btn-sm" data-action="remote-refresh">Load commands</button>`,
+    });
   }
 
   return `
@@ -1408,25 +1420,33 @@ function projectsListHTML(): string {
     );
   }
   if (state.projectsLoading && !cards.length) {
-    return `<div class="page-empty"><p class="git-empty-title">Loading projects…</p></div>`;
+    return pageEmptyHTML({
+      title: "Loading projects…",
+      kind: "loading",
+      hint: "Scanning the host workspace root.",
+    });
   }
   if (state.projectsError && !cards.length) {
-    return `<div class="page-empty"><p class="git-empty-title">Failed to load</p><p class="git-empty-hint">${esc(state.projectsError)}</p></div>`;
+    return pageEmptyHTML({
+      title: "Failed to load",
+      kind: "error",
+      hint: state.projectsError,
+      actions: `<button type="button" class="primary btn-sm" data-action="projects-refresh">Retry</button>`,
+    });
   }
   if (!cards.length) {
-    return `<div class="page-empty">
-      <div class="git-empty-icon" aria-hidden="true">${iconSvg("layers")}</div>
-      <p class="git-empty-title">${q ? "No matching projects" : "No projects yet"}</p>
-      <p class="git-empty-hint">${
-        q
-          ? "Try a different filter."
-          : "Clone a repo or create a directory from New session."
-      }</p>
-      <div class="page-actions" style="justify-content:center;margin-top:0.75rem">
-        <button type="button" class="primary btn-sm" data-action="new-project">${iconSvg("folder-git")} Clone project</button>
-        <button type="button" class="ghost btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>
-      </div>
-    </div>`;
+    return pageEmptyHTML({
+      title: q ? "No matching projects" : "No projects yet",
+      kind: "empty",
+      icon: "layers",
+      hint: q
+        ? "Try a different filter."
+        : "Clone a repo or create a directory from New session.",
+      actions: q
+        ? ""
+        : `<button type="button" class="primary btn-sm" data-action="new-project">${iconSvg("folder-git")} Clone project</button>
+           <button type="button" class="ghost btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>`,
+    });
   }
   return `<div class="project-list" role="list">${cards
     .map((c) => {
@@ -1485,7 +1505,7 @@ function projectsPageHTML(): string {
       <input id="projects-filter" type="search" placeholder="Filter projects…" value="${esc(state.projectsFilter)}" autocomplete="off" spellcheck="false" />
     </label>
     <button type="button" class="ghost btn-sm" data-action="projects-refresh" ${state.projectsLoading ? "disabled" : ""}>
-      ${state.projectsLoading ? "…" : "Refresh"}
+      ${state.projectsLoading ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Refresh` : "Refresh"}
     </button>
     <button type="button" class="ghost btn-sm" data-action="new-project">${iconSvg("folder-git")} Clone</button>
     <button type="button" class="primary btn-sm" data-action="new-session">${iconSvg("plus")} Session</button>`;
@@ -1722,10 +1742,20 @@ function toast(msg: string, kind: ToastKind = "info", ms = 3200): void {
   state.toast = { msg, kind };
   void paintToast();
   if (toastTimer) window.clearTimeout(toastTimer);
+  // Errors stay a bit longer so they can be read; dismiss clears early.
+  const hold = kind === "err" ? Math.max(ms, 5200) : ms;
   toastTimer = window.setTimeout(() => {
     state.toast = null;
     void paintToast();
-  }, ms);
+  }, hold);
+}
+
+function dismissToast(): void {
+  if (toastTimer) window.clearTimeout(toastTimer);
+  toastTimer = null;
+  if (!state.toast) return;
+  state.toast = null;
+  void paintToast();
 }
 
 /** Toasts live on document.body above modals (z-index), not inside term-wrap. */
@@ -1747,11 +1777,21 @@ async function paintToast(): Promise<void> {
     el.hidden = true;
     el.textContent = "";
     el.className = "app-toast toast";
+    el.removeAttribute("data-kind");
     return;
   }
+  const kind = state.toast.kind;
+  const ico =
+    kind === "ok" ? iconSvg("check") : kind === "err" ? iconSvg("alert") : iconSvg("info");
   el.hidden = false;
-  el.innerHTML = `<span class="toast-msg">${esc(state.toast.msg)}</span>`;
-  el.className = `app-toast toast toast-${state.toast.kind}`;
+  el.setAttribute("role", kind === "err" ? "alert" : "status");
+  el.setAttribute("aria-live", kind === "err" ? "assertive" : "polite");
+  el.setAttribute("data-kind", kind);
+  el.innerHTML = `
+    <span class="toast-ico" aria-hidden="true">${ico}</span>
+    <span class="toast-msg">${esc(state.toast.msg)}</span>
+    <button type="button" class="toast-dismiss" data-action="dismiss-toast" title="Dismiss" aria-label="Dismiss notification">${iconSvg("x")}</button>`;
+  el.className = `app-toast toast toast-${kind}`;
   animateToastIn(el);
 }
 
@@ -2512,14 +2552,39 @@ function emptyTermHTML(): string {
         <div class="term-empty-actions">
           <button type="button" class="primary" data-action="new-session">${iconSvg("plus")} New session</button>
           <button type="button" class="ghost" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
-          <button type="button" class="ghost" data-action="open-remote">${iconSvg("external")} Open remote</button>
-          <button type="button" class="ghost" data-action="git-changes">${iconSvg("git-branch")} Git changes</button>
+          <button type="button" class="ghost" data-action="projects">${iconSvg("layers")} Projects</button>
+          <button type="button" class="ghost" data-action="git-changes">${iconSvg("git-branch")} Changes</button>
         </div>
         <p class="term-empty-hint">
-          <kbd>n</kbd> new · <kbd>⌘</kbd><kbd>K</kbd> commands · <kbd>?</kbd> help
+          <kbd>n</kbd> new · <kbd>${esc(metaKbd())}</kbd><kbd>K</kbd> search · <kbd>?</kbd> help
         </p>
       </div>
     </div>`;
+}
+
+/** Shared empty / loading / error block for in-shell pages. */
+function pageEmptyHTML(opts: {
+  title: string;
+  hint?: string;
+  kind?: "empty" | "loading" | "error";
+  icon?: string;
+  actions?: string;
+}): string {
+  const kind = opts.kind || "empty";
+  const icon =
+    kind === "loading"
+      ? `<span class="ui-spinner" aria-hidden="true"></span>`
+      : opts.icon
+        ? `<div class="git-empty-icon" aria-hidden="true">${iconSvg(opts.icon)}</div>`
+        : kind === "error"
+          ? `<div class="git-empty-icon git-empty-icon--err" aria-hidden="true">${iconSvg("alert")}</div>`
+          : "";
+  return `<div class="page-empty page-empty--${kind}" role="${kind === "error" ? "alert" : "status"}">
+    ${icon}
+    <p class="git-empty-title">${esc(opts.title)}</p>
+    ${opts.hint ? `<p class="git-empty-hint">${esc(opts.hint)}</p>` : ""}
+    ${opts.actions ? `<div class="page-empty-actions">${opts.actions}</div>` : ""}
+  </div>`;
 }
 
 function openPanel(p: Panel): void {
@@ -4245,8 +4310,8 @@ function newSessionPageHTML(): string {
         ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
         <div class="page-actions">
           <button type="button" class="ghost" data-action="close-panel">Cancel</button>
-          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-            ${state.creating ? "Starting…" : state.formCwdNew ? "Create dir & start" : "Start session"}
+          <button class="primary ${state.creating ? "is-busy" : ""}" type="submit" ${state.creating ? "disabled" : ""}>
+            ${state.creating ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Starting…` : state.formCwdNew ? "Create dir & start" : "Start session"}
           </button>
         </div>
       </form>
@@ -4293,8 +4358,8 @@ function newProjectPageHTML(): string {
         ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
         <div class="page-actions">
           <button type="button" class="ghost" data-action="close-panel">Cancel</button>
-          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-            ${state.creating ? "Cloning…" : "Clone project"}
+          <button class="primary ${state.creating ? "is-busy" : ""}" type="submit" ${state.creating ? "disabled" : ""}>
+            ${state.creating ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Cloning…` : "Clone project"}
           </button>
         </div>
       </form>
@@ -4507,7 +4572,7 @@ function gitHeaderHTML(): string {
           </select>
         </label>
         <button type="button" class="ghost btn-sm git-refresh-btn" data-action="git-refresh" title="Refresh" ${busy ? "disabled" : ""}>
-          ${state.gitLoading ? "Refreshing…" : "Refresh"}
+          ${state.gitLoading ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Refresh` : "Refresh"}
         </button>
       </div>
     </header>`;
@@ -4788,7 +4853,11 @@ function gitComposerHTML(): string {
     </footer>`;
 }
 
+/** Last painted stage panel — used to animate only on panel switches. */
+let lastPaintedStage: Exclude<Panel, null> | null = null;
+
 function unmountAppStage(): void {
+  lastPaintedStage = null;
   document.getElementById("app-stage")?.remove();
   document.getElementById("git-stage")?.remove(); // legacy
   document.getElementById("git-page-root")?.remove();
@@ -4898,6 +4967,8 @@ function paintAppStage(): void {
       else main.appendChild(stage);
     }
   }
+  const panelChanged = lastPaintedStage !== p;
+  lastPaintedStage = p;
   stage.className = `app-stage app-stage--${p}`;
   stage.setAttribute("role", "main");
   stage.setAttribute("aria-label", meta.aria);
@@ -4924,6 +4995,48 @@ function paintAppStage(): void {
       if (list) list.innerHTML = projectsListHTML();
     });
   }
+
+  if (panelChanged) {
+    animateStageIn(stage);
+    focusStagePrimary(stage, p);
+  }
+}
+
+/** Focus first meaningful control when a stage page opens. */
+function focusStagePrimary(stage: HTMLElement, p: Exclude<Panel, null>): void {
+  // Don't steal focus mid-type / from terminal
+  const ae = document.activeElement;
+  if (ae && ae !== document.body && stage.contains(ae)) return;
+  let sel = "";
+  switch (p) {
+    case "new":
+      sel = state.formCwdNew ? "#sess-cwd-new-name" : "#sess-agent";
+      break;
+    case "new-project":
+      sel = "#proj-git-url";
+      break;
+    case "projects":
+      sel = "#projects-filter";
+      break;
+    case "changes":
+      sel = "#git-file-filter, #git-cwd-select";
+      break;
+    case "remote":
+      sel = "#remote-cwd-select";
+      break;
+    default:
+      sel = "button.primary, input:not([type=hidden]), select, textarea";
+  }
+  const el = stage.querySelector<HTMLElement>(sel);
+  if (!el || (el as HTMLButtonElement | HTMLInputElement).disabled) return;
+  // Defer so stage paint + animation start first
+  requestAnimationFrame(() => {
+    try {
+      el.focus({ preventScroll: true });
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 /** @deprecated — use paintAppStage */
@@ -5612,6 +5725,10 @@ function iconSvg(name: string): string {
       return `<svg ${common}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`;
     case "info":
       return `<svg ${common}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
+    case "check":
+      return `<svg ${common}><path d="M20 6 9 17l-5-5"/></svg>`;
+    case "alert":
+      return `<svg ${common}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
     default:
       return "";
   }
@@ -5794,6 +5911,7 @@ function shellHTML(): string {
 function sessionListHTML(): string {
   if (state.sessions.length === 0) {
     return `<div class="empty-list" role="status">
+      <div class="empty-list-ico" aria-hidden="true">${iconSvg("terminal")}</div>
       <p class="empty-list-title">No sessions</p>
       <p class="empty-list-hint">Start an agent to begin.</p>
       <button type="button" class="primary btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>
@@ -5802,8 +5920,9 @@ function sessionListHTML(): string {
   const sorted = filteredSessionsSorted();
   if (sorted.length === 0) {
     return `<div class="empty-list" role="status">
+      <div class="empty-list-ico" aria-hidden="true">${iconSvg("search")}</div>
       <p class="empty-list-title">No matches</p>
-      <p class="empty-list-hint">Try a different filter.</p>
+      <p class="empty-list-hint">Try a different filter or clear the search.</p>
     </div>`;
   }
   return sorted
@@ -6971,10 +7090,26 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         const text = actionEl.getAttribute("data-text") || "";
         if (!text) break;
+        const btn = actionEl as HTMLElement;
+        const prev = btn.innerHTML;
         void navigator.clipboard.writeText(text).then(
-          () => toast("Copied", "ok", 1400),
+          () => {
+            toast("Copied", "ok", 1400);
+            btn.classList.add("is-copied");
+            btn.innerHTML = `${iconSvg("check")} Copied`;
+            window.setTimeout(() => {
+              if (!btn.isConnected) return;
+              btn.classList.remove("is-copied");
+              btn.innerHTML = prev;
+            }, 1400);
+          },
           () => toast("Copy failed", "err"),
         );
+        break;
+      }
+      case "dismiss-toast": {
+        ev.preventDefault();
+        dismissToast();
         break;
       }
       case "open-palette":
