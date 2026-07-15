@@ -3,7 +3,8 @@
  *
  *   /                              → new session (modal open)
  *   /new                           → same
- *   /project/new · /projects/new   → new project (clone) modal
+ *   /project/new · /projects/new   → new project (clone) page
+ *   /projects · /project           → project list page
  *   /desk                          → empty desk (no modal)
  *   /tools                         → tools full page
  *   /git · /changes                → git changes full page
@@ -20,6 +21,7 @@ export type ProfileTab = "accounts" | "github" | "ssh" | "workspace" | "about";
 export type Route =
   | { name: "new" }
   | { name: "new-project" }
+  | { name: "projects" }
   | { name: "desk" }
   | { name: "tools" }
   | { name: "changes" }
@@ -108,6 +110,14 @@ export function parsePath(pathname: string): Route {
     return { name: "new-project" };
   }
 
+  // /projects or bare /project → project list
+  if (
+    (parts[0] === "projects" && parts.length === 1) ||
+    (parts[0] === "project" && parts.length === 1)
+  ) {
+    return { name: "projects" };
+  }
+
   // /project/:projectId/session/:sessionId[/tools]
   if (parts[0] === "project" && parts[2] === "session" && parts[1] && parts[3]) {
     const projectId = parts[1];
@@ -126,6 +136,8 @@ export function serializeRoute(route: Route): string {
       return "/";
     case "new-project":
       return "/project/new";
+    case "projects":
+      return "/projects";
     case "desk":
       return "/desk";
     case "tools":

@@ -5123,6 +5123,147 @@ button.git-file-row {
   align-self: flex-start;
 }
 
+/* Projects list */
+.projects-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 2rem;
+  min-width: 11rem;
+  max-width: 16rem;
+  padding: 0 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
+}
+.projects-filter .menu-ico {
+  width: 0.85rem;
+  height: 0.85rem;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.projects-filter input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  font-size: 0.8125rem;
+  color: hsl(var(--foreground));
+}
+.projects-filter input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.project-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--card) / 0.9);
+  box-shadow: var(--shadow-sm, 0 1px 2px hsl(0 0% 0% / 0.12));
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.project-card:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--muted) / 0.22);
+}
+
+.project-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.project-card-icon {
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  background: hsl(var(--secondary));
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  flex-shrink: 0;
+}
+.project-card-icon .menu-ico {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.project-card-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.project-card-name {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card-path {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: hsl(var(--muted-foreground));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.project-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+}
+
+.project-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 840px) {
+  .project-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .project-card-actions {
+    justify-content: flex-start;
+  }
+  .projects-filter {
+    max-width: none;
+    width: 100%;
+  }
+}
+
 /* Help page */
 .help-page .help-grid {
   display: grid;

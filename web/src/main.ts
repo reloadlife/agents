@@ -132,7 +132,17 @@ type OpenTab = {
   state: string;
 };
 
-type Panel = null | "new" | "new-project" | "tools" | "help" | "changes" | "remote";
+type Panel = null | "new" | "new-project" | "projects" | "tools" | "help" | "changes" | "remote";
+
+type ProjectCard = {
+  path: string;
+  abs?: string;
+  map_exists?: boolean;
+  map_stale?: boolean;
+  has_context?: boolean;
+  memory_docs?: number;
+  live_sessions?: number;
+};
 type SettingsTab = ProfileTab;
 type ConnState = "idle" | "connecting" | "live" | "reconnecting" | "error";
 type ToastKind = "info" | "ok" | "err";
@@ -236,6 +246,11 @@ type AppState = {
   remoteInfo: WorkspaceOpenResult | null;
   remoteLoading: boolean;
   remoteError: string;
+  /** Projects list page */
+  projectCards: ProjectCard[];
+  projectsLoading: boolean;
+  projectsError: string;
+  projectsFilter: string;
 };
 
 const state: AppState = {
@@ -325,6 +340,10 @@ const state: AppState = {
   remoteInfo: null,
   remoteLoading: false,
   remoteError: "",
+  projectCards: [],
+  projectsLoading: false,
+  projectsError: "",
+  projectsFilter: "",
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -383,6 +402,7 @@ function routeFromUI(): Route {
   if (state.panel === "changes") return { name: "changes" };
   if (state.panel === "help") return { name: "help" };
   if (state.panel === "remote") return { name: "remote" };
+  if (state.panel === "projects") return { name: "projects" };
   if (state.panel === "new-project") return { name: "new-project" };
   if (state.panel === "new") return { name: "new" };
   if (state.activeId) {
@@ -472,6 +492,10 @@ async function applyRoute(
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "remote") openPanelOnly("remote");
         break;
+      case "projects":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "projects") openPanelOnly("projects");
+        break;
       case "help":
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "help") openPanelOnly("help");
@@ -550,7 +574,15 @@ function ensureRouterBound(): void {
 
 /** Panels that render as full in-shell stages (not modals). */
 function isStagePanel(p: Panel): p is Exclude<Panel, null> {
-  return p === "new" || p === "new-project" || p === "tools" || p === "help" || p === "changes" || p === "remote";
+  return (
+    p === "new" ||
+    p === "new-project" ||
+    p === "projects" ||
+    p === "tools" ||
+    p === "help" ||
+    p === "changes" ||
+    p === "remote"
+  );
 }
 
 /** UI-only panel open (no history). All primary panels are in-shell stages. */
@@ -580,6 +612,9 @@ function openPanelOnly(p: Panel): void {
       }
       if (p === "remote") {
         void loadRemotePage();
+      }
+      if (p === "projects") {
+        void loadProjectsPage();
       }
       paintAppStage();
       if (p === "changes") void refreshGitChanges();
@@ -750,6 +785,12 @@ function paletteItems(): PaletteItem[] {
       hint: "⇧n",
       group: "Commands",
       run: () => openPanel("new-project"),
+    },
+    {
+      id: "projects",
+      label: "Projects",
+      group: "Commands",
+      run: () => openPanel("projects"),
     },
     { id: "tools", label: "Tools", hint: "t", group: "Commands", run: () => openPanel("tools") },
     {
@@ -1111,6 +1152,7 @@ function showTopbarMore(anchor: HTMLElement): void {
       <div class="tb-menu-section-label">Create</div>
       ${item("new-session", "plus", "New session", "Start an agent", "n")}
       ${item("new-project", "folder-git", "New project", "Clone a repository", "⇧n")}
+      ${item("projects", "layers", "Projects", "Browse workspaces")}
       ${item("open-shell", "terminal", "Terminal", "Plain shell session", "⇧t")}
     </div>
     <div class="tb-menu-sep" role="separator"></div>
@@ -1283,20 +1325,173 @@ function remotePageHTML(): string {
     <div class="page-body page-body--wide">${body}</div>`;
 }
 
-async function showDashboardDrawer(): Promise<void> {
+async function loadProjectsPage(): Promise<void> {
+  state.projectsLoading = true;
+  state.projectsError = "";
+  if (state.panel === "projects") paintAppStage();
   try {
-    const out = await workspaceDashboard();
-    const lines = (out.workspaces || [])
-      .map(
-        (w) =>
-          `${w.path}\n  map=${w.map_exists ? "yes" : "no"}${w.map_stale ? " (stale)" : ""}  ctx=${w.has_context ? "yes" : "no"}  mem=${w.memory_docs ?? 0}  live=${w.live_sessions ?? 0}`,
-      )
-      .join("\n\n");
-    state.drawer = { title: "Workspace dashboard", body: lines || "No workspaces" };
-    void paintDrawer();
+    // Prefer rich dashboard cards; fall back to listWorkspaces
+    let cards: ProjectCard[] = [];
+    try {
+      const dash = await workspaceDashboard();
+      cards = (dash.workspaces || []).map((w) => ({
+        path: w.path,
+        abs: w.abs,
+        map_exists: w.map_exists,
+        map_stale: w.map_stale,
+        has_context: w.has_context,
+        memory_docs: w.memory_docs,
+        live_sessions: w.live_sessions,
+      }));
+    } catch {
+      const ws = await listWorkspaces();
+      const paths = normalizeWorkspacePaths(ws);
+      cards = paths.map((path) => ({
+        path,
+        live_sessions: state.sessions.filter((s) => s.cwd === path && s.state === "running").length,
+      }));
+    }
+    // Merge live session counts from client list when API omits them
+    for (const c of cards) {
+      if (typeof c.live_sessions !== "number") {
+        c.live_sessions = state.sessions.filter((s) => s.cwd === c.path && s.state === "running").length;
+      }
+    }
+    // Ensure every known workspace path appears
+    const seen = new Set(cards.map((c) => c.path));
+    for (const path of state.workspaces) {
+      if (!seen.has(path)) {
+        cards.push({
+          path,
+          live_sessions: state.sessions.filter((s) => s.cwd === path && s.state === "running").length,
+        });
+      }
+    }
+    cards.sort((a, b) => {
+      const al = a.live_sessions || 0;
+      const bl = b.live_sessions || 0;
+      if (al !== bl) return bl - al;
+      return a.path.localeCompare(b.path);
+    });
+    state.projectCards = cards;
+    state.projectsLoading = false;
+    // Keep flat list in sync
+    const paths = cards.map((c) => c.path).filter(Boolean);
+    if (paths.length) state.workspaces = paths;
   } catch (e) {
-    toast((e as Error).message, "err");
+    state.projectsLoading = false;
+    state.projectsError = (e as Error).message || "failed to load projects";
   }
+  if (state.panel === "projects") paintAppStage();
+}
+
+function projectsListHTML(): string {
+  const q = state.projectsFilter.trim().toLowerCase();
+  let cards = state.projectCards || [];
+  if (q) {
+    cards = cards.filter(
+      (c) =>
+        c.path.toLowerCase().includes(q) ||
+        (c.abs || "").toLowerCase().includes(q),
+    );
+  }
+  if (state.projectsLoading && !cards.length) {
+    return `<div class="page-empty"><p class="git-empty-title">Loading projects…</p></div>`;
+  }
+  if (state.projectsError && !cards.length) {
+    return `<div class="page-empty"><p class="git-empty-title">Failed to load</p><p class="git-empty-hint">${esc(state.projectsError)}</p></div>`;
+  }
+  if (!cards.length) {
+    return `<div class="page-empty">
+      <div class="git-empty-icon" aria-hidden="true">${iconSvg("layers")}</div>
+      <p class="git-empty-title">${q ? "No matching projects" : "No projects yet"}</p>
+      <p class="git-empty-hint">${
+        q
+          ? "Try a different filter."
+          : "Clone a repo or create a directory from New session."
+      }</p>
+      <div class="page-actions" style="justify-content:center;margin-top:0.75rem">
+        <button type="button" class="primary btn-sm" data-action="new-project">${iconSvg("folder-git")} Clone project</button>
+        <button type="button" class="ghost btn-sm" data-action="new-session">${iconSvg("plus")} New session</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="project-list" role="list">${cards
+    .map((c) => {
+      const path = c.path || ".";
+      const name = path === "." ? "workspace root" : basename(path);
+      const live = c.live_sessions || 0;
+      const sessHere = state.sessions.filter((s) => s.cwd === path);
+      const total = sessHere.length;
+      const chips: string[] = [];
+      if (live > 0) chips.push(`<span class="git-chip git-chip--dirty">${live} live</span>`);
+      else chips.push(`<span class="git-chip git-chip--muted">idle</span>`);
+      if (total > live) chips.push(`<span class="git-chip">${total} sessions</span>`);
+      if (c.map_exists) {
+        chips.push(
+          c.map_stale
+            ? `<span class="git-chip git-chip--warn">map stale</span>`
+            : `<span class="git-chip git-chip--clean">map</span>`,
+        );
+      } else {
+        chips.push(`<span class="git-chip git-chip--muted">no map</span>`);
+      }
+      if (c.has_context) chips.push(`<span class="git-chip">context</span>`);
+      if (typeof c.memory_docs === "number" && c.memory_docs > 0) {
+        chips.push(`<span class="git-chip">${c.memory_docs} mem</span>`);
+      }
+      return `
+      <article class="project-card" role="listitem" data-project-path="${esc(path)}">
+        <div class="project-card-main">
+          <div class="project-card-icon" aria-hidden="true">${iconSvg("folder-git")}</div>
+          <div class="project-card-text">
+            <h3 class="project-card-name" title="${esc(path)}">${esc(name)}</h3>
+            <code class="project-card-path" title="${esc(c.abs || path)}">${esc(path)}</code>
+            <div class="project-card-chips">${chips.join("")}</div>
+          </div>
+        </div>
+        <div class="project-card-actions">
+          <button type="button" class="primary btn-sm" data-action="project-new-session" data-cwd="${esc(path)}" title="New session here">Session</button>
+          <button type="button" class="ghost btn-sm" data-action="project-tools" data-cwd="${esc(path)}" title="Tools">Tools</button>
+          <button type="button" class="ghost btn-sm" data-action="project-git" data-cwd="${esc(path)}" title="Git changes">Git</button>
+          <button type="button" class="ghost btn-sm" data-action="project-remote" data-cwd="${esc(path)}" title="Open remote">Remote</button>
+          <button type="button" class="ghost btn-sm" data-action="copy-text" data-text="${esc(c.abs || path)}" title="Copy path">Copy</button>
+        </div>
+      </article>`;
+    })
+    .join("")}</div>`;
+}
+
+function projectsPageHTML(): string {
+  const n = state.projectCards.length;
+  const live = state.projectCards.reduce((a, c) => a + (c.live_sessions || 0), 0);
+  const actions = `
+    <label class="projects-filter">
+      <span class="sr-only">Filter projects</span>
+      ${iconSvg("search")}
+      <input id="projects-filter" type="search" placeholder="Filter projects…" value="${esc(state.projectsFilter)}" autocomplete="off" spellcheck="false" />
+    </label>
+    <button type="button" class="ghost btn-sm" data-action="projects-refresh" ${state.projectsLoading ? "disabled" : ""}>
+      ${state.projectsLoading ? "…" : "Refresh"}
+    </button>
+    <button type="button" class="ghost btn-sm" data-action="new-project">${iconSvg("folder-git")} Clone</button>
+    <button type="button" class="primary btn-sm" data-action="new-session">${iconSvg("plus")} Session</button>`;
+  return `
+    ${pageHeroHTML(
+      "Workspace",
+      "Projects",
+      `${n} project${n === 1 ? "" : "s"}${live ? ` · ${live} live session${live === 1 ? "" : "s"}` : ""} under the host workspace root.`,
+      actions,
+    )}
+    ${state.projectsError ? `<div class="git-banner" role="alert">${esc(state.projectsError)}</div>` : ""}
+    <div class="page-body page-body--wide" data-projects-list>
+      ${projectsListHTML()}
+    </div>`;
+}
+
+async function showDashboardDrawer(): Promise<void> {
+  // Full projects page replaces the old plain-text dashboard drawer.
+  openPanel("projects");
 }
 
 async function showTemplatesDrawer(): Promise<void> {
@@ -2323,6 +2518,7 @@ function openPanel(p: Panel): void {
   else if (p === "help") navigate({ name: "help" }, { apply: false });
   else if (p === "changes") navigate({ name: "changes" }, { apply: false });
   else if (p === "remote") navigate({ name: "remote" }, { apply: false });
+  else if (p === "projects") navigate({ name: "projects" }, { apply: false });
   else if (p === "tools") {
     if (state.activeId) {
       const s =
@@ -4566,6 +4762,7 @@ function unmountAppStage(): void {
     "main--form",
     "main--remote",
     "main--help",
+    "main--projects",
   );
   const term = document.querySelector<HTMLElement>(".term-wrap");
   if (term) term.hidden = false;
@@ -4589,6 +4786,8 @@ function stageMeta(p: Exclude<Panel, null>): {
       return { title: "New session", kicker: "Create", aria: "New session", cls: "main--form" };
     case "new-project":
       return { title: "New project", kicker: "Create", aria: "New project", cls: "main--form" };
+    case "projects":
+      return { title: "Projects", kicker: "Workspace", aria: "Project list", cls: "main--projects" };
     case "tools":
       return { title: "Tools", kicker: "Workspace", aria: "Workspace tools", cls: "main--tools" };
     case "changes":
@@ -4608,6 +4807,8 @@ function stageBodyHTML(p: Exclude<Panel, null>): string {
       return newSessionPageHTML();
     case "new-project":
       return newProjectPageHTML();
+    case "projects":
+      return projectsPageHTML();
     case "tools":
       return toolsPageHTML();
     case "changes":
@@ -4639,6 +4840,7 @@ function paintAppStage(): void {
     "main--form",
     "main--remote",
     "main--help",
+    "main--projects",
   );
   main.classList.add("main--stage", meta.cls);
 
@@ -4674,6 +4876,14 @@ function paintAppStage(): void {
       state.gitFileFilter = filter.value;
       const list = document.querySelector("#app-stage [data-git-files], #git-stage [data-git-files]");
       if (list) list.outerHTML = gitFileListHTML();
+    });
+  }
+  if (p === "projects") {
+    const filter = document.getElementById("projects-filter") as HTMLInputElement | null;
+    filter?.addEventListener("input", () => {
+      state.projectsFilter = filter.value;
+      const list = document.querySelector("#app-stage [data-projects-list]");
+      if (list) list.innerHTML = projectsListHTML();
     });
   }
 }
@@ -5189,6 +5399,7 @@ function paintSidebarActive(): void {
   const active: Record<string, boolean> = {
     "new-session": state.panel === "new",
     "new-project": state.panel === "new-project",
+    projects: state.panel === "projects",
     tools: state.panel === "tools",
     "git-changes": state.panel === "changes",
     help: state.panel === "help",
@@ -5305,6 +5516,7 @@ function breadcrumbHTML(): string {
     tools: "Tools",
     new: "New session",
     "new-project": "New project",
+    projects: "Projects",
     remote: "Open remote",
     help: "Shortcuts",
   };
@@ -5354,6 +5566,7 @@ function sbNavActiveAttr(action: string): string {
   const on =
     (action === "new-session" && state.panel === "new") ||
     (action === "new-project" && state.panel === "new-project") ||
+    (action === "projects" && state.panel === "projects") ||
     (action === "tools" && state.panel === "tools") ||
     (action === "git-changes" && state.panel === "changes") ||
     (action === "help" && state.panel === "help") ||
@@ -5384,7 +5597,8 @@ function shellHTML(): string {
             <span class="sb-group-label sb-sessions-label" id="sb-create-label">Create</span>
           </div>
           <nav class="sb-tools" aria-labelledby="sb-create-label">
-            <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)" aria-label="New project"${sbNavActiveAttr("new-project")}>${iconSvg("folder-git")}<span class="sb-tool-label">Project</span></a>
+            <a href="/projects" class="sb-tool" data-action="projects" data-nav id="btn-projects" title="Projects" aria-label="Projects"${sbNavActiveAttr("projects")}>${iconSvg("layers")}<span class="sb-tool-label">Projects</span></a>
+            <a href="/project/new" class="sb-tool" data-action="new-project" data-nav id="btn-new-project" title="New project (⇧n)" aria-label="New project"${sbNavActiveAttr("new-project")}>${iconSvg("folder-git")}<span class="sb-tool-label">Clone</span></a>
             <button type="button" class="sb-tool" data-action="open-shell" title="Terminal (⇧t)" aria-label="Open terminal">${iconSvg("terminal")}<span class="sb-tool-label">Shell</span></button>
             <button type="button" class="sb-tool" data-action="open-remote" title="Open remote editor" aria-label="Open remote editor">${iconSvg("external")}<span class="sb-tool-label">Remote</span></button>
           </nav>
@@ -6573,6 +6787,44 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         void loadRemotePage();
         break;
+      case "projects":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!state.token) return;
+        openPanel("projects");
+        break;
+      case "projects-refresh":
+        ev.preventDefault();
+        void loadProjectsPage();
+        break;
+      case "project-new-session": {
+        ev.preventDefault();
+        const cwd = actionEl.getAttribute("data-cwd") || ".";
+        state.formCwd = cwd;
+        state.formCwdNew = false;
+        openPanel("new");
+        break;
+      }
+      case "project-tools": {
+        ev.preventDefault();
+        const cwd = actionEl.getAttribute("data-cwd") || ".";
+        state.formCwd = cwd;
+        openPanel("tools");
+        break;
+      }
+      case "project-git": {
+        ev.preventDefault();
+        const cwd = actionEl.getAttribute("data-cwd") || ".";
+        state.formCwd = cwd;
+        openPanel("changes");
+        break;
+      }
+      case "project-remote": {
+        ev.preventDefault();
+        const cwd = actionEl.getAttribute("data-cwd") || ".";
+        void showOpenRemoteDrawer(cwd);
+        break;
+      }
       case "copy-text": {
         ev.preventDefault();
         const text = actionEl.getAttribute("data-text") || "";
