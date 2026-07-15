@@ -6583,6 +6583,92 @@ function bindShell(): void {
   });
 }
 
+// ── SPA update detection ─────────────────────────────────────────────────────
+// After agentsd self-update, a normal refresh must pick up the new UI.
+// Server serves index.html with Cache-Control: no-store; we also poll the shell
+// stamp and soft-reload when the running daemon ships a different build.
+
+function currentWebBuildStamp(): string {
+  const meta = document.querySelector('meta[name="agents-build"]');
+  const fromMeta = meta?.getAttribute("content")?.trim() || "";
+  if (fromMeta) return fromMeta;
+  const scripts = Array.from(document.querySelectorAll("script[src]"));
+  for (const s of scripts) {
+    const src = s.getAttribute("src") || "";
+    const m = src.match(/index-([A-Za-z0-9_-]+)\.js/);
+    if (m) return m[1];
+  }
+  const links = Array.from(document.querySelectorAll('link[rel="stylesheet"][href]'));
+  for (const l of links) {
+    const href = l.getAttribute("href") || "";
+    const m = href.match(/index-([A-Za-z0-9_-]+)\.css/);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+let bootWebStamp = currentWebBuildStamp();
+let webUpdateCheckBusy = false;
+let webUpdateReloadArmed = false;
+
+async function checkForWebUpdate(reason: string): Promise<void> {
+  if (webUpdateCheckBusy || webUpdateReloadArmed) return;
+  webUpdateCheckBusy = true;
+  try {
+    // Bust any intermediary cache; server also sends no-store for index.
+    const res = await fetch(`/?_wb=${Date.now()}`, {
+      method: "GET",
+      cache: "no-store",
+      headers: { Accept: "text/html", "Cache-Control": "no-cache" },
+      credentials: "same-origin",
+    });
+    if (!res.ok) return;
+    const html = await res.text();
+    const metaM = html.match(/name=["']agents-build["']\s+content=["']([^"']+)["']/i)
+      || html.match(/content=["']([^"']+)["']\s+name=["']agents-build["']/i);
+    const headerBuild = res.headers.get("X-Agents-Build") || "";
+    const assetM = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/);
+    const remote =
+      (metaM && metaM[1]) || headerBuild || (assetM && assetM[1]) || "";
+    if (!remote) return;
+    if (!bootWebStamp) {
+      bootWebStamp = remote;
+      return;
+    }
+    if (remote !== bootWebStamp) {
+      webUpdateReloadArmed = true;
+      // Soft reload is enough once index is no-store.
+      console.info(`[agents] web UI updated (${reason}): ${bootWebStamp} → ${remote}`);
+      window.location.reload();
+    }
+  } catch {
+    /* offline / transient — ignore */
+  } finally {
+    webUpdateCheckBusy = false;
+  }
+}
+
+function startWebUpdateWatcher(): void {
+  // When tab becomes visible again (e.g. after agentsd update + user returns).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void checkForWebUpdate("visible");
+  });
+  // BFCache restore
+  window.addEventListener("pageshow", (ev) => {
+    if (ev.persisted) void checkForWebUpdate("pageshow");
+  });
+  // Focus of the window
+  window.addEventListener("focus", () => {
+    void checkForWebUpdate("focus");
+  });
+  // Periodic check for long-lived tabs (daemon may have self-updated).
+  window.setInterval(() => {
+    if (document.visibilityState === "visible") void checkForWebUpdate("poll");
+  }, 60_000);
+  // One check shortly after boot (covers mid-deploy race).
+  window.setTimeout(() => void checkForWebUpdate("boot"), 4_000);
+}
+
 // boot — agentsctl web passes #token=… for one-shot login
 {
   const fromURL = consumeAuthFromURL();
@@ -6590,6 +6676,7 @@ function bindShell(): void {
     state.token = fromURL;
   }
 }
+startWebUpdateWatcher();
 if (state.token) {
   void bootstrapAuthed();
 } else {

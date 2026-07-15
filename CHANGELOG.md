@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] — 2026-07-14
+
+### Fixed
+
+- **Web UI updates on normal refresh** after agentsd upgrade
+  - `index.html` served with `Cache-Control: no-store` (no more stale shell)
+  - Hashed `/assets/*` long-cached (`immutable`)
+  - Injected `agents-build` fingerprint + client soft-reload when the daemon ships a new UI
+
 ## [0.8.5] — 2026-07-14
 
 ### Changed
