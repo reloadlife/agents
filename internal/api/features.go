@@ -93,6 +93,20 @@ func (s *Server) handleGetRecording(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleDeleteRecording(w http.ResponseWriter, r *http.Request) {
+	if s.rec == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("recording disabled"))
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.rec.Delete(id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	s.audit(r, "recording.delete", id, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+}
+
 func (s *Server) handleManualRecord(w http.ResponseWriter, r *http.Request) {
 	if s.rec == nil || !s.cfg.RecordingEnabled() {
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("recording disabled — set sessions.recording = true"))
@@ -241,6 +255,80 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 
 // —— Skills install helper ——
 
+// projectMapSkillMD is the full project-map skill (mirrors skills/project-map/SKILL.md).
+const projectMapSkillMD = `---
+name: project-map
+description: >
+  Use the durable project map at .agents/PROJECT_MAP.md before exploring a
+  codebase. Generate or refresh with agentsctl map generate. Prefer the map
+  plus targeted reads over recursive full-tree walks.
+---
+
+# Project map skill
+
+## When to use
+
+At the start of work in a workspace (or after large structural changes), orient
+from the **project map** instead of re-walking the entire tree.
+
+## Steps
+
+1. **Check** for ` + "`.agents/PROJECT_MAP.md`" + ` in the workspace root (cwd).
+2. If **missing** or clearly stale:
+   - Prefer: ` + "`agentsctl map generate -r <cwd>`" + ` (when agentsd is available)
+   - Or tell the user to regenerate, then continue with minimal exploration
+3. **Read** ` + "`.agents/PROJECT_MAP.md`" + ` (and optionally ` + "`.agents/project_map.json`" + `).
+4. Use **Read these first** and **Layout** to open only the files you need.
+5. After major moves/renames/new packages: regenerate the map.
+
+## Staleness
+
+` + "`.agents/map_meta.json`" + ` records ` + "`git_head`" + ` and ` + "`generated_at`" + `.
+
+- If current ` + "`git rev-parse HEAD`" + ` ≠ ` + "`git_head`" + ` → regenerate
+- If older than ~14 days → regenerate
+- ` + "`agentsctl map status -r <cwd>`" + ` reports ` + "`stale`" + ` + reason
+
+## Context manager (preferred)
+
+One shot refresh of map + packed ` + "`CONTEXT.md`" + ` + memory index:
+
+` + "```bash" + `
+agentsctl context ensure -r .
+agentsctl context status -r .
+` + "```" + `
+
+Session start auto-runs ensure when ` + "`context.ensure_on_session = true`" + ` (default).
+
+## Optional: memory search
+
+After reading the map / CONTEXT.md, for topic-specific docs:
+
+` + "```bash" + `
+agentsctl memory search -r . "relevant terms"
+` + "```" + `
+
+Index first (once per workspace, or after big doc changes):
+
+` + "```bash" + `
+agentsctl memory index -r .
+# or: agentsctl context ensure -r .
+` + "```" + `
+
+## Do not
+
+- Dump entire monorepos into context when a map exists
+- Ignore ` + "`AGENTS.md`" + ` / ` + "`CLAUDE.md`" + ` / README listed under “Read these first”
+- Treat the map as authoritative for line-level code — still open real files
+
+## One-liner for project instructions
+
+` + "```markdown" + `
+## Project map
+Read ` + "`.agents/PROJECT_MAP.md`" + ` before exploring. Regenerate: ` + "`agentsctl map generate`" + `.
+` + "```" + `
+`
+
 func (s *Server) handleSkillsInstall(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Cwd string `json:"cwd"`
@@ -258,14 +346,14 @@ func (s *Server) handleSkillsInstall(w http.ResponseWriter, r *http.Request) {
 		// soft
 		s.log.Warn("skills ensure", "err", err)
 	}
-	// Always write a short skill stub into .agents/skills/project-map.md
+	// Full project-map skill content into .agents/skills/
 	skillDir := filepath.Join(abs, ".agents", "skills")
 	_ = os.MkdirAll(skillDir, 0o755)
-	stub := "# Project map skill\n\n" +
-		"Read `.agents/PROJECT_MAP.md` and `.agents/CONTEXT.md` before exploring.\n" +
-		"Regenerate: agentsctl context ensure -r " + rel + "\n" +
-		"Search: agentsctl memory search -r " + rel + " \"query\"\n"
-	_ = os.WriteFile(filepath.Join(skillDir, "project-map.md"), []byte(stub), 0o644)
+	// project-map.md (legacy path) + SKILL.md (agents skill layout)
+	_ = os.WriteFile(filepath.Join(skillDir, "project-map.md"), []byte(projectMapSkillMD), 0o644)
+	skillSub := filepath.Join(skillDir, "project-map")
+	_ = os.MkdirAll(skillSub, 0o755)
+	_ = os.WriteFile(filepath.Join(skillSub, "SKILL.md"), []byte(projectMapSkillMD), 0o644)
 	// symlink-friendly: also drop one-liner into AGENTS.md append marker if missing
 	agentsMD := filepath.Join(abs, "AGENTS.md")
 	marker := "## Project map (agentsd)"
@@ -282,7 +370,8 @@ func (s *Server) handleSkillsInstall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
 		"cwd":  rel,
-		"path": filepath.Join(".agents", "skills", "project-map.md"),
+		"path": filepath.Join(".agents", "skills", "project-map", "SKILL.md"),
+		"also": filepath.Join(".agents", "skills", "project-map.md"),
 	})
 }
 
@@ -520,14 +609,25 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.rec != nil && len(hits) < 40 {
-		metas, _ := s.rec.Search(q, 40-len(hits))
-		for _, m := range metas {
+		recHits, _ := s.rec.SearchWithSnippets(q, 40-len(hits))
+		for _, rh := range recHits {
+			snippet := rh.Snippet
+			if snippet == "" {
+				// fallback: try raw pane head
+				if _, pane, err := s.rec.Get(rh.ID); err == nil && len(pane) > 0 {
+					plain := recording.StripANSI(string(pane))
+					if len(plain) > 120 {
+						plain = plain[:120] + "…"
+					}
+					snippet = plain
+				}
+			}
 			hits = append(hits, hit{
-				SessionID: m.SessionID,
-				Agent:     m.Agent,
-				Cwd:       m.Cwd,
-				Name:      m.Name,
-				Snippet:   "recording " + m.ID,
+				SessionID: rh.SessionID,
+				Agent:     rh.Agent,
+				Cwd:       rh.Cwd,
+				Name:      rh.Name,
+				Snippet:   snippet,
 				Source:    "recording",
 			})
 		}

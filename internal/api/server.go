@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,11 @@ func New(cfg *config.Config, mgr *job.Manager, sess *session.Manager, mem *memor
 	}
 	s := &Server{cfg: cfg, mgr: mgr, sess: sess, mem: mem, pw: playwrightctl.New(cfg), log: log}
 	if rec, err := recording.New(cfg.RecordingsDir()); err == nil {
+		maxN, maxAge := cfg.RecordingRetention()
+		rec.SetRetention(recording.Retention{
+			MaxPerSession: maxN,
+			MaxAgeDays:    maxAge,
+		})
 		s.rec = rec
 	}
 	if tmpl, err := templates.New(cfg.JobsDir); err == nil {
@@ -151,6 +157,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sessions/{id}/delete", s.handleDeleteSession) // alias for clients without DELETE
 	mux.HandleFunc("POST /v1/sessions/prune", s.handlePruneSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}/history", s.handleSessionHistory)
+	mux.HandleFunc("GET /v1/sessions/{id}/preview", s.handleSessionPreview)
+	mux.HandleFunc("GET /v1/sessions/activity", s.handleSessionsActivity)
 	// Full remote PTY (tmux attach) over WebSocket — no SSH required
 	mux.HandleFunc("GET /v1/sessions/{id}/pty", s.handleSessionPTY)
 
@@ -168,6 +176,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Workspace memory (FTS) — agents query via CLI/API
 	mux.HandleFunc("POST /v1/memory/index", s.handleMemoryIndex)
+	mux.HandleFunc("POST /v1/memory/reembed", s.handleMemoryReembed)
 	mux.HandleFunc("POST /v1/memory/search", s.handleMemorySearch)
 	mux.HandleFunc("GET /v1/memory/stats", s.handleMemoryStats)
 
@@ -180,6 +189,8 @@ func (s *Server) Handler() http.Handler {
 	// Recordings + history search
 	mux.HandleFunc("GET /v1/recordings", s.handleListRecordings)
 	mux.HandleFunc("GET /v1/recordings/{id}", s.handleGetRecording)
+	mux.HandleFunc("DELETE /v1/recordings/{id}", s.handleDeleteRecording)
+	mux.HandleFunc("POST /v1/recordings/{id}/delete", s.handleDeleteRecording) // alias
 	mux.HandleFunc("POST /v1/sessions/{id}/record", s.handleManualRecord)
 	mux.HandleFunc("GET /v1/history/search", s.handleHistorySearch)
 
@@ -978,6 +989,60 @@ func (s *Server) handleSessionHistory(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// GET /v1/sessions/{id}/preview?lines=40&strip_ansi=1
+func (s *Server) handleSessionPreview(w http.ResponseWriter, r *http.Request) {
+	if s.sess == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
+		return
+	}
+	lines := 40
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lines = n
+		}
+	}
+	strip := true
+	if v := r.URL.Query().Get("strip_ansi"); v != "" {
+		strip = v == "1" || strings.EqualFold(v, "true") || v == "yes"
+	}
+	pv, err := s.sess.Preview(r.PathValue("id"), lines, strip)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pv)
+}
+
+// GET /v1/sessions/activity — lightweight busy/idle + short preview per session.
+func (s *Server) handleSessionsActivity(w http.ResponseWriter, r *http.Request) {
+	if s.sess == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
+		return
+	}
+	lines := 5
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lines = n
+		}
+	}
+	list, err := s.sess.ActivityList(lines)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if list == nil {
+		list = []session.ActivitySummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": list,
+		"count":    len(list),
+	})
+}
+
 func (s *Server) handleSessionPTY(w http.ResponseWriter, r *http.Request) {
 	if s.sess == nil {
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("sessions not enabled"))
@@ -1265,6 +1330,8 @@ func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
 		IncludeCode bool   `json:"include_code"`
 		// GenerateMap defaults true when omitted (nil) so Reindex always has a map.
 		GenerateMap *bool `json:"generate_map"`
+		// Reembed fills embeddings for docs missing vectors (no wipe).
+		Reembed bool `json:"reembed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -1291,11 +1358,64 @@ func (s *Server) handleMemoryIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	count, _ := s.mem.Stats(rel)
+	withEmb, _ := s.mem.VectorStats(rel)
+	out := map[string]any{
+		"ok":            true,
+		"cwd":           rel,
+		"indexed":       n,
+		"docs_total":    count,
+		"docs_embedded": withEmb,
+		"embed_enabled": s.mem.EmbedderConfigured(),
+	}
+	if body.Reembed {
+		rr, rerr := s.mem.ReembedMissing(rel)
+		out["reembed"] = rr
+		if rerr != nil {
+			out["reembed_error"] = rerr.Error()
+		}
+		withEmb, _ = s.mem.VectorStats(rel)
+		out["docs_embedded"] = withEmb
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /v1/memory/reembed — re-embed docs missing vectors (no clear wipe).
+func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
+	if s.mem == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("memory disabled"))
+		return
+	}
+	var body struct {
+		Cwd string `json:"cwd"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	ws := ""
+	if strings.TrimSpace(body.Cwd) != "" {
+		_, rel, err := s.resolveMapCwd(body.Cwd)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		ws = rel
+	}
+	if !s.mem.EmbedderConfigured() {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("embedder not configured — set memory.embed_url and memory.embed_model"))
+		return
+	}
+	rr, err := s.mem.ReembedMissing(ws)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	count, _ := s.mem.Stats(ws)
+	withEmb, _ := s.mem.VectorStats(ws)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"cwd":        rel,
-		"indexed":    n,
-		"docs_total": count,
+		"ok":            true,
+		"cwd":           ws,
+		"docs":          count,
+		"docs_embedded": withEmb,
+		"embed_enabled": true,
+		"reembed":       rr,
 	})
 }
 
@@ -1358,18 +1478,26 @@ func (s *Server) handleMemoryStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	withEmb, _ := s.mem.VectorStats(ws)
+	embedOn := s.mem.EmbedderConfigured()
 	engine := "sqlite-fts5"
-	if s.mem.EmbedderConfigured() {
+	if embedOn {
 		engine = "sqlite-fts5+vector"
 	}
+	missing := count - withEmb
+	if missing < 0 {
+		missing = 0
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cwd":            ws,
-		"docs":           count,
-		"docs_embedded":  withEmb,
-		"dir":            s.cfg.MemoryDir(),
-		"engine":         engine,
-		"embed_model":    s.mem.EmbedModel(),
-		"vector_enabled": s.mem.EmbedderConfigured(),
+		"cwd":             ws,
+		"docs":            count,
+		"docs_embedded":   withEmb,
+		"embedded":        withEmb, // alias
+		"docs_missing":    missing,
+		"dir":             s.cfg.MemoryDir(),
+		"engine":          engine,
+		"embed_model":     s.mem.EmbedModel(),
+		"embed_enabled":   embedOn,
+		"vector_enabled":  embedOn, // alias (older clients)
 	})
 }
 

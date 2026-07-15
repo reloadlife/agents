@@ -203,6 +203,10 @@ type SessionsConfig struct {
 	PlaywrightServer string `toml:"playwright_server"`
 	// Recording archives pane snapshots under jobs_dir/recordings (default false).
 	Recording *bool `toml:"recording"`
+	// RecordingMaxPerSession keeps the newest N recordings per session (0 = 20 default, <0 unlimited).
+	RecordingMaxPerSession int `toml:"recording_max_per_session"`
+	// RecordingMaxAgeDays drops recordings older than N days on archive (0 = disabled).
+	RecordingMaxAgeDays int `toml:"recording_max_age_days"`
 	// MaxConcurrent caps running TTY sessions (0 = unlimited). Default 0.
 	MaxConcurrent int `toml:"max_concurrent"`
 	// AutoNote writes a memory note when a session is killed/stopped (default true).
@@ -212,6 +216,14 @@ type SessionsConfig struct {
 // RecordingEnabled reports whether session pane archiving is on.
 func (c *Config) RecordingEnabled() bool {
 	return c.Sessions.Recording != nil && *c.Sessions.Recording
+}
+
+// RecordingRetention returns prune-on-archive limits from sessions config.
+func (c *Config) RecordingRetention() (maxPerSession, maxAgeDays int) {
+	if c == nil {
+		return 20, 0
+	}
+	return c.Sessions.RecordingMaxPerSession, c.Sessions.RecordingMaxAgeDays
 }
 
 // AutoNoteEnabled defaults true.

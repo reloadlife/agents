@@ -102,6 +102,8 @@ type Manager struct {
 	mu      sync.Mutex
 	byID    map[string]*Session
 	sshHost string
+	// activity tracks content hashes for busy/idle heuristics (preview API).
+	activity map[string]activitySample
 	// optional hooks
 	Archive ArchiveFunc
 	OnEvent OnEventFunc
@@ -116,11 +118,12 @@ func NewManager(cfg *config.Config, log *slog.Logger) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		cfg:     cfg,
-		dir:     dir,
-		log:     log,
-		byID:    map[string]*Session{},
-		sshHost: cfg.Sessions.SSHHost,
+		cfg:      cfg,
+		dir:      dir,
+		log:      log,
+		byID:     map[string]*Session{},
+		sshHost:  cfg.Sessions.SSHHost,
+		activity: map[string]activitySample{},
 	}
 	_ = m.loadAll()
 	m.refreshStates()

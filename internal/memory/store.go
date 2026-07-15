@@ -460,6 +460,115 @@ func (s *Store) VectorStats(workspace string) (withEmb int, err error) {
 	return
 }
 
+// ReembedResult summarizes a re-embed pass over docs missing vectors.
+type ReembedResult struct {
+	Attempted int `json:"attempted"`
+	Embedded  int `json:"embedded"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"` // already had embeddings
+	Total     int `json:"total"`   // docs considered (workspace filter)
+}
+
+// ReembedMissing embeds documents that lack vectors without clearing the index.
+// workspace empty = all workspaces. Errors when embedder is nil.
+func (s *Store) ReembedMissing(workspace string) (ReembedResult, error) {
+	var res ReembedResult
+	if s == nil {
+		return res, fmt.Errorf("store nil")
+	}
+	if s.embedder == nil {
+		n, err := s.Stats(workspace)
+		if err != nil {
+			return res, err
+		}
+		res.Total = n
+		with, _ := s.VectorStats(workspace)
+		res.Skipped = with
+		return res, fmt.Errorf("embedder not configured")
+	}
+
+	type missing struct {
+		id   string
+		text string
+	}
+	var todo []missing
+
+	// Phase 1: collect docs under lock.
+	s.mu.Lock()
+	var rows *sql.Rows
+	var err error
+	if workspace == "" {
+		rows, err = s.db.Query(`SELECT id, text, embedding FROM docs`)
+	} else {
+		rows, err = s.db.Query(`SELECT id, text, embedding FROM docs WHERE workspace=?`, workspace)
+	}
+	if err != nil {
+		s.mu.Unlock()
+		return res, err
+	}
+	for rows.Next() {
+		var id, text string
+		var emb []byte
+		if err := rows.Scan(&id, &text, &emb); err != nil {
+			continue
+		}
+		res.Total++
+		if len(emb) > 0 {
+			res.Skipped++
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		todo = append(todo, missing{id: id, text: text})
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		s.mu.Unlock()
+		return res, err
+	}
+	embeder := s.embedder
+	s.mu.Unlock()
+
+	// Phase 2: embed outside the store mutex (network I/O).
+	const batch = 16
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	for i := 0; i < len(todo); i += batch {
+		end := i + batch
+		if end > len(todo) {
+			end = len(todo)
+		}
+		chunk := todo[i:end]
+		texts := make([]string, len(chunk))
+		for j, m := range chunk {
+			texts[j] = m.text
+		}
+		res.Attempted += len(chunk)
+		vecs, err := embeder.Embed(ctx, texts)
+		if err != nil || len(vecs) != len(chunk) {
+			res.Failed += len(chunk)
+			continue
+		}
+		s.mu.Lock()
+		for j, m := range chunk {
+			if len(vecs[j]) == 0 {
+				res.Failed++
+				continue
+			}
+			blob := packFloat32(vecs[j])
+			if _, err := s.db.Exec(`UPDATE docs SET embedding=? WHERE id=?`, blob, m.id); err != nil {
+				res.Failed++
+				continue
+			}
+			res.Embedded++
+		}
+		s.mu.Unlock()
+	}
+	return res, nil
+}
+
 // ftsQuery turns free text into a safe FTS5 MATCH expression (AND of tokens).
 func ftsQuery(q string) string {
 	q = strings.TrimSpace(q)
