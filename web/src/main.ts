@@ -32,6 +32,8 @@ import {
   historySearch,
   installSkills,
   listRecordings,
+  getRecording,
+  snapRecording,
   listTemplates,
   listTasks,
   createTask,
@@ -82,6 +84,7 @@ import {
   playwrightStop,
   pruneSessions,
   resumeSession,
+  sessionPreview,
   setToken,
   type AgentAccount,
   type AgentPlatformStatus,
@@ -91,7 +94,9 @@ import {
   type GitStatusResult,
   type GitWorktreeEntry,
   type MemoryHit,
+  type RecordingMeta,
   type Session,
+  type SessionPreview,
   type SessionTemplate,
   type SSHKey,
   type TaskStatus,
@@ -135,7 +140,18 @@ type OpenTab = {
   state: string;
 };
 
-type Panel = null | "new" | "new-project" | "projects" | "tools" | "help" | "changes" | "remote";
+type Panel =
+  | null
+  | "new"
+  | "new-project"
+  | "projects"
+  | "tools"
+  | "help"
+  | "changes"
+  | "recordings"
+  | "remote";
+
+type MemSearchMode = "auto" | "fts" | "vector";
 
 type ProjectCard = {
   path: string;
@@ -188,10 +204,35 @@ type AppState = {
   createError: string;
   shellMounted: boolean;
   mapStatus: string;
+  /** Structured map status for chips / stale CTA */
+  mapExists: boolean;
+  mapStale: boolean;
+  mapReason: string;
   memStatus: string;
   memQuery: string;
   memHits: MemoryHit[];
+  memMode: MemSearchMode;
+  memIncludeCode: boolean;
+  memClear: boolean;
+  memDocs: number;
+  memEmbedded: number;
+  memEngine: string;
+  memVector: boolean;
   ctxStatus: string;
+  /** PTY previews keyed by session id (active / cursor only). */
+  sessionPreviews: Record<string, SessionPreview>;
+  /** Session id currently shown in the sidebar preview strip. */
+  previewFocusId: string | null;
+  /** Recordings stage */
+  recList: RecordingMeta[];
+  recEnabled: boolean | null;
+  recQuery: string;
+  recLoading: boolean;
+  recError: string;
+  recSelectedId: string | null;
+  recText: string;
+  recTextLoading: boolean;
+  recSnapBusy: boolean;
   drawer: null | { title: string; body: string };
   panel: Panel;
   filter: string;
@@ -295,10 +336,31 @@ const state: AppState = {
   createError: "",
   shellMounted: false,
   mapStatus: "—",
+  mapExists: false,
+  mapStale: false,
+  mapReason: "",
   memStatus: "—",
   memQuery: "",
   memHits: [],
+  memMode: "auto",
+  memIncludeCode: false,
+  memClear: false,
+  memDocs: 0,
+  memEmbedded: 0,
+  memEngine: "—",
+  memVector: false,
   ctxStatus: "—",
+  sessionPreviews: {},
+  previewFocusId: null,
+  recList: [],
+  recEnabled: null,
+  recQuery: "",
+  recLoading: false,
+  recError: "",
+  recSelectedId: null,
+  recText: "",
+  recTextLoading: false,
+  recSnapBusy: false,
   drawer: null,
   panel: null,
   filter: "",
@@ -366,6 +428,8 @@ let term: Terminal | null = null;
 let fitAddon: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
+let previewPollTimer: number | null = null;
+let previewFetchInFlight = false;
 let toastTimer: number | null = null;
 let shellBound = false;
 let keysBound = false;
@@ -413,6 +477,7 @@ function routeFromUI(): Route {
     return { name: "tools" };
   }
   if (state.panel === "changes") return { name: "changes" };
+  if (state.panel === "recordings") return { name: "recordings" };
   if (state.panel === "help") return { name: "help" };
   if (state.panel === "remote") return { name: "remote" };
   if (state.panel === "projects") return { name: "projects" };
@@ -500,6 +565,10 @@ async function applyRoute(
       case "changes":
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "changes") openPanelOnly("changes");
+        break;
+      case "recordings":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "recordings") openPanelOnly("recordings");
         break;
       case "remote":
         if (state.settingsOpen) await closeSettingsOnly();
@@ -594,6 +663,7 @@ function isStagePanel(p: Panel): p is Exclude<Panel, null> {
     p === "tools" ||
     p === "help" ||
     p === "changes" ||
+    p === "recordings" ||
     p === "remote"
   );
 }
@@ -607,7 +677,7 @@ function openPanelOnly(p: Panel): void {
     state.settingsOpen = false;
     document.getElementById("settings-root")?.remove();
   }
-  if (p === "tools" || p === "changes" || p === "remote") {
+  if (p === "tools" || p === "changes" || p === "remote" || p === "recordings") {
     const tab = state.openTabs.find((t) => t.id === state.activeId);
     if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
       state.formCwd = tab.cwd;
@@ -632,6 +702,7 @@ function openPanelOnly(p: Panel): void {
       paintAppStage();
       if (p === "changes") void refreshGitChanges();
       if (p === "tools") void refreshToolsStatus();
+      if (p === "recordings") void refreshRecordings();
       if (p === "new") {
         window.requestAnimationFrame(() => {
           const name = document.getElementById("sess-name") as HTMLInputElement | null;
@@ -721,6 +792,7 @@ async function activateTabOnly(id: string): Promise<void> {
   }
   paintChrome();
   ensureTermArea();
+  if (prev !== id) void refreshSessionPreview(id);
   await attachActive();
 }
 
@@ -887,10 +959,10 @@ function paletteItems(): PaletteItem[] {
     },
     {
       id: "recordings",
-      label: "List recordings",
+      label: "Recordings",
       group: "Workspace",
       run: () => {
-        void showRecordingsDrawer();
+        openPanel("recordings");
       },
     },
     {
@@ -1698,25 +1770,6 @@ async function onTaskDelete(id: string): Promise<void> {
   }
 }
 
-async function showRecordingsDrawer(): Promise<void> {
-  try {
-    const out = await listRecordings({ limit: 40 });
-    if (out.enabled === false) {
-      toast("Recording disabled — set sessions.recording = true", "info", 5000);
-    }
-    const lines = (out.recordings || [])
-      .map(
-        (r) =>
-          `${r.id}\n  sess=${r.session_id}  agent=${r.agent}  ${r.bytes}B  ${r.created_at}`,
-      )
-      .join("\n\n");
-    state.drawer = { title: "Recordings", body: lines || "No recordings yet" };
-    void paintDrawer();
-  } catch (e) {
-    toast((e as Error).message, "err");
-  }
-}
-
 async function showHistorySearch(): Promise<void> {
   const q = window.prompt("Search session history for:");
   if (!q?.trim()) return;
@@ -1935,12 +1988,79 @@ function startPolling(): void {
   pollTimer = window.setInterval(() => {
     void refreshSessions();
   }, 5000);
+  startPreviewPolling();
 }
 
 function stopPolling(): void {
   if (pollTimer) {
     window.clearInterval(pollTimer);
     pollTimer = null;
+  }
+  stopPreviewPolling();
+}
+
+function previewTargetId(): string | null {
+  // Prefer keyboard cursor in the sidebar, else active tab.
+  if (state.listCursorId && state.sessions.some((s) => s.id === state.listCursorId)) {
+    return state.listCursorId;
+  }
+  if (state.activeId && state.sessions.some((s) => s.id === state.activeId)) {
+    return state.activeId;
+  }
+  return null;
+}
+
+function startPreviewPolling(): void {
+  stopPreviewPolling();
+  // Immediate sample, then every 4s for active/selected only (no thrash).
+  void refreshSessionPreview();
+  previewPollTimer = window.setInterval(() => {
+    void refreshSessionPreview();
+  }, 4000);
+}
+
+function stopPreviewPolling(): void {
+  if (previewPollTimer) {
+    window.clearInterval(previewPollTimer);
+    previewPollTimer = null;
+  }
+}
+
+async function refreshSessionPreview(forceId?: string | null): Promise<void> {
+  if (!state.token || previewFetchInFlight) return;
+  const id = forceId ?? previewTargetId();
+  state.previewFocusId = id;
+  if (!id) {
+    paintSessionPreviewStrip();
+    return;
+  }
+  previewFetchInFlight = true;
+  try {
+    const pv = await sessionPreview(id, 5);
+    const sess = state.sessions.find((s) => s.id === id);
+    if (sess && (pv.state === "unknown" || !pv.state)) {
+      pv.state = sess.state;
+    }
+    // Client-side activity for fallback when state was unknown at fetch time
+    if (pv.fallback && sess) {
+      const h = pv.activity?.heuristic;
+      if (!h || h === "unknown") {
+        // leave as-is — server heuristic preferred
+      }
+      if (pv.state === "unknown") pv.state = sess.state;
+    }
+    state.sessionPreviews[id] = pv;
+    // Drop stale previews for sessions that no longer exist
+    const live = new Set(state.sessions.map((s) => s.id));
+    for (const k of Object.keys(state.sessionPreviews)) {
+      if (!live.has(k)) delete state.sessionPreviews[k];
+    }
+    paintSessionList();
+    paintSessionPreviewStrip();
+  } catch {
+    /* soft — previews are best-effort */
+  } finally {
+    previewFetchInFlight = false;
   }
 }
 
@@ -2595,6 +2715,7 @@ function openPanel(p: Panel): void {
   else if (p === "new-project") navigate({ name: "new-project" }, { apply: false });
   else if (p === "help") navigate({ name: "help" }, { apply: false });
   else if (p === "changes") navigate({ name: "changes" }, { apply: false });
+  else if (p === "recordings") navigate({ name: "recordings" }, { apply: false });
   else if (p === "remote") navigate({ name: "remote" }, { apply: false });
   else if (p === "projects") navigate({ name: "projects" }, { apply: false });
   else if (p === "tools") {
@@ -3629,6 +3750,9 @@ async function refreshToolsStatus(): Promise<void> {
     const st =
       (ms as { status?: { exists?: boolean; stale?: boolean; reason?: string } })
         .status ?? {};
+    state.mapExists = !!st.exists;
+    state.mapStale = !!st.stale;
+    state.mapReason = st.reason || "";
     if (!st.exists) {
       state.mapStatus = st.reason ? `missing · ${st.reason}` : "no map — generate";
     } else if (st.stale) {
@@ -3638,8 +3762,12 @@ async function refreshToolsStatus(): Promise<void> {
     }
     const eng = (mem as { engine?: string }).engine || "fts";
     const docs = (mem as { docs?: number }).docs ?? 0;
-    state.memStatus = `${docs} docs · ${eng}`;
     const m = mem as { vector_enabled?: boolean; docs_embedded?: number };
+    state.memDocs = docs;
+    state.memEmbedded = m.docs_embedded ?? 0;
+    state.memEngine = eng;
+    state.memVector = !!m.vector_enabled;
+    state.memStatus = `${docs} docs · ${eng}`;
     if (m.vector_enabled) {
       state.memStatus += ` · emb ${m.docs_embedded ?? 0}`;
     }
@@ -3656,11 +3784,37 @@ async function refreshToolsStatus(): Promise<void> {
     paintToolsStatus();
   } catch (e) {
     state.mapStatus = "error";
+    state.mapExists = false;
+    state.mapStale = false;
     state.memStatus = (e as Error).message || "failed";
     state.ctxStatus = "error";
     state.pwStatus = "error";
     paintToolsStatus();
   }
+}
+
+function mapChipsHTML(): string {
+  if (!state.mapExists) {
+    return `<span class="git-chip git-chip--warn" title="${esc(state.mapReason || "no map")}">missing</span>`;
+  }
+  if (state.mapStale) {
+    return `<span class="git-chip git-chip--warn" title="${esc(state.mapReason || "outdated")}">stale</span>
+      <span class="git-chip git-chip--muted">${esc(state.mapReason || "outdated")}</span>`;
+  }
+  return `<span class="git-chip git-chip--clean">fresh</span>`;
+}
+
+function memStatsChipsHTML(): string {
+  const bits = [
+    `<span class="git-chip" title="Indexed documents">${state.memDocs} docs</span>`,
+    `<span class="git-chip git-chip--muted" title="Search engine">${esc(state.memEngine || "—")}</span>`,
+  ];
+  if (state.memVector) {
+    bits.push(
+      `<span class="git-chip git-chip--branch" title="Embedded documents">${state.memEmbedded} embedded</span>`,
+    );
+  }
+  return bits.join("");
 }
 
 /** Patch status labels + mem hits without wiping the open modal. */
@@ -3674,6 +3828,15 @@ function paintToolsStatus(): void {
   paintTasksList();
   document.querySelectorAll<HTMLElement>("[data-mem-hits]").forEach((el) => {
     el.innerHTML = memHitsHTML();
+  });
+  document.querySelectorAll<HTMLElement>("[data-map-chips]").forEach((el) => {
+    el.innerHTML = mapChipsHTML();
+  });
+  document.querySelectorAll<HTMLElement>("[data-mem-stats]").forEach((el) => {
+    el.innerHTML = memStatsChipsHTML();
+  });
+  document.querySelectorAll<HTMLElement>("[data-map-stale-cta]").forEach((el) => {
+    el.hidden = !(!state.mapExists || state.mapStale);
   });
   // Legacy ids (older embeds / partial markup)
   const legacy: Array<[string, string]> = [
@@ -3769,16 +3932,34 @@ async function onMapShow(): Promise<void> {
   }
 }
 
+function syncMemOptionsFromDOM(): void {
+  const modeSel = document.querySelector<HTMLSelectElement>(
+    "select[data-mem-mode], #mem-mode",
+  );
+  if (modeSel?.value === "auto" || modeSel?.value === "fts" || modeSel?.value === "vector") {
+    state.memMode = modeSel.value;
+  }
+  const code = document.querySelector<HTMLInputElement>(
+    "input[data-mem-include-code], #mem-include-code",
+  );
+  if (code) state.memIncludeCode = code.checked;
+  const clear = document.querySelector<HTMLInputElement>(
+    "input[data-mem-clear], #mem-clear",
+  );
+  if (clear) state.memClear = clear.checked;
+}
+
 async function onMemIndex(): Promise<void> {
   const cwd = toolsCwd();
+  syncMemOptionsFromDOM();
   try {
     state.memStatus = "indexing…";
     paintToolsStatus();
     toast(`Indexing memory · ${cwd}…`, "info", 15000);
-    // clear:false keeps durable notes; still regenerate map for fresh FTS entry
     const out = await memoryIndex({
       cwd,
-      clear: false,
+      clear: state.memClear,
+      include_code: state.memIncludeCode,
       generate_map: true,
     });
     toast(`Indexed ${out.indexed ?? 0} docs (total ${out.docs_total ?? "?"})`, "ok");
@@ -3792,6 +3973,7 @@ async function onMemIndex(): Promise<void> {
 
 async function onMemSearch(ev?: Event): Promise<void> {
   ev?.preventDefault();
+  syncMemOptionsFromDOM();
   const inputs = document.querySelectorAll<HTMLInputElement>(
     "#mem-query, input[name='q'][data-mem-query], [data-mem-query]",
   );
@@ -3816,22 +3998,33 @@ async function onMemSearch(ev?: Event): Promise<void> {
   }
   const cwd = toolsCwd();
   try {
-    toast(`Searching “${q}” in ${cwd}…`, "info", 5000);
+    toast(`Searching “${q}” (${state.memMode}) in ${cwd}…`, "info", 5000);
     const out = await memorySearch({
       cwd,
       query: q,
       limit: 12,
-      mode: "auto",
+      mode: state.memMode,
     });
     state.memHits = out.hits ?? [];
     paintToolsStatus();
     if (state.memHits.length === 0) {
       toast("No memory hits — try Reindex, or a broader query", "info", 4000);
     } else {
-      toast(`${state.memHits.length} hit(s)`, "ok", 1500);
+      toast(`${state.memHits.length} hit(s) · ${out.mode || state.memMode}`, "ok", 1500);
     }
   } catch (e) {
     toast((e as Error).message || "search failed", "err");
+  }
+}
+
+async function onMapInstallSkill(): Promise<void> {
+  const cwd = toolsCwd();
+  try {
+    toast(`Installing project-map skill · ${cwd}…`, "info", 8000);
+    const out = await installSkills(cwd);
+    toast(`Skill installed · ${out.path || ".agents/skills/project-map.md"}`, "ok");
+  } catch (e) {
+    toast((e as Error).message || "skill install failed", "err");
   }
 }
 
@@ -4397,9 +4590,24 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
           <span class="tool-status" data-status="map" id="map-status">${esc(state.mapStatus)}</span>
         </div>
         <p class="tool-desc"><code>.agents/PROJECT_MAP.md</code></p>
+        <div class="tool-chips" data-map-chips>${mapChipsHTML()}</div>
+        <div class="map-stale-cta" data-map-stale-cta ${!state.mapExists || state.mapStale ? "" : "hidden"}>
+          <p class="map-stale-msg">${
+            !state.mapExists
+              ? "No project map yet — generate one so agents orient faster."
+              : `Map is stale${state.mapReason ? ` · ${esc(state.mapReason)}` : ""}. Refresh before the next session.`
+          }</p>
+          <div class="btn-row">
+            <button type="button" class="primary btn-sm" data-action="map-gen">${
+              !state.mapExists ? "Generate map" : "Regenerate map"
+            }</button>
+            <button type="button" class="ghost btn-sm" data-action="ctx-ensure">Ensure context</button>
+          </div>
+        </div>
         <div class="btn-row">
           <button type="button" class="ghost btn-sm" data-action="map-gen">Generate</button>
           <button type="button" class="ghost btn-sm" data-action="map-show">Show</button>
+          <button type="button" class="ghost btn-sm" data-action="map-install-skill" title="Write .agents/skills/project-map.md">Install skill</button>
         </div>
       </section>
       <section class="${wrap}">
@@ -4407,7 +4615,26 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
           <${titleOpen}>Memory</${titleClose}>
           <span class="tool-status" data-status="mem" id="mem-status">${esc(state.memStatus)}</span>
         </div>
-        <p class="tool-desc">FTS index of map + docs</p>
+        <p class="tool-desc">FTS + optional vector index of map, docs, and notes</p>
+        <div class="tool-chips" data-mem-stats>${memStatsChipsHTML()}</div>
+        <div class="mem-options">
+          <div class="field field--inline">
+            <label for="mem-mode">Mode</label>
+            <select id="mem-mode" data-mem-mode data-action-change="mem-mode">
+              <option value="auto" ${state.memMode === "auto" ? "selected" : ""}>auto</option>
+              <option value="fts" ${state.memMode === "fts" ? "selected" : ""}>fts</option>
+              <option value="vector" ${state.memMode === "vector" ? "selected" : ""}>vector</option>
+            </select>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="mem-include-code" data-mem-include-code ${state.memIncludeCode ? "checked" : ""} data-action-change="mem-include-code" />
+            include code
+          </label>
+          <label class="check" title="Wipe index before reindex">
+            <input type="checkbox" id="mem-clear" data-mem-clear ${state.memClear ? "checked" : ""} data-action-change="mem-clear" />
+            clear on reindex
+          </label>
+        </div>
         <div class="btn-row">
           <button type="button" class="ghost btn-sm" data-action="mem-index">Reindex</button>
         </div>
@@ -4454,7 +4681,8 @@ function toolsPageHTML(): string {
   const actions = `
     <button type="button" class="primary btn-sm" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
     <button type="button" class="ghost btn-sm" data-action="open-remote">${iconSvg("external")} Remote</button>
-    <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Changes</button>`;
+    <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Changes</button>
+    <button type="button" class="ghost btn-sm" data-action="recordings">${iconSvg("layers")} Recordings</button>`;
   return `
     ${pageHeroHTML("Workspace", "Tools", "Context, map, memory, tasks, and browser stack for the active cwd.", actions)}
     <div class="page-body">
@@ -4466,6 +4694,250 @@ function toolsPageHTML(): string {
         </p>
       </div>
     </div>`;
+}
+
+// ── Recordings — in-shell stage ─────────────────────────────────────────────
+
+function formatBytes(n?: number): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
+  return `${(n / (1024 * 1024)).toFixed(1)}M`;
+}
+
+function recordingsListHTML(): string {
+  if (state.recLoading && !state.recList.length) {
+    return `<div class="page-empty page-empty--loading">
+      <span class="ui-spinner" aria-hidden="true"></span>
+      <p class="git-empty-title">Loading recordings…</p>
+    </div>`;
+  }
+  if (state.recError && !state.recList.length) {
+    return `<div class="page-empty">
+      <p class="git-empty-title">Failed to load</p>
+      <p class="form-hint">${esc(state.recError)}</p>
+      <div class="page-empty-actions">
+        <button type="button" class="primary btn-sm" data-action="rec-refresh">Retry</button>
+      </div>
+    </div>`;
+  }
+  if (!state.recList.length) {
+    const privacy =
+      state.recEnabled === false
+        ? `<p class="form-hint rec-privacy">Recording is <strong>off</strong>. Set <code>sessions.recording = true</code> in agentsd config to archive pane snapshots. Nothing is stored until then.</p>`
+        : `<p class="form-hint">No captures yet. Snap an active session or wait for automatic archives on detach/kill.</p>`;
+    return `<div class="page-empty">
+      <p class="git-empty-title">No recordings</p>
+      ${privacy}
+    </div>`;
+  }
+  return `<ul class="rec-list" role="listbox" aria-label="Recordings">
+    ${state.recList
+      .map((r) => {
+        const sel = r.id === state.recSelectedId ? " is-selected" : "";
+        const age = relativeTime(r.created_at);
+        const title = r.name || r.session_id || r.id;
+        return `<li>
+          <button type="button" class="rec-item${sel}" role="option" aria-selected="${
+            r.id === state.recSelectedId ? "true" : "false"
+          }" data-action="rec-open" data-id="${esc(r.id)}" title="${esc(r.id)}">
+            <span class="rec-item-title">${esc(title)}</span>
+            <span class="rec-item-meta">
+              <span>${esc(r.agent || "—")}</span>
+              <span>${esc(basename(r.cwd || "."))}</span>
+              <span>${esc(formatBytes(r.bytes))}</span>
+              <span>${esc(age || r.created_at || "")}</span>
+              ${r.reason ? `<span class="rec-reason">${esc(r.reason)}</span>` : ""}
+            </span>
+          </button>
+        </li>`;
+      })
+      .join("")}
+  </ul>`;
+}
+
+function recordingsViewerHTML(): string {
+  if (!state.recSelectedId) {
+    return `<div class="rec-viewer-empty">
+      <p class="git-empty-title">Select a recording</p>
+      <p class="form-hint">Full pane text opens here in monospace.</p>
+    </div>`;
+  }
+  if (state.recTextLoading) {
+    return `<div class="rec-viewer-empty page-empty--loading">
+      <span class="ui-spinner" aria-hidden="true"></span>
+      <p class="git-empty-title">Loading…</p>
+    </div>`;
+  }
+  const meta = state.recList.find((r) => r.id === state.recSelectedId);
+  return `
+    <div class="rec-viewer-head">
+      <div class="rec-viewer-title">
+        <strong>${esc(meta?.name || meta?.session_id || state.recSelectedId)}</strong>
+        <span class="rec-viewer-id mono">${esc(state.recSelectedId)}</span>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="ghost btn-sm" data-action="copy-text" data-text="${esc(state.recText)}" ${
+          state.recText ? "" : "disabled"
+        }>${iconSvg("check")} Copy</button>
+      </div>
+    </div>
+    <pre class="rec-viewer-body mono" tabindex="0">${esc(state.recText || "(empty)")}</pre>
+  `;
+}
+
+function recordingsPageHTML(): string {
+  const active = state.sessions.find((s) => s.id === state.activeId);
+  const canSnap = !!active && active.state === "running" && state.recEnabled !== false;
+  const enChip =
+    state.recEnabled === false
+      ? `<span class="git-chip git-chip--warn">recording off</span>`
+      : state.recEnabled === true
+        ? `<span class="git-chip git-chip--clean">recording on</span>`
+        : `<span class="git-chip git-chip--muted">…</span>`;
+  const privacyNote =
+    state.recEnabled === false
+      ? `<p class="rec-privacy-banner" role="note">Privacy: pane archives are disabled. Enable <code>sessions.recording</code> on the host to capture snapshots. Existing files (if any) still list below.</p>`
+      : `<p class="rec-privacy-banner rec-privacy-banner--ok" role="note">Archives store terminal text under the host jobs dir. Snap captures the live pane now.</p>`;
+
+  const actions = `
+    <button type="button" class="ghost btn-sm" data-action="rec-refresh" ${state.recLoading ? "disabled" : ""}>${
+      state.recLoading
+        ? `<span class="ui-spinner ui-spinner--sm" aria-hidden="true"></span> Loading…`
+        : "Refresh"
+    }</button>
+    <button type="button" class="primary btn-sm" data-action="rec-snap" ${
+      canSnap && !state.recSnapBusy ? "" : "disabled"
+    } title="${
+      state.recEnabled === false
+        ? "Recording disabled on host"
+        : active?.state === "running"
+          ? `Snap active session ${active.id}`
+          : "Open a running session to snap"
+    }">${state.recSnapBusy ? "Snapping…" : "Snap active"}</button>`;
+
+  // refresh icon may not exist — use text fallback via empty check above
+  return `
+    ${pageHeroHTML("Archive", "Recordings", "Browse and search archived session pane snapshots.", actions)}
+    <div class="page-body page-body--wide">
+      <div class="rec-toolbar">
+        <div class="rec-toolbar-chips">${enChip}
+          <span class="git-chip git-chip--muted">${state.recList.length} shown</span>
+        </div>
+        <form class="rec-search" data-action-form="rec-search">
+          <label class="sr-only" for="rec-query">Search recordings</label>
+          <input id="rec-query" type="search" placeholder="Search pane text (q=)…" value="${esc(state.recQuery)}" autocomplete="off" spellcheck="false" />
+          <button type="submit" class="primary btn-sm">Search</button>
+          ${
+            state.recQuery
+              ? `<button type="button" class="ghost btn-sm" data-action="rec-clear-search">Clear</button>`
+              : ""
+          }
+        </form>
+      </div>
+      ${privacyNote}
+      <div class="rec-layout">
+        <aside class="rec-sidebar" data-rec-list>${recordingsListHTML()}</aside>
+        <section class="rec-viewer" data-rec-viewer aria-label="Recording text">${recordingsViewerHTML()}</section>
+      </div>
+    </div>`;
+}
+
+async function refreshRecordings(): Promise<void> {
+  if (state.panel !== "recordings") return;
+  state.recLoading = true;
+  state.recError = "";
+  paintRecordingsSoft();
+  try {
+    const out = await listRecordings({
+      limit: 80,
+      q: state.recQuery.trim() || undefined,
+    });
+    state.recList = (out.recordings || []) as RecordingMeta[];
+    state.recEnabled = out.enabled ?? null;
+    if (state.recSelectedId && !state.recList.some((r) => r.id === state.recSelectedId)) {
+      // keep selection if viewing text even if filtered out
+    }
+  } catch (e) {
+    state.recError = (e as Error).message || "failed to list recordings";
+    state.recList = [];
+  } finally {
+    state.recLoading = false;
+  }
+  if (state.panel === "recordings") {
+    paintRecordingsSoft();
+  }
+}
+
+function paintRecordingsSoft(): void {
+  if (state.panel !== "recordings") return;
+  const list = document.querySelector("#app-stage [data-rec-list]");
+  const viewer = document.querySelector("#app-stage [data-rec-viewer]");
+  if (list) list.innerHTML = recordingsListHTML();
+  if (viewer) viewer.innerHTML = recordingsViewerHTML();
+  // chips / toolbar need full repaint only when structure changes — full stage if missing nodes
+  if (!list || !viewer) {
+    paintAppStage();
+  } else {
+    // update snap button disabled state in hero
+    const snap = document.querySelector<HTMLButtonElement>('#app-stage [data-action="rec-snap"]');
+    if (snap) {
+      const active = state.sessions.find((s) => s.id === state.activeId);
+      const canSnap = !!active && active.state === "running" && state.recEnabled !== false;
+      snap.disabled = !canSnap || state.recSnapBusy;
+    }
+  }
+}
+
+async function openRecording(id: string): Promise<void> {
+  state.recSelectedId = id;
+  state.recTextLoading = true;
+  state.recText = "";
+  paintRecordingsSoft();
+  try {
+    const out = await getRecording(id);
+    state.recText = out.text || "";
+    if (out.meta && !state.recList.some((r) => r.id === id)) {
+      state.recList = [out.meta as RecordingMeta, ...state.recList];
+    }
+  } catch (e) {
+    state.recText = `// failed to load: ${(e as Error).message || "error"}`;
+    toast((e as Error).message || "load recording failed", "err");
+  } finally {
+    state.recTextLoading = false;
+    paintRecordingsSoft();
+  }
+}
+
+async function onRecSnap(): Promise<void> {
+  const id = state.activeId;
+  if (!id) {
+    toast("No active session", "info");
+    return;
+  }
+  if (state.recEnabled === false) {
+    toast("Recording disabled — set sessions.recording = true", "info", 5000);
+    return;
+  }
+  state.recSnapBusy = true;
+  paintRecordingsSoft();
+  try {
+    await snapRecording(id);
+    toast("Snapshot archived", "ok");
+    await refreshRecordings();
+  } catch (e) {
+    toast((e as Error).message || "snap failed", "err");
+  } finally {
+    state.recSnapBusy = false;
+    paintRecordingsSoft();
+  }
+}
+
+async function onRecSearch(ev?: Event): Promise<void> {
+  ev?.preventDefault();
+  const input = document.getElementById("rec-query") as HTMLInputElement | null;
+  if (input) state.recQuery = input.value;
+  await refreshRecordings();
 }
 
 // ── Git Changes — in-shell stage ────────────────────────────────────────────
@@ -4899,6 +5371,8 @@ function stageMeta(p: Exclude<Panel, null>): {
       return { title: "Tools", kicker: "Workspace", aria: "Workspace tools", cls: "main--tools" };
     case "changes":
       return { title: "Changes", kicker: "Source control", aria: "Git changes", cls: "main--git" };
+    case "recordings":
+      return { title: "Recordings", kicker: "Archive", aria: "Session recordings", cls: "main--recordings" };
     case "remote":
       return { title: "Open remote", kicker: "Workspace", aria: "Open remote editor", cls: "main--remote" };
     case "help":
@@ -4920,6 +5394,8 @@ function stageBodyHTML(p: Exclude<Panel, null>): string {
       return toolsPageHTML();
     case "changes":
       return gitPageHTML();
+    case "recordings":
+      return recordingsPageHTML();
     case "remote":
       return remotePageHTML();
     case "help":
@@ -4948,6 +5424,7 @@ function paintAppStage(): void {
     "main--remote",
     "main--help",
     "main--projects",
+    "main--recordings",
   );
   main.classList.add("main--stage", meta.cls);
 
@@ -4995,6 +5472,12 @@ function paintAppStage(): void {
       if (list) list.innerHTML = projectsListHTML();
     });
   }
+  if (p === "recordings") {
+    const filter = document.getElementById("rec-query") as HTMLInputElement | null;
+    filter?.addEventListener("input", () => {
+      state.recQuery = filter.value;
+    });
+  }
 
   if (panelChanged) {
     animateStageIn(stage);
@@ -5020,6 +5503,9 @@ function focusStagePrimary(stage: HTMLElement, p: Exclude<Panel, null>): void {
       break;
     case "changes":
       sel = "#git-file-filter, #git-cwd-select";
+      break;
+    case "recordings":
+      sel = "#rec-query";
       break;
     case "remote":
       sel = "#remote-cwd-select";
@@ -5433,12 +5919,85 @@ function memHitsHTML(): string {
   return state.memHits
     .map((h) => {
       const mode = h.mode || "fts";
+      const path = h.path || h.title || "?";
+      const pathBtn = h.path
+        ? `<button type="button" class="mem-path linkish" data-action="copy-text" data-text="${esc(h.path)}" title="Copy path">${esc(path)}</button>`
+        : `<span class="mem-path">${esc(path)}</span>`;
       return `<div class="mem-hit">
-        <div class="path">${esc(h.path || h.title || "?")} <span class="badge">${esc(mode)}</span></div>
+        <div class="path">${pathBtn} <span class="badge">${esc(mode)}</span></div>
         <div class="snip">${esc(h.snippet || "")}</div>
       </div>`;
     })
     .join("");
+}
+
+function formatPreviewTail(text: string | undefined, maxLines = 4): string {
+  if (!text) return "";
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const slice = lines.length > maxLines ? lines.slice(-maxLines) : lines;
+  return slice
+    .map((l) => (l.length > 72 ? `${l.slice(0, 71)}…` : l))
+    .join("\n");
+}
+
+function activityLabel(pv?: SessionPreview | null): string {
+  const h = pv?.activity?.heuristic;
+  if (h === "busy") return "busy";
+  if (h === "idle") return "idle";
+  return "";
+}
+
+function sessionPreviewBlockHTML(s: Session, expanded: boolean): string {
+  if (!expanded) return "";
+  const pv = state.sessionPreviews[s.id];
+  const activity = activityLabel(pv);
+  const tail = formatPreviewTail(pv?.text, 4);
+  const src = pv?.source || "";
+  const actChip = activity
+    ? `<span class="sess-preview-act sess-preview-act--${esc(activity)}">${esc(activity)}</span>`
+    : `<span class="sess-preview-act sess-preview-act--unknown">…</span>`;
+  const body = tail
+    ? `<pre class="sess-preview-tail" aria-hidden="true">${esc(tail)}</pre>`
+    : `<div class="sess-preview-empty">${pv ? "No recent output" : "Loading preview…"}</div>`;
+  return `<div class="sess-preview" data-preview-for="${esc(s.id)}">
+    <div class="sess-preview-bar">
+      ${actChip}
+      <span class="sess-preview-src">${esc(src || (pv?.fallback ? "history" : ""))}</span>
+    </div>
+    ${body}
+  </div>`;
+}
+
+/** Soft-update only the focus strip under the session list (no full list rewrite). */
+function paintSessionPreviewStrip(): void {
+  const host = document.getElementById("session-preview-strip");
+  if (!host) return;
+  const id = state.previewFocusId || previewTargetId();
+  if (!id) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const pv = state.sessionPreviews[id];
+  const activity = activityLabel(pv) || "—";
+  const tail = formatPreviewTail(pv?.text, 5);
+  const label = s.name || shortId(s.id);
+  host.hidden = false;
+  host.innerHTML = `
+    <div class="sb-preview-head">
+      <span class="sb-preview-title" title="${esc(s.id)}">${esc(label)}</span>
+      <span class="sess-preview-act sess-preview-act--${esc(activityLabel(pv) || "unknown")}">${esc(activity)}</span>
+      <span class="sb-preview-meta">${esc(pv?.source || (pv?.fallback ? "history" : "…"))} · ${esc(s.state)}</span>
+    </div>
+    <pre class="sb-preview-tail">${tail ? esc(tail) : "—"}</pre>
+  `;
 }
 
 function filteredSessions(): Session[] {
@@ -5520,16 +6079,22 @@ function sessionListPaintSig(): string {
   if (list.length === 0) {
     return `nomatch\n${state.filter}`;
   }
+  const focus = state.previewFocusId || previewTargetId() || "";
   const rows = list
     .map((s) => {
       const active = s.id === state.activeId ? "1" : "0";
       const cursor = s.id === state.listCursorId ? "1" : "0";
       const branch = (s.git_branch || s.branch || "").trim();
+      const pv = state.sessionPreviews[s.id];
+      const pvSig =
+        s.id === focus
+          ? `${pv?.activity?.heuristic || ""}\0${(pv?.text || "").slice(-120)}\0${pv?.source || ""}`
+          : "";
       // Display fields only: id, state, name, agent, cwd, branch (title + meta + classes)
-      return `${s.id}\0${s.state}\0${s.name || ""}\0${s.agent}\0${s.cwd}\0${branch}\0${active}\0${cursor}`;
+      return `${s.id}\0${s.state}\0${s.name || ""}\0${s.agent}\0${s.cwd}\0${branch}\0${active}\0${cursor}\0${pvSig}`;
     })
     .join("\n");
-  return rows;
+  return `${rows}\nfocus:${focus}`;
 }
 
 function tabsPaintSig(): string {
@@ -5572,6 +6137,7 @@ function paintSessionList(force = false): void {
   if (!force && sig === lastSessionListPaintSig) return;
   lastSessionListPaintSig = sig;
   list.innerHTML = sessionListHTML();
+  paintSessionPreviewStrip();
 }
 
 function paintTabs(force = false): void {
@@ -5627,6 +6193,7 @@ function paintSidebarActive(): void {
     projects: state.panel === "projects",
     tools: state.panel === "tools",
     "git-changes": state.panel === "changes",
+    recordings: state.panel === "recordings",
     help: state.panel === "help",
     "open-settings": state.settingsOpen,
   };
@@ -5743,6 +6310,7 @@ function breadcrumbHTML(): string {
   const stageCrumb: Partial<Record<Exclude<Panel, null>, string>> = {
     changes: "Changes",
     tools: "Tools",
+    recordings: "Recordings",
     new: "New session",
     "new-project": "New project",
     projects: "Projects",
@@ -5798,6 +6366,7 @@ function sbNavActiveAttr(action: string): string {
     (action === "projects" && state.panel === "projects") ||
     (action === "tools" && state.panel === "tools") ||
     (action === "git-changes" && state.panel === "changes") ||
+    (action === "recordings" && state.panel === "recordings") ||
     (action === "help" && state.panel === "help") ||
     (action === "open-settings" && state.settingsOpen);
   return on ? ' data-active="true"' : "";
@@ -5840,6 +6409,7 @@ function shellHTML(): string {
           <nav class="sb-tools" aria-labelledby="sb-ws-label">
             <a href="/tools" class="sb-tool" data-action="tools" data-nav title="Tools (t)" aria-label="Tools"${sbNavActiveAttr("tools")}>${iconSvg("wrench")}<span class="sb-tool-label">Tools</span></a>
             <a href="/changes" class="sb-tool" data-action="git-changes" data-nav title="Git changes (⇧g)" aria-label="Git changes"${sbNavActiveAttr("git-changes")}>${iconSvg("git-branch")}<span class="sb-tool-label">Git</span></a>
+            <a href="/recordings" class="sb-tool" data-action="recordings" data-nav title="Recordings" aria-label="Recordings"${sbNavActiveAttr("recordings")}>${iconSvg("layers")}<span class="sb-tool-label">Rec</span></a>
             <a href="/profile" class="sb-tool" data-action="open-settings" data-tab="accounts" data-nav title="Settings (,)" aria-label="Settings"${sbNavActiveAttr("open-settings")}>${iconSvg("settings")}<span class="sb-tool-label">Settings</span></a>
           </nav>
         </div>
@@ -5856,6 +6426,7 @@ function shellHTML(): string {
           <div class="session-list" id="session-list" role="list" aria-labelledby="sb-sessions-label">
             ${sessionListHTML()}
           </div>
+          <div class="session-preview-strip" id="session-preview-strip" hidden aria-live="polite"></div>
         </section>
 
         <footer class="sb-foot" data-sidebar="footer">
@@ -5925,9 +6496,11 @@ function sessionListHTML(): string {
       <p class="empty-list-hint">Try a different filter or clear the search.</p>
     </div>`;
   }
+  const focusId = state.previewFocusId || previewTargetId();
   return sorted
     .map((s) => {
       const isActive = s.id === state.activeId;
+      const isFocus = s.id === focusId;
       const cursor = s.id === state.listCursorId ? " cursor" : "";
       const ag = agentClass(s.agent);
       const href = sessionPath(s.cwd, s.id);
@@ -5941,13 +6514,20 @@ function sessionListHTML(): string {
       if (branch) tipBits.push(branch);
       if (age) tipBits.push(age);
       tipBits.push(s.state, "right-click for actions");
+      const pv = state.sessionPreviews[s.id];
+      const act = activityLabel(pv);
+      if (act) tipBits.push(act);
       const stateLabel =
         s.state === "running" ? "Live" : s.state === "exited" ? "Exited" : s.state;
       const activeAttr = isActive ? ' data-active="true" aria-current="page"' : "";
-      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}${s.worktree ? " is-worktree" : ""}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav${activeAttr} title="${esc(tipBits.join(" · "))}">
+      const actBadge = act
+        ? `<span class="session-act session-act--${esc(act)}" title="Activity: ${esc(act)}">${esc(act)}</span>`
+        : "";
+      return `<div class="session-row${isFocus ? " is-focus" : ""}" role="listitem">
+<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}${s.worktree ? " is-worktree" : ""}" href="${esc(href)}" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav${activeAttr} title="${esc(tipBits.join(" · "))}">
   <span class="session-dot ${ag}" aria-hidden="true"></span>
   <span class="session-body">
-    <span class="session-name">${esc(label)}${s.worktree ? `<span class="session-wt-badge" title="Isolated git worktree">wt</span>` : ""}</span>
+    <span class="session-name">${esc(label)}${s.worktree ? `<span class="session-wt-badge" title="Isolated git worktree">wt</span>` : ""}${actBadge}</span>
     <span class="session-meta"><span class="session-agent">${esc(s.agent)}</span><span class="session-sep" aria-hidden="true"> · </span><span class="session-cwd">${esc(cwdBase)}</span>${
       branch
         ? `<span class="session-sep" aria-hidden="true"> · </span><span class="session-branch">${esc(branch)}</span>`
@@ -5956,7 +6536,9 @@ function sessionListHTML(): string {
   </span>
   <span class="session-state ${esc(s.state)}" title="${esc(s.state)}">${esc(stateLabel)}</span>
   <button type="button" class="session-more" data-ctx="${esc(s.id)}" title="Actions" aria-label="Actions for ${esc(label)}" tabindex="-1">${iconSvg("more")}</button>
-</a>`;
+</a>
+${sessionPreviewBlockHTML(s, isFocus)}
+</div>`;
     })
     .join("");
 }
@@ -6248,6 +6830,7 @@ function moveListCursor(delta: number): void {
   idx = Math.max(0, Math.min(list.length - 1, idx + delta));
   state.listCursorId = list[idx].id;
   paintChrome();
+  void refreshSessionPreview(state.listCursorId);
   const el = document.querySelector(
     `.session-item[data-open="${CSS.escape(state.listCursorId)}"]`,
   );
@@ -6876,6 +7459,31 @@ function ensureUIDelegation(): void {
         if (!state.token) return;
         openPanel("changes");
         break;
+      case "recordings":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!state.token) return;
+        openPanel("recordings");
+        break;
+      case "rec-refresh":
+        ev.preventDefault();
+        void refreshRecordings();
+        break;
+      case "rec-snap":
+        ev.preventDefault();
+        void onRecSnap();
+        break;
+      case "rec-open": {
+        ev.preventDefault();
+        const rid = actionEl.getAttribute("data-id") || "";
+        if (rid) void openRecording(rid);
+        break;
+      }
+      case "rec-clear-search":
+        ev.preventDefault();
+        state.recQuery = "";
+        void refreshRecordings();
+        break;
       case "git-refresh":
         ev.preventDefault();
         void refreshGitChanges();
@@ -7148,6 +7756,10 @@ function ensureUIDelegation(): void {
         ev.preventDefault();
         void onMapShow();
         break;
+      case "map-install-skill":
+        ev.preventDefault();
+        void onMapInstallSkill();
+        break;
       case "mem-index":
         ev.preventDefault();
         void onMemIndex();
@@ -7246,6 +7858,9 @@ function ensureUIDelegation(): void {
     } else if (kind === "mem-search") {
       ev.preventDefault();
       void onMemSearch(ev);
+    } else if (kind === "rec-search") {
+      ev.preventDefault();
+      void onRecSearch(ev);
     } else if (kind === "task-add") {
       ev.preventDefault();
       void onTaskAdd(ev);
@@ -7265,6 +7880,17 @@ function ensureUIDelegation(): void {
     if (kind === "tools-cwd" && el instanceof HTMLSelectElement) {
       state.formCwd = el.value;
       void refreshToolsStatus();
+    }
+    if (kind === "mem-mode" && el instanceof HTMLSelectElement) {
+      if (el.value === "auto" || el.value === "fts" || el.value === "vector") {
+        state.memMode = el.value;
+      }
+    }
+    if (kind === "mem-include-code" && el instanceof HTMLInputElement) {
+      state.memIncludeCode = el.checked;
+    }
+    if (kind === "mem-clear" && el instanceof HTMLInputElement) {
+      state.memClear = el.checked;
     }
     if (kind === "git-cwd" && el instanceof HTMLSelectElement) {
       state.formCwd = el.value;

@@ -287,6 +287,167 @@ export async function sessionHistory(id: string): Promise<{ text: string; source
   };
 }
 
+/** PTY-derived session preview (state, activity, last N terminal lines). */
+export type ActivityHeuristic = "busy" | "idle" | "unknown";
+
+export type SessionPreview = {
+  id: string;
+  state: string;
+  source?: string; // live | snapshot | history
+  captured_at?: string;
+  bytes?: number;
+  lines?: number;
+  text?: string;
+  activity?: {
+    heuristic?: ActivityHeuristic;
+    tmux_alive?: boolean;
+    content_hash?: string;
+  };
+  /** true when derived client-side from history fallback */
+  fallback?: boolean;
+};
+
+/** Strip common CSI / OSC ANSI sequences for mono previews. */
+export function stripAnsi(s: string): string {
+  return s
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b./g, "");
+}
+
+function tailLines(text: string, n: number): string {
+  const parts = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  // Drop trailing empty line from final newline
+  if (parts.length && parts[parts.length - 1] === "") parts.pop();
+  const slice = parts.length > n ? parts.slice(-n) : parts;
+  return slice.join("\n");
+}
+
+/** Client-side activity tracker for history fallback (mirrors ~15s stability). */
+const previewHashAt = new Map<string, { hash: string; at: number }>();
+
+function clientActivity(
+  id: string,
+  text: string,
+  state: string,
+): NonNullable<SessionPreview["activity"]> {
+  const hash = `${text.length}:${text.slice(0, 48)}:${text.slice(-48)}`;
+  const now = Date.now();
+  const prev = previewHashAt.get(id);
+  previewHashAt.set(id, { hash, at: prev && prev.hash === hash ? prev.at : now });
+  const sample = previewHashAt.get(id)!;
+  const live = state === "running";
+  if (!live && !text) {
+    return { heuristic: "unknown", tmux_alive: false, content_hash: hash };
+  }
+  if (!prev) {
+    return { heuristic: "unknown", tmux_alive: live, content_hash: hash };
+  }
+  if (sample.hash !== prev.hash) {
+    return { heuristic: live ? "busy" : "unknown", tmux_alive: live, content_hash: hash };
+  }
+  if (now - sample.at >= 15_000) {
+    return { heuristic: "idle", tmux_alive: live, content_hash: hash };
+  }
+  return { heuristic: live ? "busy" : "unknown", tmux_alive: live, content_hash: hash };
+}
+
+/**
+ * GET /v1/sessions/{id}/preview when available.
+ * Falls back to history?format=json (then plain history) + client activity heuristic.
+ */
+export async function sessionPreview(
+  id: string,
+  lines = 5,
+): Promise<SessionPreview> {
+  const token = getToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const n = Math.max(1, Math.min(lines || 5, 40));
+
+  // Preferred endpoint (when agentsd ships GET /v1/sessions/{id}/preview)
+  try {
+    const res = await fetch(
+      `/v1/sessions/${encodeURIComponent(id)}/preview?lines=${n}`,
+      { headers },
+    );
+    if (res.ok) {
+      const body = (await res.json()) as SessionPreview;
+      return {
+        ...body,
+        id: body.id || id,
+        text: body.text ?? "",
+        fallback: false,
+      };
+    }
+    // 401 must surface; other statuses fall through (older daemons, missing route)
+    if (res.status === 401) {
+      const err = new Error("unauthorized");
+      (err as Error & { status: number }).status = 401;
+      throw err;
+    }
+  } catch (e) {
+    const st = (e as Error & { status?: number }).status;
+    if (st === 401) throw e;
+    /* network / parse — try history fallback */
+  }
+
+  // Fallback: JSON history tail
+  try {
+    const res = await fetch(
+      `/v1/sessions/${encodeURIComponent(id)}/history?format=json`,
+      { headers },
+    );
+    if (res.ok) {
+      const body = (await res.json()) as {
+        text?: string;
+        source?: string;
+        bytes?: number;
+        state?: string;
+      };
+      const raw = body.text || "";
+      const text = tailLines(stripAnsi(raw), n);
+      // Best-effort state from list is unknown here — use unknown until caller merges
+      const state = body.state || "unknown";
+      return {
+        id,
+        state,
+        source: body.source || "history",
+        bytes: body.bytes ?? text.length,
+        lines: n,
+        text,
+        activity: clientActivity(id, text, state),
+        fallback: true,
+      };
+    }
+  } catch {
+    /* try plain */
+  }
+
+  const hist = await sessionHistory(id);
+  const text = tailLines(stripAnsi(hist.text || ""), n);
+  return {
+    id,
+    state: "unknown",
+    source: hist.source || "history",
+    bytes: text.length,
+    lines: n,
+    text,
+    activity: clientActivity(id, text, "unknown"),
+    fallback: true,
+  };
+}
+
+/** Manual pane snapshot into the recordings archive (requires sessions.recording). */
+export function snapRecording(
+  sessionId: string,
+): Promise<{ ok?: boolean; latest?: unknown }> {
+  return request(`/v1/sessions/${encodeURIComponent(sessionId)}/record`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export function pruneSessions(maxAge?: string): Promise<{ removed: number }> {
   return request("/v1/sessions/prune", {
     method: "POST",
@@ -810,11 +971,26 @@ export function startTemplate(id: string): Promise<Session> {
   });
 }
 
+export type RecordingMeta = {
+  id: string;
+  session_id?: string;
+  agent?: string;
+  cwd?: string;
+  name?: string;
+  bytes?: number;
+  created_at?: string;
+  reason?: string;
+};
+
 export function listRecordings(params?: {
   session_id?: string;
   q?: string;
   limit?: number;
-}): Promise<{ recordings: Array<Record<string, unknown>>; enabled?: boolean }> {
+}): Promise<{
+  recordings: RecordingMeta[];
+  enabled?: boolean;
+  dir?: string;
+}> {
   const sp = new URLSearchParams();
   if (params?.session_id) sp.set("session_id", params.session_id);
   if (params?.q) sp.set("q", params.q);
@@ -823,7 +999,9 @@ export function listRecordings(params?: {
   return request(`/v1/recordings${q ? `?${q}` : ""}`);
 }
 
-export function getRecording(id: string): Promise<{ meta?: unknown; text?: string }> {
+export function getRecording(
+  id: string,
+): Promise<{ meta?: RecordingMeta; text?: string }> {
   return request(`/v1/recordings/${encodeURIComponent(id)}`);
 }
 
