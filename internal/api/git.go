@@ -57,6 +57,26 @@ func (s *Server) handleGitFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// GET /v1/git/worktrees?cwd=<rel>
+func (s *Server) handleGitWorktrees(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	if strings.TrimSpace(cwd) == "" {
+		cwd = s.cfg.DefaultCwd
+		if cwd == "" {
+			cwd = "."
+		}
+	}
+	list, err := workspaces.ListWorktrees(s.cfg.WorkspaceRoot, cwd, s.cfg.Allow.Paths)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cwd":       cwd,
+		"worktrees": list,
+	})
+}
+
 // parseBool01 accepts "", "0","1","true","false","yes","no" (case-insensitive).
 func parseBool01(v string) (bool, error) {
 	v = strings.TrimSpace(strings.ToLower(v))

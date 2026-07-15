@@ -281,6 +281,103 @@ func RemoveWorktree(repoAbs, worktreeAbs string) error {
 	return nil
 }
 
+// WorktreeEntry is one line from `git worktree list`.
+type WorktreeEntry struct {
+	Path   string `json:"path"`             // absolute path
+	Head   string `json:"head,omitempty"`   // commit SHA
+	Branch string `json:"branch,omitempty"` // refs/heads/… stripped to branch name
+	Bare   bool   `json:"bare,omitempty"`
+	Locked bool   `json:"locked,omitempty"`
+	Prunable bool `json:"prunable,omitempty"`
+	// Relative path under workspace root when possible
+	Rel string `json:"rel,omitempty"`
+	// Main is true when this is the primary checkout (.git is a directory)
+	Main bool `json:"main,omitempty"`
+}
+
+// ListWorktrees returns `git worktree list --porcelain` for the repo containing cwdAbs.
+func ListWorktrees(workspaceRoot, cwdRel string, allowPaths []string) ([]WorktreeEntry, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, fmt.Errorf("git not found on PATH")
+	}
+	abs, err := pathallow.Resolve(workspaceRoot, cwdRel, allowPaths)
+	if err != nil {
+		return nil, err
+	}
+	if !IsGitWorkTree(abs) {
+		return nil, fmt.Errorf("not a git repository")
+	}
+	repoAbs, err := RepoRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoAbs
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	wsRoot, _ := filepath.Abs(workspaceRoot)
+	if resolved, err := filepath.EvalSymlinks(wsRoot); err == nil {
+		wsRoot = resolved
+	}
+	wsRoot = filepath.Clean(wsRoot)
+
+	var entries []WorktreeEntry
+	var cur WorktreeEntry
+	flush := func() {
+		if cur.Path == "" {
+			return
+		}
+		// main checkout detection
+		gitMeta := filepath.Join(cur.Path, ".git")
+		if st, err := os.Lstat(gitMeta); err == nil && st.IsDir() {
+			cur.Main = true
+		}
+		if rel, err := filepath.Rel(wsRoot, cur.Path); err == nil && !strings.HasPrefix(rel, "..") {
+			cur.Rel = filepath.ToSlash(rel)
+		}
+		entries = append(entries, cur)
+		cur = WorktreeEntry{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "worktree ") {
+			flush()
+			cur.Path = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+			continue
+		}
+		if strings.HasPrefix(line, "HEAD ") {
+			cur.Head = strings.TrimSpace(strings.TrimPrefix(line, "HEAD "))
+			continue
+		}
+		if strings.HasPrefix(line, "branch ") {
+			br := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			br = strings.TrimPrefix(br, "refs/heads/")
+			cur.Branch = br
+			continue
+		}
+		if line == "bare" {
+			cur.Bare = true
+			continue
+		}
+		if strings.HasPrefix(line, "locked") {
+			cur.Locked = true
+			continue
+		}
+		if strings.HasPrefix(line, "prunable") {
+			cur.Prunable = true
+			continue
+		}
+	}
+	flush()
+	return entries, nil
+}
+
 func underWorkspace(wsRoot, abs string) bool {
 	wsRoot = filepath.Clean(wsRoot)
 	abs = filepath.Clean(abs)

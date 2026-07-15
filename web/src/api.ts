@@ -18,6 +18,8 @@ export type Session = {
   /** Worktree branch metadata when session used isolated checkout. */
   branch?: string;
   worktree?: boolean;
+  worktree_path?: string;
+  base_cwd?: string;
 };
 
 export type AgentInfo = {
@@ -971,6 +973,24 @@ export function gitDiff(params: {
   sp.set("staged", params.staged ? "1" : "0");
   if (params.base) sp.set("base", params.base);
   return request(`/v1/git/diff?${sp}`);
+}
+
+export type GitWorktreeEntry = {
+  path: string;
+  head?: string;
+  branch?: string;
+  bare?: boolean;
+  locked?: boolean;
+  prunable?: boolean;
+  rel?: string;
+  main?: boolean;
+};
+
+export function gitWorktrees(cwd: string): Promise<{
+  cwd?: string;
+  worktrees: GitWorktreeEntry[];
+}> {
+  return request(`/v1/git/worktrees?cwd=${encodeURIComponent(cwd)}`);
 }
 
 export function gitCommit(body: {

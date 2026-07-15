@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/git/status", s.handleGitStatus)
 	mux.HandleFunc("GET /v1/git/diff", s.handleGitDiff)
 	mux.HandleFunc("GET /v1/git/file", s.handleGitFile)
+	mux.HandleFunc("GET /v1/git/worktrees", s.handleGitWorktrees)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 
 	// Gated git write ops (local commit never pushes; PR via authenticated gh)

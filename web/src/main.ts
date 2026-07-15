@@ -71,6 +71,7 @@ import {
   gitDiff,
   gitPullRequest,
   gitStatus,
+  gitWorktrees,
   memoryIndex,
   memorySearch,
   memoryStats,
@@ -88,6 +89,7 @@ import {
   type GHStatus,
   type GitFileEntry,
   type GitStatusResult,
+  type GitWorktreeEntry,
   type MemoryHit,
   type Session,
   type SessionTemplate,
@@ -160,6 +162,8 @@ type AppState = {
   /** When true, new session form creates a folder instead of using the select */
   formCwdNew: boolean;
   formCwdNewName: string;
+  formWorktree: boolean;
+  formWorktreeBranch: string;
   formName: string;
   formPrompt: string;
   /** New project from git */
@@ -238,6 +242,9 @@ type AppState = {
   gitPrDraft: boolean;
   gitPrUrl: string;
   gitBusy: boolean;
+  gitWorktrees: GitWorktreeEntry[];
+  gitWorktreesLoading: boolean;
+  gitWorktreesError: string;
   /** Filter string for git file list */
   gitFileFilter: string;
   /** PR composer expanded */
@@ -265,6 +272,8 @@ const state: AppState = {
   formCwd: ".",
   formCwdNew: false,
   formCwdNewName: "",
+  formWorktree: true,
+  formWorktreeBranch: "",
   formName: "",
   formPrompt: "",
   formGitUrl: "",
@@ -335,6 +344,9 @@ const state: AppState = {
   gitPrDraft: false,
   gitPrUrl: "",
   gitBusy: false,
+  gitWorktrees: [],
+  gitWorktreesLoading: false,
+  gitWorktreesError: "",
   gitFileFilter: "",
   gitPrOpen: false,
   remoteInfo: null,
@@ -1452,6 +1464,7 @@ function projectsListHTML(): string {
         </div>
         <div class="project-card-actions">
           <button type="button" class="primary btn-sm" data-action="project-new-session" data-cwd="${esc(path)}" title="New session here">Session</button>
+          <button type="button" class="ghost btn-sm" data-action="project-worktree-session" data-cwd="${esc(path)}" title="New agent session in isolated git worktree">Worktree</button>
           <button type="button" class="ghost btn-sm" data-action="project-tools" data-cwd="${esc(path)}" title="Tools">Tools</button>
           <button type="button" class="ghost btn-sm" data-action="project-git" data-cwd="${esc(path)}" title="Git changes">Git</button>
           <button type="button" class="ghost btn-sm" data-action="project-remote" data-cwd="${esc(path)}" title="Open remote">Remote</button>
@@ -3146,6 +3159,7 @@ function readCreateForm(): {
   account: string;
   accountMode: string;
   worktree: boolean;
+  worktreeBranch: string;
 } {
   const agentEl = document.getElementById("sess-agent") as HTMLSelectElement | null;
   const cwdEl = document.getElementById("sess-cwd") as HTMLSelectElement | null;
@@ -3161,6 +3175,7 @@ function readCreateForm(): {
   const gitForkEl = document.getElementById("sess-git-fork") as HTMLInputElement | null;
   const gitDepthEl = document.getElementById("sess-git-depth") as HTMLInputElement | null;
   const worktreeEl = document.getElementById("sess-worktree") as HTMLInputElement | null;
+  const worktreeBranchEl = document.getElementById("sess-worktree-branch") as HTMLInputElement | null;
   const accountEl = document.getElementById("sess-account") as HTMLSelectElement | null;
   const modeEl = document.querySelector(
     'input[name="sess-account-mode"]:checked',
@@ -3177,7 +3192,8 @@ function readCreateForm(): {
   const gitBranch = (gitBranchEl?.value ?? state.formGitBranch).trim();
   const gitFork = gitForkEl ? gitForkEl.checked : state.formGitFork;
   const gitDepth = gitDepthEl ? gitDepthEl.checked : state.formGitDepth;
-  const worktree = worktreeEl ? worktreeEl.checked : false;
+  const worktree = worktreeEl ? worktreeEl.checked : state.formWorktree;
+  const worktreeBranch = (worktreeBranchEl?.value ?? state.formWorktreeBranch).trim();
   const account = (accountEl?.value ?? state.formAccount).trim();
   const accountMode = (modeEl?.value || state.formAccountMode || "isolated").trim();
   state.formAgent = agent;
@@ -3191,6 +3207,8 @@ function readCreateForm(): {
   state.formGitBranch = gitBranch;
   state.formGitFork = gitFork;
   state.formGitDepth = gitDepth;
+  state.formWorktree = worktree;
+  state.formWorktreeBranch = worktreeBranch;
   state.formAccount = account;
   state.formAccountMode = accountMode;
   return {
@@ -3208,6 +3226,7 @@ function readCreateForm(): {
     account,
     accountMode,
     worktree,
+    worktreeBranch,
   };
 }
 
@@ -3307,9 +3326,11 @@ async function onCreateSession(ev?: Event): Promise<void> {
       account: form.account || undefined,
       account_mode: form.account ? form.accountMode || "isolated" : undefined,
       worktree: form.worktree || undefined,
+      worktree_branch: form.worktree && form.worktreeBranch ? form.worktreeBranch : undefined,
     });
     state.formName = "";
     state.formPrompt = "";
+    state.formWorktreeBranch = "";
     state.creating = false;
     await closePanelOnly();
     await refreshSessions();
@@ -3317,7 +3338,10 @@ async function onCreateSession(ev?: Event): Promise<void> {
     const accNote = form.account
       ? ` · account ${form.account} (${form.accountMode || "isolated"})`
       : "";
-    const wtNote = form.worktree || sess.worktree ? " · worktree" : "";
+    const wtNote =
+      form.worktree || sess.worktree
+        ? ` · worktree${sess.branch || form.worktreeBranch ? ` ${sess.branch || form.worktreeBranch}` : ""}`
+        : "";
     const dirNote = form.cwdNew ? " · new dir" : "";
     toast(`Started ${sess.agent} in ${sess.cwd || cwd}${dirNote}${accNote}${wtNote}`, "ok");
   } catch (e) {
@@ -4191,15 +4215,29 @@ function newSessionPageHTML(): string {
             <label for="sess-name">Label <span class="opt">optional</span></label>
             <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
           </div>
-          <div class="check-row">
-            <label class="check" title="Isolated git worktree for parallel agents">
-              <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
-              Isolated worktree
-            </label>
-          </div>
           <div class="field">
             <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
             <textarea id="sess-prompt" name="prompt" rows="3" placeholder="Typed into TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
+          </div>
+        </div>
+        <div class="page-card page-card--worktree">
+          <div class="page-card-head">
+            <h2>Git worktree</h2>
+            <span class="opt">parallel agents</span>
+          </div>
+          <p class="form-hint" style="margin:0">
+            Isolates this agent on its own checkout + branch under
+            <code>.agents/worktrees/…</code> so agents don't stomp each other.
+            Requires the workspace to be a git repo.
+          </p>
+          <label class="check check--lg">
+            <input type="checkbox" id="sess-worktree" data-action-change="sess-worktree" ${state.formWorktree ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+            Use isolated worktree for this session
+          </label>
+          <div class="field" id="sess-worktree-branch-wrap" ${state.formWorktree ? "" : "hidden"}>
+            <label for="sess-worktree-branch">Branch name <span class="opt">optional</span></label>
+            <input id="sess-worktree-branch" value="${esc(state.formWorktreeBranch)}" placeholder="agents/&lt;session-id&gt; (default)" autocomplete="off" spellcheck="false" ${state.creating ? "disabled" : ""} />
+            <p class="form-hint">Leave empty to auto-name <code>agents/&lt;short-id&gt;</code> from HEAD.</p>
           </div>
         </div>
         ${accountBlock}
@@ -4893,6 +4931,51 @@ function paintGitPage(_opts?: { animateIn?: boolean }): void {
   paintAppStage();
 }
 
+function gitWorktreesPanelHTML(): string {
+  if (state.gitWorktreesLoading && !state.gitWorktrees.length) {
+    return `<div class="git-wt-panel"><div class="git-col-head"><span>Worktrees</span></div><p class="form-hint" style="padding:0.6rem">Loading…</p></div>`;
+  }
+  if (state.gitWorktreesError && !state.gitWorktrees.length) {
+    return `<div class="git-wt-panel"><div class="git-col-head"><span>Worktrees</span></div><p class="form-hint" style="padding:0.6rem">${esc(state.gitWorktreesError)}</p></div>`;
+  }
+  const rows = (state.gitWorktrees || [])
+    .map((w) => {
+      const label = w.rel || w.path || "";
+      const branch = w.branch || (w.main ? "main" : "detached");
+      const shortHead = (w.head || "").slice(0, 7);
+      return `
+      <div class="git-wt-row ${w.main ? "is-main" : ""}">
+        <div class="git-wt-text">
+          <strong>${esc(w.main ? "main" : branch)}</strong>
+          <code title="${esc(w.path)}">${esc(label)}</code>
+          ${shortHead ? `<span class="opt">${esc(shortHead)}</span>` : ""}
+          ${w.locked ? `<span class="git-chip git-chip--warn">locked</span>` : ""}
+        </div>
+        ${
+          w.main
+            ? ""
+            : `<button type="button" class="ghost btn-sm" data-action="worktree-session" data-cwd="${esc(w.rel || "")}" data-path="${esc(w.path)}" title="Start agent in this worktree">Session</button>`
+        }
+      </div>`;
+    })
+    .join("");
+  return `
+    <div class="git-wt-panel" aria-label="Git worktrees">
+      <div class="git-col-head">
+        <span>Worktrees</span>
+        <span class="git-col-meta">${state.gitWorktrees.length}</span>
+      </div>
+      <div class="git-wt-list">
+        ${rows || `<p class="form-hint" style="padding:0.6rem">No worktrees (not a git repo?)</p>`}
+      </div>
+      <div class="git-wt-actions">
+        <button type="button" class="primary btn-sm" data-action="git-worktree-session" title="New agent session with isolated worktree">
+          New worktree session
+        </button>
+      </div>
+    </div>`;
+}
+
 function gitPageHTML(): string {
   const files = state.gitStatus?.files ?? [];
   return `
@@ -4916,6 +4999,7 @@ function gitPageHTML(): string {
           </label>
         </div>
         ${gitFileListHTML()}
+        ${gitWorktreesPanelHTML()}
       </aside>
       ${gitDiffPaneHTML()}
     </div>
@@ -4978,7 +5062,35 @@ async function refreshGitChanges(): Promise<void> {
     syncGitFormFromDOM();
     paintGitPage();
   }
+  void loadGitWorktrees();
   await loadGitDiff();
+}
+
+async function loadGitWorktrees(): Promise<void> {
+  if (state.panel !== "changes") return;
+  const cwd = gitCwd();
+  state.gitWorktreesLoading = true;
+  state.gitWorktreesError = "";
+  try {
+    const out = await gitWorktrees(cwd);
+    state.gitWorktrees = out.worktrees || [];
+    state.gitWorktreesLoading = false;
+  } catch (e) {
+    state.gitWorktrees = [];
+    state.gitWorktreesLoading = false;
+    state.gitWorktreesError = (e as Error).message || "worktrees unavailable";
+  }
+  // Soft-update worktrees panel without full page repaint if possible
+  const root =
+    document.querySelector("#app-stage[data-git-stage]") ||
+    document.querySelector("#app-stage.app-stage--changes");
+  const panel = root?.querySelector(".git-wt-panel");
+  if (panel) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = gitWorktreesPanelHTML();
+    const next = tmp.firstElementChild;
+    if (next) panel.replaceWith(next);
+  }
 }
 
 async function loadGitDiff(): Promise<void> {
@@ -5706,16 +5818,17 @@ function sessionListHTML(): string {
       const cwdBase = basename(s.cwd);
       const age = relativeTime(s.created_at);
       const tipBits = [s.agent, s.cwd];
+      if (s.worktree) tipBits.push("worktree");
       if (branch) tipBits.push(branch);
       if (age) tipBits.push(age);
       tipBits.push(s.state, "right-click for actions");
       const stateLabel =
         s.state === "running" ? "Live" : s.state === "exited" ? "Exited" : s.state;
       const activeAttr = isActive ? ' data-active="true" aria-current="page"' : "";
-      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav${activeAttr} title="${esc(tipBits.join(" · "))}">
+      return `<a class="session-item ${live}${isActive ? " active" : ""}${cursor} ${ag}${s.worktree ? " is-worktree" : ""}" href="${esc(href)}" role="listitem" data-open="${esc(s.id)}" data-state="${esc(s.state)}" data-nav${activeAttr} title="${esc(tipBits.join(" · "))}">
   <span class="session-dot ${ag}" aria-hidden="true"></span>
   <span class="session-body">
-    <span class="session-name">${esc(label)}</span>
+    <span class="session-name">${esc(label)}${s.worktree ? `<span class="session-wt-badge" title="Isolated git worktree">wt</span>` : ""}</span>
     <span class="session-meta"><span class="session-agent">${esc(s.agent)}</span><span class="session-sep" aria-hidden="true"> · </span><span class="session-cwd">${esc(cwdBase)}</span>${
       branch
         ? `<span class="session-sep" aria-hidden="true"> · </span><span class="session-branch">${esc(branch)}</span>`
@@ -6802,6 +6915,35 @@ function ensureUIDelegation(): void {
         const cwd = actionEl.getAttribute("data-cwd") || ".";
         state.formCwd = cwd;
         state.formCwdNew = false;
+        state.formWorktree = false;
+        openPanel("new");
+        break;
+      }
+      case "project-worktree-session": {
+        ev.preventDefault();
+        const cwd = actionEl.getAttribute("data-cwd") || ".";
+        state.formCwd = cwd;
+        state.formCwdNew = false;
+        state.formWorktree = true;
+        openPanel("new");
+        break;
+      }
+      case "git-worktree-session": {
+        ev.preventDefault();
+        state.formCwd = gitCwd();
+        state.formCwdNew = false;
+        state.formWorktree = true;
+        openPanel("new");
+        break;
+      }
+      case "worktree-session": {
+        ev.preventDefault();
+        // Prefer relative path when listed
+        const cwd = actionEl.getAttribute("data-cwd") || gitCwd();
+        state.formCwd = cwd || ".";
+        state.formCwdNew = false;
+        // Session already in a worktree path — start without nesting unless user wants
+        state.formWorktree = false;
         openPanel("new");
         break;
       }
@@ -7027,6 +7169,11 @@ function ensureUIDelegation(): void {
       if (submit && !state.creating) {
         submit.textContent = state.formCwdNew ? "Create dir & start" : "Start session";
       }
+    }
+    if (kind === "sess-worktree" && el instanceof HTMLInputElement) {
+      state.formWorktree = el.checked;
+      const wrap = document.getElementById("sess-worktree-branch-wrap");
+      if (wrap) wrap.hidden = !el.checked;
     }
     if (kind === "git-check" && el instanceof HTMLInputElement) {
       const path = el.getAttribute("data-path") || "";

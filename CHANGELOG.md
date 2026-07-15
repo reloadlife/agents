@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.10] — 2026-07-15
+
+### Added
+
+- **Git worktrees for agentic sessions** (full product surface)
+  - New session: worktree toggle (on by default) + optional branch name
+  - Session list `wt` badge when isolated
+  - Projects: **Worktree** quick-start action
+  - Git page: worktrees panel + start session from a linked worktree
+  - API: `GET /v1/git/worktrees?cwd=`
+
 ## [0.8.9] — 2026-07-15
 
 ### Added

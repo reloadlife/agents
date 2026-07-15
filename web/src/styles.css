@@ -5123,6 +5123,94 @@ button.git-file-row {
   align-self: flex-start;
 }
 
+
+/* Worktree badges + git worktrees panel */
+.session-wt-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: hsl(215 70% 70%);
+  background: hsl(215 50% 45% / 0.18);
+  border: 1px solid hsl(215 50% 50% / 0.35);
+}
+.session-item.is-worktree .session-cwd {
+  color: hsl(215 55% 72%);
+}
+
+.page-card--worktree {
+  border-color: hsl(215 40% 40% / 0.45);
+  background: linear-gradient(180deg, hsl(215 40% 50% / 0.08), hsl(var(--card) / 0.9));
+}
+.check--lg {
+  font-size: 0.875rem;
+  font-weight: 500;
+  gap: 0.45rem;
+}
+
+.git-wt-panel {
+  border-top: 1px solid hsl(var(--border));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 40%;
+  background: hsl(var(--muted) / 0.12);
+}
+.git-wt-list {
+  flex: 1;
+  overflow: auto;
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.git-wt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.4rem 0.45rem;
+  border-radius: calc(var(--radius-sm) - 1px);
+  border: 1px solid transparent;
+}
+.git-wt-row:hover {
+  background: hsl(var(--accent) / 0.5);
+}
+.git-wt-row.is-main {
+  opacity: 0.9;
+}
+.git-wt-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.git-wt-text strong {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.git-wt-text code {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: hsl(var(--muted-foreground));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.git-wt-actions {
+  padding: 0.4rem 0.45rem 0.55rem;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+}
+
 /* Projects list */
 .projects-filter {
   display: flex;

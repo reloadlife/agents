@@ -156,3 +156,50 @@ func TestCreateAndRemoveSessionWorktree(t *testing.T) {
 		t.Fatal("expected error for non-git cwd")
 	}
 }
+
+
+func TestListWorktrees(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "app")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	run("git", "init")
+	run("git", "config", "user.email", "t@t")
+	run("git", "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", ".")
+	run("git", "commit", "-m", "init")
+	wt, err := CreateSessionWorktree(root, "app", repo, "s_01TESTWT01", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := ListWorktrees(root, "app", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) < 2 {
+		t.Fatalf("want at least main+linked, got %d %#v", len(list), list)
+	}
+	var found bool
+	for _, e := range list {
+		if e.Path == wt.Abs || e.Rel == wt.Path {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("linked worktree not listed: %#v", list)
+	}
+	_ = RemoveWorktree(repo, wt.Abs)
+}
