@@ -92,6 +92,7 @@ import {
   type SessionTemplate,
   type SSHKey,
   type TaskStatus,
+  type WorkspaceOpenResult,
   type WorkspaceTask,
 } from "./api";
 import {
@@ -130,7 +131,7 @@ type OpenTab = {
   state: string;
 };
 
-type Panel = null | "new" | "new-project" | "tools" | "help" | "changes";
+type Panel = null | "new" | "new-project" | "tools" | "help" | "changes" | "remote";
 type SettingsTab = ProfileTab;
 type ConnState = "idle" | "connecting" | "live" | "reconnecting" | "error";
 type ToastKind = "info" | "ok" | "err";
@@ -227,6 +228,10 @@ type AppState = {
   gitFileFilter: string;
   /** PR composer expanded */
   gitPrOpen: boolean;
+  /** Open remote page payload */
+  remoteInfo: WorkspaceOpenResult | null;
+  remoteLoading: boolean;
+  remoteError: string;
 };
 
 const state: AppState = {
@@ -311,6 +316,9 @@ const state: AppState = {
   gitBusy: false,
   gitFileFilter: "",
   gitPrOpen: false,
+  remoteInfo: null,
+  remoteLoading: false,
+  remoteError: "",
 };
 
 /** Only one live PTY attach at a time (active tab). Others stay open in tmux. */
@@ -368,6 +376,7 @@ function routeFromUI(): Route {
   }
   if (state.panel === "changes") return { name: "changes" };
   if (state.panel === "help") return { name: "help" };
+  if (state.panel === "remote") return { name: "remote" };
   if (state.panel === "new-project") return { name: "new-project" };
   if (state.panel === "new") return { name: "new" };
   if (state.activeId) {
@@ -453,6 +462,10 @@ async function applyRoute(
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "changes") openPanelOnly("changes");
         break;
+      case "remote":
+        if (state.settingsOpen) await closeSettingsOnly();
+        if (state.panel !== "remote") openPanelOnly("remote");
+        break;
       case "help":
         if (state.settingsOpen) await closeSettingsOnly();
         if (state.panel !== "help") openPanelOnly("help");
@@ -529,72 +542,70 @@ function ensureRouterBound(): void {
   });
 }
 
-/** UI-only panel open (no history). */
+/** Panels that render as full in-shell stages (not modals). */
+function isStagePanel(p: Panel): p is Exclude<Panel, null> {
+  return p === "new" || p === "new-project" || p === "tools" || p === "help" || p === "changes" || p === "remote";
+}
+
+/** UI-only panel open (no history). All primary panels are in-shell stages. */
 function openPanelOnly(p: Panel): void {
   if (!p) return;
   state.panel = p;
-  if (p === "new") state.createError = "";
-  if ((p === "tools" || p === "changes") && state.settingsOpen) {
+  if (p === "new" || p === "new-project") state.createError = "";
+  if (state.settingsOpen) {
     state.settingsOpen = false;
     document.getElementById("settings-root")?.remove();
   }
-  if (p === "tools" || p === "changes") {
+  if (p === "tools" || p === "changes" || p === "remote") {
     const tab = state.openTabs.find((t) => t.id === state.activeId);
     if (tab?.cwd && state.workspaces.includes(tab.cwd)) {
       state.formCwd = tab.cwd;
     }
   }
-  // Git is an in-shell full stage — close any modal panel chrome
-  if (p === "changes") {
-    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
-    document.getElementById("panel-overlay")?.remove();
-  } else {
-    // Opening a modal panel dismisses the git stage
-    unmountGitStage();
-  }
+  // Close leftover modal chrome — stages own the main area
+  if (isAppDrawerOpen()) closeAppDrawer("programmatic");
+  document.getElementById("panel-overlay")?.remove();
   paintSidebarActive();
   window.queueMicrotask(async () => {
     if (state.panel !== p) return;
-    if (p === "changes") {
-      paintGitPage({ animateIn: true });
-      void refreshGitChanges();
-      return;
-    }
-    if (p === "new") {
-      await refreshAgentAccountsForForm(state.formAgent);
-    }
     try {
-      await paintPanel({ animateIn: true });
+      if (p === "new") {
+        await refreshAgentAccountsForForm(state.formAgent);
+      }
+      if (p === "remote") {
+        void loadRemotePage();
+      }
+      paintAppStage();
+      if (p === "changes") void refreshGitChanges();
+      if (p === "tools") void refreshToolsStatus();
+      if (p === "new") {
+        window.requestAnimationFrame(() => {
+          const name = document.getElementById("sess-name") as HTMLInputElement | null;
+          const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
+          (name ?? agent)?.focus();
+        });
+      }
+      if (p === "new-project") {
+        window.requestAnimationFrame(() => {
+          const url = document.getElementById("proj-git-url") as HTMLInputElement | null;
+          url?.focus();
+        });
+      }
     } catch (e) {
-      console.error("paintPanel failed", e);
-      toast((e as Error).message || "failed to open panel", "err", 5000);
-      return;
+      console.error("openPanelOnly failed", e);
+      toast((e as Error).message || "failed to open page", "err", 5000);
     }
-    if (p === "new") {
-      window.requestAnimationFrame(() => {
-        const name = document.getElementById("sess-name") as HTMLInputElement | null;
-        const agent = document.getElementById("sess-agent") as HTMLSelectElement | null;
-        (name ?? agent)?.focus();
-      });
-    }
-    if (p === "new-project") {
-      window.requestAnimationFrame(() => {
-        const url = document.getElementById("proj-git-url") as HTMLInputElement | null;
-        url?.focus();
-      });
-    }
-    if (p === "tools") void refreshToolsStatus();
   });
 }
 
 async function closePanelOnly(): Promise<void> {
   if (isAppDrawerOpen()) closeAppDrawer("programmatic");
-  const wasGit = state.panel === "changes";
+  const hadStage = isStagePanel(state.panel);
   state.panel = null;
   state.createError = "";
   document.getElementById("panel-overlay")?.remove();
-  if (wasGit) {
-    unmountGitStage();
+  if (hadStage) {
+    unmountAppStage();
     paintBreadcrumb(true);
   }
   paintSidebarActive();
@@ -605,11 +616,10 @@ function openSettingsOnly(tab?: SettingsTab): void {
   state.settingsOpen = true;
   state.sidebarOpen = false;
   if (state.panel) {
-    const wasGit = state.panel === "changes";
     state.panel = null;
     if (isAppDrawerOpen()) closeAppDrawer("programmatic");
     document.getElementById("panel-overlay")?.remove();
-    if (wasGit) unmountGitStage();
+    unmountAppStage();
   }
   paintSidebarActive();
   void loadSettingsData().then(() => paintSettings({ animateIn: true }));
@@ -1161,51 +1171,110 @@ async function openShellTerminal(cwd?: string): Promise<void> {
   }
 }
 
-/** Drawer with copy-paste commands to open cwd in Cursor / Zed / VS Code (SSH remote). */
+/** Open remote as full in-shell page (not a drawer). */
 async function showOpenRemoteDrawer(cwd?: string): Promise<void> {
-  const useCwd = (cwd || toolsCwd() || state.formCwd || state.defaultCwd || ".").trim() || ".";
+  if (cwd) {
+    state.formCwd = cwd;
+  }
+  openPanel("remote");
+}
+
+async function loadRemotePage(): Promise<void> {
+  const useCwd = (toolsCwd() || state.formCwd || state.defaultCwd || ".").trim() || ".";
+  state.remoteLoading = true;
+  state.remoteError = "";
+  if (state.panel === "remote") paintAppStage();
   try {
     const out = await openWorkspace({ cwd: useCwd });
-    const lines: string[] = [
-      `Workspace: ${out.cwd}`,
-      `Absolute:  ${out.abs}`,
-      out.ssh_host ? `SSH host:  ${out.ssh_host}` : "",
-      "",
-      "── Run on your laptop (SSH Remote) ──",
-      out.commands.cursor_remote || "",
-      out.commands.zed_remote || "",
-      out.commands.vscode_remote || "",
-      "",
-      "── Run on this agents host (if editor installed) ──",
-      out.commands.cursor_local || "",
-      out.commands.zed_local || "",
-      out.commands.vscode_local || "",
-      "",
-      "── SSH shell ──",
-      out.commands.ssh || "",
-      "",
-      out.editors?.length
-        ? `Local binaries on host: ${out.editors.join(", ")}`
-        : "No cursor/zed/code binary on host PATH (remote commands still work from your laptop).",
-    ].filter((l) => l !== undefined);
-    state.drawer = {
-      title: `Open remote · ${out.cwd}`,
-      body: lines.filter(Boolean).join("\n"),
-    };
-    void paintDrawer();
-    // Also put the primary Cursor remote command on the clipboard when possible.
+    state.remoteInfo = out;
+    state.remoteLoading = false;
+    state.remoteError = "";
+    if (state.panel === "remote") paintAppStage();
     const primary = out.commands.cursor_remote || out.commands.zed_remote || out.commands.vscode_remote;
     if (primary) {
       try {
         await navigator.clipboard.writeText(primary);
         toast("Copied Cursor remote command", "ok", 2500);
       } catch {
-        toast("Commands ready — copy from drawer", "info", 2500);
+        toast("Commands ready — copy from the page", "info", 2500);
       }
     }
   } catch (e) {
-    toast((e as Error).message || "open remote failed", "err");
+    state.remoteInfo = null;
+    state.remoteLoading = false;
+    state.remoteError = (e as Error).message || "open remote failed";
+    if (state.panel === "remote") paintAppStage();
+    toast(state.remoteError, "err");
   }
+}
+
+function remoteCmdCard(title: string, cmd: string | undefined, hint?: string): string {
+  if (!cmd) return "";
+  return `
+    <div class="remote-cmd">
+      <div class="remote-cmd-head">
+        <strong>${esc(title)}</strong>
+        ${hint ? `<span class="opt">${esc(hint)}</span>` : ""}
+      </div>
+      <pre class="remote-cmd-code">${esc(cmd)}</pre>
+      <button type="button" class="ghost btn-sm" data-action="copy-text" data-text="${esc(cmd)}">Copy</button>
+    </div>`;
+}
+
+function remotePageHTML(): string {
+  const info = state.remoteInfo;
+  const actions = `
+    <label class="git-workspace">
+      <span class="git-workspace-label">Workspace</span>
+      <select id="remote-cwd-select" class="git-cwd-select" data-action-change="remote-cwd" ${state.remoteLoading ? "disabled" : ""}>
+        ${workspaceOptionsHTML()}
+      </select>
+    </label>
+    <button type="button" class="ghost btn-sm" data-action="remote-refresh" ${state.remoteLoading ? "disabled" : ""}>
+      ${state.remoteLoading ? "Loading…" : "Refresh"}
+    </button>`;
+
+  let body = "";
+  if (state.remoteLoading && !info) {
+    body = `<div class="page-empty"><p class="git-empty-title">Loading commands…</p></div>`;
+  } else if (state.remoteError && !info) {
+    body = `<div class="page-empty"><p class="git-empty-title">Failed to load</p><p class="git-empty-hint">${esc(state.remoteError)}</p></div>`;
+  } else if (info) {
+    const c = info.commands || {};
+    body = `
+      <div class="remote-meta page-card">
+        <div class="remote-meta-row"><span>Workspace</span><code>${esc(info.cwd)}</code></div>
+        <div class="remote-meta-row"><span>Absolute</span><code>${esc(info.abs)}</code></div>
+        ${info.ssh_host ? `<div class="remote-meta-row"><span>SSH host</span><code>${esc(info.ssh_host)}</code></div>` : ""}
+        <div class="remote-meta-row"><span>Host editors</span><span>${
+          info.editors?.length ? esc(info.editors.join(", ")) : "none on PATH (remote still works)"
+        }</span></div>
+      </div>
+      <div class="remote-section">
+        <h2 class="remote-section-title">On your laptop (SSH remote)</h2>
+        <div class="remote-cmd-grid">
+          ${remoteCmdCard("Cursor", c.cursor_remote, "recommended")}
+          ${remoteCmdCard("Zed", c.zed_remote)}
+          ${remoteCmdCard("VS Code", c.vscode_remote)}
+        </div>
+      </div>
+      <div class="remote-section">
+        <h2 class="remote-section-title">On this host</h2>
+        <div class="remote-cmd-grid">
+          ${remoteCmdCard("Cursor local", c.cursor_local)}
+          ${remoteCmdCard("Zed local", c.zed_local)}
+          ${remoteCmdCard("VS Code local", c.vscode_local)}
+          ${remoteCmdCard("SSH shell", c.ssh)}
+        </div>
+      </div>`;
+  } else {
+    body = `<div class="page-empty"><p class="git-empty-title">No data</p></div>`;
+  }
+
+  return `
+    ${pageHeroHTML("Workspace", "Open remote", "Copy commands to open this workspace in Cursor, Zed, or VS Code.", actions)}
+    ${state.remoteError && info ? `<div class="git-banner" role="alert">${esc(state.remoteError)}</div>` : ""}
+    <div class="page-body page-body--wide">${body}</div>`;
 }
 
 async function showDashboardDrawer(): Promise<void> {
@@ -2247,6 +2316,7 @@ function openPanel(p: Panel): void {
   else if (p === "new-project") navigate({ name: "new-project" }, { apply: false });
   else if (p === "help") navigate({ name: "help" }, { apply: false });
   else if (p === "changes") navigate({ name: "changes" }, { apply: false });
+  else if (p === "remote") navigate({ name: "remote" }, { apply: false });
   else if (p === "tools") {
     if (state.activeId) {
       const s =
@@ -3721,39 +3791,6 @@ async function onGHSetupGit(): Promise<void> {
   }
 }
 
-function panelTitle(p: Panel): string {
-  if (p === "new") return "New session";
-  if (p === "new-project") return "New project";
-  if (p === "tools") return "Quick tools";
-  if (p === "changes") return "Changes";
-  if (p === "help") return "Shortcuts";
-  return "Panel";
-}
-
-/** Strip modal shell so Vaul can render the body under its title. */
-function stripModalChrome(full: string): string {
-  try {
-    const doc = new DOMParser().parseFromString(full, "text/html");
-    // Prefer .modal-body first — nested forms (e.g. mem-search in tools) must not win.
-    const body = doc.querySelector(".modal-body");
-    if (body) return body.outerHTML;
-    const form = doc.querySelector("form.sheet-form, form");
-    if (form) return form.outerHTML;
-  } catch {
-    /* fall through */
-  }
-  return full;
-}
-
-function panelBodyHTML(p: Panel): string {
-  if (p === "new") return stripModalChrome(newSessionHTML());
-  if (p === "new-project") return stripModalChrome(newProjectHTML());
-  if (p === "tools") return stripModalChrome(toolsHTML());
-  if (p === "changes") return stripModalChrome(gitChangesHTML());
-  if (p === "help") return stripModalChrome(helpHTML());
-  return "";
-}
-
 async function paintDrawer(): Promise<void> {
   // Legacy desktop overlay cleanup
   document.getElementById("drawer")?.remove();
@@ -3785,48 +3822,21 @@ async function paintDrawer(): Promise<void> {
   });
 }
 
+/** Re-paint the active in-shell stage (forms, tools, git, …). */
 async function paintPanel(_opts?: { animateIn?: boolean }): Promise<void> {
-  // Legacy desktop overlay cleanup
   document.getElementById("panel-overlay")?.remove();
-
   if (!state.panel) {
     if (isAppDrawerOpen() && !state.drawer) {
       closeAppDrawer("programmatic");
     }
-    unmountGitStage();
+    unmountAppStage();
     return;
   }
-
-  // Git changes is an in-shell stage, not a modal sheet
-  if (state.panel === "changes") {
-    if (isAppDrawerOpen()) closeAppDrawer("programmatic");
-    paintGitPage();
-    return;
+  if (isAppDrawerOpen() && !state.drawer) {
+    closeAppDrawer("programmatic");
   }
-
-  // Other panels use app modal (dialog sheet)
-  unmountGitStage();
-  if (state.drawer) {
-    state.drawer = null;
-  }
-  const p = state.panel;
-  await ensureVaulHost();
-  openAppDrawer({
-    title: panelTitle(p),
-    html: panelBodyHTML(p),
-    // dialog = compact forms; tall = tools/help (scrollable, not stretched)
-    variant: p === "new" || p === "new-project" ? "dialog" : "tall",
-    onClose: (reason) => {
-      if (reason === "user") {
-        state.panel = null;
-        state.createError = "";
-        paintSidebarActive();
-        term?.focus();
-        syncUrlFromUI({ replace: true });
-      }
-    },
-  });
-  if (p === "tools") {
+  paintAppStage();
+  if (state.panel === "tools") {
     window.setTimeout(() => void refreshToolsStatus(), 60);
   }
 }
@@ -3862,105 +3872,131 @@ function workspaceOptionsHTML(): string {
     .join("");
 }
 
-function newSessionHTML(): string {
-  // Body only — Vaul owns title + ✕
+function pageHeroHTML(kicker: string, title: string, sub?: string, actionsHtml = ""): string {
+  return `
+    <header class="page-hero">
+      <div class="page-hero-text">
+        <div class="page-hero-kicker">${esc(kicker)}</div>
+        <h1 class="page-hero-title">${esc(title)}</h1>
+        ${sub ? `<p class="page-hero-sub">${sub}</p>` : ""}
+      </div>
+      ${actionsHtml ? `<div class="page-hero-actions">${actionsHtml}</div>` : ""}
+    </header>`;
+}
+
+function newSessionPageHTML(): string {
   const accountBlock = state.agentAccountPlatform
-    ? `<details class="details-block" ${state.formAccount ? "open" : ""}>
-        <summary>Account <span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></summary>
-        <div class="field" style="margin-top:0.5rem">
+    ? `<div class="page-card">
+        <div class="page-card-head"><h2>Account</h2><span class="opt">${esc(platformLabel(state.agentAccountPlatform))}</span></div>
+        <div class="field">
+          <label for="sess-account">Profile</label>
           <select id="sess-account" ${state.creating ? "disabled" : ""}>
             ${accountOptionsHTML()}
           </select>
-          <div class="check-row" style="margin-top:0.45rem">
-            <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated</label>
-            <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global</label>
-          </div>
         </div>
-      </details>`
+        <div class="check-row">
+          <label class="check"><input type="radio" name="sess-account-mode" value="isolated" ${state.formAccountMode !== "global" ? "checked" : ""} /> Isolated</label>
+          <label class="check"><input type="radio" name="sess-account-mode" value="global" ${state.formAccountMode === "global" ? "checked" : ""} /> Global</label>
+        </div>
+      </div>`
     : "";
   return `
-    <form id="create-form" class="modal-body sheet-form" data-action-form="create-session">
-      <div class="field-grid">
-        <div class="field">
-          <label for="sess-agent">Agent</label>
-          <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
-            ${agentSwatchHTML(state.formAgent)}
-            <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
-              ${agentOptionsHTML()}
-            </select>
+    ${pageHeroHTML("Create", "New session", "Start an agent TTY in a workspace.")}
+    <div class="page-body page-body--narrow">
+      <form id="create-form" class="page-form" data-action-form="create-session">
+        <div class="page-card">
+          <div class="page-card-head"><h2>Session</h2></div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="sess-agent">Agent</label>
+              <div class="agent-select-row ${agentClass(state.formAgent)}" id="sess-agent-row">
+                ${agentSwatchHTML(state.formAgent)}
+                <select id="sess-agent" name="agent" required ${state.creating ? "disabled" : ""} data-action-change="sess-agent">
+                  ${agentOptionsHTML()}
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="sess-cwd">Workspace</label>
+              <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
+                ${workspaceOptionsHTML()}
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="sess-name">Label <span class="opt">optional</span></label>
+            <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
+          </div>
+          <div class="check-row">
+            <label class="check" title="Isolated git worktree for parallel agents">
+              <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
+              Isolated worktree
+            </label>
+          </div>
+          <div class="field">
+            <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
+            <textarea id="sess-prompt" name="prompt" rows="3" placeholder="Typed into TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
           </div>
         </div>
-        <div class="field">
-          <label for="sess-cwd">Workspace</label>
-          <select id="sess-cwd" name="cwd" required ${state.creating ? "disabled" : ""}>
-            ${workspaceOptionsHTML()}
-          </select>
+        ${accountBlock}
+        <p class="form-hint">Need a repo first? <a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a></p>
+        ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
+        <div class="page-actions">
+          <button type="button" class="ghost" data-action="close-panel">Cancel</button>
+          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
+            ${state.creating ? "Starting…" : "Start session"}
+          </button>
         </div>
-      </div>
-      <div class="field">
-        <label for="sess-name">Label <span class="opt">optional</span></label>
-        <input id="sess-name" name="name" value="${esc(state.formName)}" placeholder="e.g. fix-auth" autocomplete="off" ${state.creating ? "disabled" : ""} />
-      </div>
-      <div class="check-row" style="margin-bottom:0.75rem">
-        <label class="check" title="Isolated git worktree for parallel agents">
-          <input type="checkbox" id="sess-worktree" ${state.creating ? "disabled" : ""} />
-          Isolated worktree
-        </label>
-      </div>
-      ${accountBlock}
-      <div class="field">
-        <label for="sess-prompt">Seed prompt <span class="opt">optional</span></label>
-        <textarea id="sess-prompt" name="prompt" rows="2" placeholder="Typed into TTY after start" ${state.creating ? "disabled" : ""}>${esc(state.formPrompt)}</textarea>
-      </div>
-      <p class="form-hint"><a href="/project/new" data-nav data-action="new-project" class="linkish">Clone a project</a> first if needed</p>
-      ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
-      <div class="modal-actions">
-        <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-          ${state.creating ? "Starting…" : "Start session"}
-        </button>
-      </div>
-    </form>`;
+      </form>
+    </div>`;
 }
 
-function newProjectHTML(): string {
+function newProjectPageHTML(): string {
   return `
-    <form id="project-form" class="modal-body sheet-form" data-action-form="create-project">
-      <div class="field">
-        <label for="proj-git-url">Repo URL or owner/repo</label>
-        <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
-      </div>
-      <div class="field-grid">
-        <div class="field">
-          <label for="proj-git-name">Folder <span class="opt">optional</span></label>
-          <input id="proj-git-name" name="name" value="${esc(state.formGitName)}" placeholder="repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
+    ${pageHeroHTML("Create", "New project", "Clone a Git repository into the workspace root.")}
+    <div class="page-body page-body--narrow">
+      <form id="project-form" class="page-form" data-action-form="create-project">
+        <div class="page-card">
+          <div class="page-card-head"><h2>Repository</h2></div>
+          <div class="field">
+            <label for="proj-git-url">Repo URL or owner/repo</label>
+            <input id="proj-git-url" name="url" value="${esc(state.formGitUrl)}" placeholder="https://github.com/org/app.git or org/app" required autocomplete="off" ${state.creating ? "disabled" : ""} autofocus />
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="proj-git-name">Folder <span class="opt">optional</span></label>
+              <input id="proj-git-name" name="name" value="${esc(state.formGitName)}" placeholder="repo name" autocomplete="off" ${state.creating ? "disabled" : ""} />
+            </div>
+            <div class="field">
+              <label for="proj-git-branch">Branch <span class="opt">optional</span></label>
+              <input id="proj-git-branch" name="branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
+            </div>
+          </div>
+          <div class="check-row check-row--wrap">
+            <label class="check">
+              <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+              Fork on GitHub first
+            </label>
+            <label class="check">
+              <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
+              Shallow clone
+            </label>
+            <label class="check">
+              <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
+              Open session after clone
+            </label>
+          </div>
         </div>
-        <div class="field">
-          <label for="proj-git-branch">Branch <span class="opt">optional</span></label>
-          <input id="proj-git-branch" name="branch" value="${esc(state.formGitBranch)}" placeholder="default" autocomplete="off" ${state.creating ? "disabled" : ""} />
+        <p class="form-hint">Auth via SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">GitHub settings</a></p>
+        ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
+        <div class="page-actions">
+          <button type="button" class="ghost" data-action="close-panel">Cancel</button>
+          <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
+            ${state.creating ? "Cloning…" : "Clone project"}
+          </button>
         </div>
-      </div>
-      <div class="check-row" style="margin-bottom:0.75rem">
-        <label class="check">
-          <input type="checkbox" id="proj-git-fork" ${state.formGitFork ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-          Fork on GitHub first
-        </label>
-        <label class="check">
-          <input type="checkbox" id="proj-git-depth" ${state.formGitDepth ? "checked" : ""} ${state.creating ? "disabled" : ""} />
-          Shallow clone
-        </label>
-        <label class="check">
-          <input type="checkbox" id="proj-start-session" checked ${state.creating ? "disabled" : ""} />
-          Open session after clone
-        </label>
-      </div>
-      <p class="form-hint">Auth via SSH or <a href="/profile/github" data-nav data-action="open-settings" data-tab="github" class="linkish">GitHub settings</a></p>
-      ${state.createError ? `<p class="form-error" role="alert">${esc(state.createError)}</p>` : ""}
-      <div class="modal-actions">
-        <button class="primary" type="submit" ${state.creating ? "disabled" : ""}>
-          ${state.creating ? "Cloning…" : "Clone project"}
-        </button>
-      </div>
-    </form>`;
+      </form>
+    </div>`;
 }
 
 function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
@@ -4047,19 +4083,21 @@ function workspaceToolsBodyHTML(opts?: { settings?: boolean }): string {
     </div>`;
 }
 
-function toolsHTML(): string {
+function toolsPageHTML(): string {
+  const actions = `
+    <button type="button" class="primary btn-sm" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
+    <button type="button" class="ghost btn-sm" data-action="open-remote">${iconSvg("external")} Remote</button>
+    <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Changes</button>`;
   return `
-    <div class="modal-body tools-body sheet-form">
-      <div class="btn-row tools-quick">
-        <button type="button" class="primary btn-sm" data-action="open-shell">${iconSvg("terminal")} Terminal</button>
-        <button type="button" class="ghost btn-sm" data-action="open-remote">${iconSvg("external")} Open remote</button>
-        <button type="button" class="ghost btn-sm" data-action="git-changes">${iconSvg("git-branch")} Git changes</button>
+    ${pageHeroHTML("Workspace", "Tools", "Context, map, memory, tasks, and browser stack for the active cwd.", actions)}
+    <div class="page-body">
+      <div class="page-tools">
+        ${workspaceToolsBodyHTML()}
+        <p class="form-hint tools-foot">
+          Accounts, GitHub, SSH →
+          <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Open settings</button>
+        </p>
       </div>
-      ${workspaceToolsBodyHTML()}
-      <p class="form-hint tools-foot">
-        Accounts, GitHub, SSH →
-        <button type="button" class="linkish" data-action="open-settings" data-tab="accounts">Open settings</button>
-      </p>
     </div>`;
 }
 
@@ -4448,38 +4486,103 @@ function gitComposerHTML(): string {
     </footer>`;
 }
 
-function unmountGitStage(): void {
-  document.getElementById("git-stage")?.remove();
+function unmountAppStage(): void {
+  document.getElementById("app-stage")?.remove();
+  document.getElementById("git-stage")?.remove(); // legacy
   document.getElementById("git-page-root")?.remove();
   const main = document.querySelector(".main");
-  main?.classList.remove("main--git");
+  main?.classList.remove(
+    "main--stage",
+    "main--git",
+    "main--tools",
+    "main--form",
+    "main--remote",
+    "main--help",
+  );
   const term = document.querySelector<HTMLElement>(".term-wrap");
   if (term) term.hidden = false;
   const tabs = document.getElementById("tabs");
   if (tabs) tabs.hidden = false;
 }
 
-function paintGitPage(_opts?: { animateIn?: boolean }): void {
-  if (state.panel !== "changes" || !state.shellMounted) {
-    unmountGitStage();
+/** @deprecated alias */
+function unmountGitStage(): void {
+  unmountAppStage();
+}
+
+function stageMeta(p: Exclude<Panel, null>): {
+  title: string;
+  kicker: string;
+  aria: string;
+  cls: string;
+} {
+  switch (p) {
+    case "new":
+      return { title: "New session", kicker: "Create", aria: "New session", cls: "main--form" };
+    case "new-project":
+      return { title: "New project", kicker: "Create", aria: "New project", cls: "main--form" };
+    case "tools":
+      return { title: "Tools", kicker: "Workspace", aria: "Workspace tools", cls: "main--tools" };
+    case "changes":
+      return { title: "Changes", kicker: "Source control", aria: "Git changes", cls: "main--git" };
+    case "remote":
+      return { title: "Open remote", kicker: "Workspace", aria: "Open remote editor", cls: "main--remote" };
+    case "help":
+      return { title: "Shortcuts", kicker: "Help", aria: "Keyboard shortcuts", cls: "main--help" };
+    default:
+      return { title: "Page", kicker: "App", aria: "Page", cls: "main--form" };
+  }
+}
+
+function stageBodyHTML(p: Exclude<Panel, null>): string {
+  switch (p) {
+    case "new":
+      return newSessionPageHTML();
+    case "new-project":
+      return newProjectPageHTML();
+    case "tools":
+      return toolsPageHTML();
+    case "changes":
+      return gitPageHTML();
+    case "remote":
+      return remotePageHTML();
+    case "help":
+      return helpPageHTML();
+    default:
+      return "";
+  }
+}
+
+/** Mount active panel as full in-shell stage under the topbar. */
+function paintAppStage(): void {
+  if (!state.shellMounted || !isStagePanel(state.panel)) {
+    unmountAppStage();
     return;
   }
+  const p = state.panel;
+  const meta = stageMeta(p);
   const main = document.querySelector(".main");
   if (!main) return;
-  main.classList.add("main--git");
+
+  main.classList.remove(
+    "main--stage",
+    "main--git",
+    "main--tools",
+    "main--form",
+    "main--remote",
+    "main--help",
+  );
+  main.classList.add("main--stage", meta.cls);
 
   const term = main.querySelector<HTMLElement>(".term-wrap");
   if (term) term.hidden = true;
   const tabs = document.getElementById("tabs");
   if (tabs) tabs.hidden = true;
 
-  let stage = document.getElementById("git-stage");
+  let stage = document.getElementById("app-stage");
   if (!stage) {
     stage = document.createElement("div");
-    stage.id = "git-stage";
-    stage.className = "git-stage";
-    stage.setAttribute("role", "main");
-    stage.setAttribute("aria-label", "Git changes");
+    stage.id = "app-stage";
     if (term) term.before(stage);
     else {
       const status = main.querySelector(".status-bar");
@@ -4487,16 +4590,29 @@ function paintGitPage(_opts?: { animateIn?: boolean }): void {
       else main.appendChild(stage);
     }
   }
+  stage.className = `app-stage app-stage--${p}`;
+  stage.setAttribute("role", "main");
+  stage.setAttribute("aria-label", meta.aria);
   stage.hidden = false;
-  stage.innerHTML = gitPageHTML();
+  stage.innerHTML = stageBodyHTML(p);
+  if (p === "changes") stage.setAttribute("data-git-stage", "1");
+  else stage.removeAttribute("data-git-stage");
+
   paintBreadcrumb(true);
 
-  const filter = document.getElementById("git-file-filter") as HTMLInputElement | null;
-  filter?.addEventListener("input", () => {
-    state.gitFileFilter = filter.value;
-    const list = document.querySelector("#git-stage [data-git-files]");
-    if (list) list.outerHTML = gitFileListHTML();
-  });
+  if (p === "changes") {
+    const filter = document.getElementById("git-file-filter") as HTMLInputElement | null;
+    filter?.addEventListener("input", () => {
+      state.gitFileFilter = filter.value;
+      const list = document.querySelector("#app-stage [data-git-files], #git-stage [data-git-files]");
+      if (list) list.outerHTML = gitFileListHTML();
+    });
+  }
+}
+
+/** @deprecated — use paintAppStage */
+function paintGitPage(_opts?: { animateIn?: boolean }): void {
+  paintAppStage();
 }
 
 function gitPageHTML(): string {
@@ -4526,10 +4642,6 @@ function gitPageHTML(): string {
       ${gitDiffPaneHTML()}
     </div>
     ${gitComposerHTML()}`;
-}
-
-function gitChangesHTML(): string {
-  return gitPageHTML();
 }
 
 function syncGitFormFromDOM(): void {
@@ -4563,7 +4675,9 @@ async function refreshGitChanges(): Promise<void> {
   state.gitLoading = true;
   state.gitError = "";
   if (state.panel === "changes") {
-    const chips = document.querySelector("#git-stage .git-hero-chips");
+    const chips = document.querySelector(
+      "#app-stage .git-hero-chips, #git-stage .git-hero-chips",
+    );
     if (chips) chips.innerHTML = `<span class="git-chip">Loading status…</span>`;
   }
   try {
@@ -4621,7 +4735,10 @@ async function loadGitDiff(): Promise<void> {
 }
 
 function paintGitDiffOnly(): void {
-  const root = document.getElementById("git-stage");
+  const root =
+    document.querySelector<HTMLElement>("#app-stage[data-git-stage]") ||
+    document.querySelector<HTMLElement>("#app-stage.app-stage--changes") ||
+    document.getElementById("git-stage");
   if (!root) return;
 
   // Refresh diff pane header + body without wiping commit composer
@@ -4731,9 +4848,11 @@ async function onGitCreatePR(): Promise<void> {
 }
 
 
-function helpHTML(): string {
+function helpPageHTML(): string {
   return `
-    <div class="modal-body help-body sheet-form">
+    ${pageHeroHTML("Help", "Shortcuts", "Bare keys outside the terminal · Alt+key while focused · ⌘/Ctrl+K palette")}
+    <div class="page-body page-body--wide">
+      <div class="help-page"><div class="help-body">
       <p class="form-hint help-lede">
         <kbd>Ctrl</kbd><kbd>Tab</kbd> always switches tabs (even over the agent).
       </p>
@@ -4799,6 +4918,8 @@ function helpHTML(): string {
         </section>
       </div>
       <p class="form-hint help-foot">Tab close never kills the agent — use <kbd>s</kbd> Stop or <kbd>⇧</kbd><kbd>d</kbd> Delete.</p>
+    </div>
+      </div>
     </div>`;
 }
 
@@ -5111,11 +5232,36 @@ function crumbSep(): string {
 }
 
 function breadcrumbHTML(): string {
-  if (state.panel === "changes") {
+  const stageCrumb: Partial<Record<Exclude<Panel, null>, string>> = {
+    changes: "Changes",
+    tools: "Tools",
+    new: "New session",
+    "new-project": "New project",
+    remote: "Open remote",
+    help: "Shortcuts",
+  };
+  if (state.panel && stageCrumb[state.panel]) {
+    // Session-scoped tools keep project → session → Tools trail
+    if (state.panel === "tools" && state.activeId) {
+      const tab = state.openTabs.find((t) => t.id === state.activeId);
+      if (tab) {
+        const sessHref = sessionPath(tab.cwd, tab.id);
+        const toolsHref = sessionPath(tab.cwd, tab.id, true);
+        return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
+          <a href="/desk" data-nav data-route="desk">Desk</a>
+          ${crumbSep()}
+          <a href="${esc(sessHref)}" data-nav title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(basename(tab.cwd))}</a>
+          ${crumbSep()}
+          <a href="${esc(sessHref)}" data-nav title="${esc(tab.id)}">${esc(tab.title)}</a>
+          ${crumbSep()}
+          <a href="${esc(toolsHref)}" data-nav class="current" aria-current="page"><strong>Tools</strong></a>
+        </nav>`;
+      }
+    }
     return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
       <a href="/desk" data-nav data-route="desk">Desk</a>
       ${crumbSep()}
-      <span class="current" aria-current="page"><strong>Changes</strong></span>
+      <span class="current" aria-current="page"><strong>${esc(stageCrumb[state.panel]!)}</strong></span>
     </nav>`;
   }
   const tab = state.openTabs.find((t) => t.id === state.activeId);
@@ -5127,21 +5273,12 @@ function breadcrumbHTML(): string {
     </nav>`;
   }
   const sessHref = sessionPath(tab.cwd, tab.id);
-  const toolsHref = sessionPath(tab.cwd, tab.id, true);
-  const toolsOpen = state.panel === "tools";
-  const sessionCurrent = toolsOpen ? "" : "current";
-  const sessionAria = toolsOpen ? "" : ` aria-current="page"`;
   return `<nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb">
     <a href="/desk" data-nav data-route="desk">Desk</a>
     ${crumbSep()}
     <a href="${esc(sessHref)}" data-nav title="${esc(tab.agent)} · ${esc(tab.cwd)}">${esc(basename(tab.cwd))}</a>
     ${crumbSep()}
-    <a href="${esc(sessHref)}" data-nav class="${sessionCurrent}"${sessionAria} title="${esc(tab.id)}"><strong>${esc(tab.title)}</strong></a>
-    ${
-      toolsOpen
-        ? `${crumbSep()}<a href="${esc(toolsHref)}" data-nav class="current" aria-current="page"><strong>Tools</strong></a>`
-        : ""
-    }
+    <a href="${esc(sessHref)}" data-nav class="current" aria-current="page" title="${esc(tab.id)}"><strong>${esc(tab.title)}</strong></a>
   </nav>`;
 }
 
@@ -6364,6 +6501,20 @@ function ensureUIDelegation(): void {
         document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
         void showOpenRemoteDrawer();
         break;
+      case "remote-refresh":
+        ev.preventDefault();
+        void loadRemotePage();
+        break;
+      case "copy-text": {
+        ev.preventDefault();
+        const text = actionEl.getAttribute("data-text") || "";
+        if (!text) break;
+        void navigator.clipboard.writeText(text).then(
+          () => toast("Copied", "ok", 1400),
+          () => toast("Copy failed", "err"),
+        );
+        break;
+      }
       case "open-palette":
         ev.preventDefault();
         ev.stopPropagation();
@@ -6525,6 +6676,10 @@ function ensureUIDelegation(): void {
       state.gitDiffText = "";
       state.gitPrUrl = "";
       void refreshGitChanges();
+    }
+    if (kind === "remote-cwd" && el instanceof HTMLSelectElement) {
+      state.formCwd = el.value;
+      void loadRemotePage();
     }
     if (kind === "git-check" && el instanceof HTMLInputElement) {
       const path = el.getAttribute("data-path") || "";

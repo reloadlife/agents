@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] — 2026-07-15
+
+### Changed
+
+- **In-shell pages for Tools / New session / New project / Open remote / Help**
+  - Same full-stage pattern as Git Changes (sidebar + topbar stay; terminal replaced)
+  - Shared page hero, cards, and actions layout
+  - Routes: `/tools`, `/`, `/project/new`, `/remote`, `/help`
+  - Open remote is a page with copyable editor commands (not a text drawer)
+
 ## [0.8.6] — 2026-07-14
 
 ### Fixed

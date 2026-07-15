@@ -5,9 +5,10 @@
  *   /new                           → same
  *   /project/new · /projects/new   → new project (clone) modal
  *   /desk                          → empty desk (no modal)
- *   /tools                         → global tools
+ *   /tools                         → tools full page
  *   /git · /changes                → git changes full page
- *   /help                          → shortcuts help
+ *   /remote                        → open remote editor commands
+ *   /help                          → shortcuts full page
  *   /profile[/:tab]                → profile / settings
  *   /settings[/:tab]               → alias for profile
  *   /project/:projectId/session/:sessionId
@@ -22,6 +23,7 @@ export type Route =
   | { name: "desk" }
   | { name: "tools" }
   | { name: "changes" }
+  | { name: "remote" }
   | { name: "help" }
   | { name: "profile"; tab: ProfileTab }
   | {
@@ -89,6 +91,7 @@ export function parsePath(pathname: string): Route {
   if (parts[0] === "desk" || parts[0] === "sessions") return { name: "desk" };
   if (parts[0] === "tools") return { name: "tools" };
   if (parts[0] === "git" || parts[0] === "changes") return { name: "changes" };
+  if (parts[0] === "remote" || parts[0] === "open") return { name: "remote" };
   if (parts[0] === "help" || parts[0] === "shortcuts") return { name: "help" };
 
   if (parts[0] === "profile" || parts[0] === "settings") {
@@ -129,6 +132,8 @@ export function serializeRoute(route: Route): string {
       return "/tools";
     case "changes":
       return "/changes";
+    case "remote":
+      return "/remote";
     case "help":
       return "/help";
     case "profile":
